@@ -6,4 +6,5 @@ dist/
 android/.gradle/
 android/build/
 android/app/build/
+android/installer/build/
 android/local.properties

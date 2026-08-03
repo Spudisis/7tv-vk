@@ -19,3 +19,4 @@ dependencyResolutionManagement {
 
 rootProject.name = "vk7tv-module"
 include(":app")
+include(":installer")
