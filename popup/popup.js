@@ -183,7 +183,14 @@ $('#refreshSets').addEventListener('click', async () => {
 // и свои эмоуты можно выгрузить в файл и вернуть после переустановки.
 // Эмоуты наборов в файл не кладём — они качаются из API по id набора.
 
-const BACKUP_DEFAULTS = { enabled: true, useGlobal: true, widget: true, sets: [], customEmotes: {} };
+const BACKUP_DEFAULTS = {
+  enabled: true,
+  useGlobal: true,
+  widget: true,
+  sets: [],
+  customEmotes: {},
+  favorites: [],
+};
 
 $('#exportSettings').addEventListener('click', async () => {
   const sync = await chrome.storage.sync.get(BACKUP_DEFAULTS);
@@ -197,7 +204,9 @@ $('#exportSettings').addEventListener('click', async () => {
   a.remove();
   setTimeout(() => URL.revokeObjectURL(url), 10000);
   $('#backupStatus').classList.remove('error');
-  $('#backupStatus').textContent = `Сохранено: наборов ${sync.sets.length}, своих эмоутов ${Object.keys(sync.customEmotes).length}`;
+  $('#backupStatus').textContent =
+    `Сохранено: наборов ${sync.sets.length}, своих эмоутов ${Object.keys(sync.customEmotes).length}` +
+    `, избранных ${sync.favorites.length}`;
 });
 
 $('#importSettings').addEventListener('click', () => $('#importFile').click());
@@ -213,15 +222,17 @@ $('#importFile').addEventListener('change', async (e) => {
     if (!data || data.app !== 'vk7tv' || !Array.isArray(data.sets)) {
       throw new Error('Это не файл настроек VK7TV');
     }
-    const cur = await chrome.storage.sync.get({ sets: [], customEmotes: {} });
+    const cur = await chrome.storage.sync.get({ sets: [], customEmotes: {}, favorites: [] });
     const sets = data.sets.filter((s) => s && s.id);
     const merged = cur.sets.filter((s) => !sets.some((x) => x.id === s.id)).concat(sets);
+    const favorites = Array.isArray(data.favorites) ? data.favorites : [];
     await chrome.storage.sync.set({
       enabled: data.enabled !== false,
       useGlobal: data.useGlobal !== false,
       widget: data.widget !== false,
       sets: merged,
       customEmotes: { ...cur.customEmotes, ...(data.customEmotes || {}) },
+      favorites: [...new Set([...cur.favorites, ...favorites])],
       // набор по умолчанию не должен вернуться поверх восстановленного списка
       seeded: true,
     });

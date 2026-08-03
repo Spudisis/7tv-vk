@@ -1,9 +1,10 @@
 // VK7TV — виджет-пикер эмоутов на странице ВК.
 // Круглая кнопка в углу; клик раскрывает поповер с поиском по всем
-// подключённым наборам (сгруппированы по сетам). Кнопку можно таскать
-// за неё саму или за шапку поповера — они двигаются вместе, позиция
-// запоминается. Клик по эмоуту вставляет его имя в последнее активное
-// поле ввода ВК; если поля нет — копирует имя в буфер.
+// подключённым наборам (сгруппированы по сетам) и полосой избранного
+// сверху. Кнопку можно таскать за неё саму или за шапку поповера — они
+// двигаются вместе, позиция запоминается. Клик по эмоуту вставляет его
+// имя в последнее активное поле ввода ВК; если поля нет — копирует имя
+// в буфер.
 
 (() => {
   if (window.top !== window) return; // только в основном фрейме
@@ -15,8 +16,14 @@
   let searchInput = null;
   let body = null;
   let foot = null;
+  let favBox = null;
+  let favGrid = null;
+  let favEmpty = null;
   let open = false;
   let groups = [];
+  let favorites = []; // полные имена, порядок добавления
+  let favSet = new Set();
+  let emoteIndex = new Map(); // полное имя -> url, чтобы найти картинку избранного
   let lastInput = null;
   let lastRange = null;
   let flashTimer = null;
@@ -104,6 +111,7 @@
       useGlobal: true,
       sets: [],
       customEmotes: {},
+      favorites: [],
       widget: true,
     });
     const local = await chrome.storage.local.get({ setEmotes: {}, globalEmotes: null });
@@ -123,7 +131,33 @@
     if (Object.keys(sync.customEmotes).length) {
       groups.push({ title: 'Свои', emotes: sync.customEmotes });
     }
+    // избранное хранит только имена — картинку берём из этого индекса,
+    // а эмоуты удалённого набора просто перестают показываться
+    emoteIndex = new Map();
+    for (const g of groups) {
+      for (const [name, v] of Object.entries(g.emotes)) {
+        emoteIndex.set(fullName(g, name), typeof v === 'string' ? v : v.u);
+      }
+    }
+    setFavorites(sync.favorites);
     return sync.enabled && sync.widget;
+  }
+
+  // вставляем всегда полное имя с постфиксом — так эмоут не спутается
+  // с одноимённым из другого набора и с обычным словом
+  const fullName = (g, name) => (g.suffix ? `${name}_${g.suffix}` : name);
+
+  function setFavorites(list) {
+    favorites = Array.isArray(list) ? list : [];
+    favSet = new Set(favorites);
+  }
+
+  async function toggleFav(name) {
+    const next = favSet.has(name) ? favorites.filter((n) => n !== name) : favorites.concat(name);
+    setFavorites(next);
+    renderFavorites();
+    syncStars();
+    await chrome.storage.sync.set({ favorites: next });
   }
 
   // --- DOM ---
@@ -166,6 +200,19 @@
       }
     });
 
+    // избранное живёт над прокруткой, поэтому всегда на виду
+    favBox = document.createElement('div');
+    favBox.className = 'vk7tv-picker-fav';
+    const favTitle = document.createElement('div');
+    favTitle.className = 'vk7tv-picker-fav-title';
+    favTitle.textContent = 'Избранное';
+    favGrid = document.createElement('div');
+    favGrid.className = 'vk7tv-picker-grid';
+    favEmpty = document.createElement('div');
+    favEmpty.className = 'vk7tv-picker-fav-empty';
+    favEmpty.textContent = 'Наведи на эмоут и нажми ☆ — он закрепится здесь';
+    favBox.append(favTitle, favGrid, favEmpty);
+
     body = document.createElement('div');
     body.className = 'vk7tv-picker-body';
 
@@ -173,12 +220,80 @@
     foot.className = 'vk7tv-picker-foot';
     foot.textContent = FOOT_HINT;
 
-    picker.append(head, searchInput, body, foot);
+    picker.append(head, searchInput, favBox, body, foot);
     document.body.append(widget, picker);
 
     makeDraggable(widget, true);
     makeDraggable(head, false);
     sizeObserver.observe(picker);
+  }
+
+  // ячейка сетки: картинка + кнопка «в избранное» в правом верхнем углу
+  function makeCell(name, url) {
+    const cell = document.createElement('span');
+    cell.className = 'vk7tv-picker-cell';
+    cell.dataset.name = name;
+
+    const img = document.createElement('img');
+    img.src = url;
+    img.alt = name;
+    img.title = name;
+    img.loading = 'lazy';
+    img.decoding = 'async';
+    img.draggable = false;
+    img.addEventListener('click', () => insertEmote(name));
+    // CSP ВК режет cdn.7tv.app — перезагружаем через фоновый скрипт (blob:)
+    img.addEventListener('error', () => {
+      if (img.dataset.fb) return cell.remove();
+      img.dataset.fb = '1';
+      const st = window.__vk7tv;
+      if (!st || !st.resolveEmote) return cell.remove();
+      st.resolveEmote(url).then((u) => {
+        if (!u) return cell.remove();
+        img.src = u;
+        // запоминаем рабочий blob: — копия в избранном не пойдёт за ним заново
+        if (emoteIndex.get(name) === url) emoteIndex.set(name, u);
+      });
+    });
+
+    const star = document.createElement('button');
+    star.className = 'vk7tv-fav';
+    star.type = 'button';
+    setStar(star, favSet.has(name));
+    star.addEventListener('pointerdown', (e) => e.preventDefault()); // не забираем фокус у поля ВК
+    star.addEventListener('click', (e) => {
+      e.stopPropagation();
+      toggleFav(name);
+    });
+
+    cell.append(img, star);
+    return cell;
+  }
+
+  function setStar(btn, on) {
+    btn.textContent = on ? '★' : '☆';
+    btn.classList.toggle('vk7tv-fav-on', on);
+    btn.title = on ? 'Убрать из избранного' : 'В избранное';
+  }
+
+  function syncStars() {
+    for (const cell of picker.querySelectorAll('.vk7tv-picker-cell')) {
+      const star = cell.querySelector('.vk7tv-fav');
+      if (star) setStar(star, favSet.has(cell.dataset.name));
+    }
+  }
+
+  function renderFavorites() {
+    favGrid.innerHTML = '';
+    let shown = 0;
+    for (const name of favorites) {
+      const url = emoteIndex.get(name);
+      if (!url) continue; // набор отключили — эмоут просто не показываем
+      favGrid.appendChild(makeCell(name, url));
+      shown++;
+    }
+    favEmpty.style.display = shown ? 'none' : '';
+    applyFilter();
   }
 
   function renderBody() {
@@ -188,48 +303,34 @@
       sec.className = 'vk7tv-picker-group';
       const h = document.createElement('div');
       h.className = 'vk7tv-picker-group-title';
-      h.textContent = g.suffix ? `${g.title} · _${g.suffix}` : g.title;
+      h.textContent = g.title;
       const grid = document.createElement('div');
       grid.className = 'vk7tv-picker-grid';
       for (const [name, v] of Object.entries(g.emotes)) {
-        const url = typeof v === 'string' ? v : v.u;
-        // вставляем всегда полное имя с постфиксом — так эмоут не спутается
-        // с одноимённым из другого набора и с обычным словом
-        const full = g.suffix ? `${name}_${g.suffix}` : name;
-        const img = document.createElement('img');
-        img.src = url;
-        img.alt = full;
-        img.title = full;
-        img.loading = 'lazy';
-        img.decoding = 'async';
-        img.draggable = false;
-        img.addEventListener('click', () => insertEmote(full));
-        // CSP ВК режет cdn.7tv.app — перезагружаем через фоновый скрипт (blob:)
-        img.addEventListener('error', () => {
-          if (img.dataset.fb) return img.remove();
-          img.dataset.fb = '1';
-          const st = window.__vk7tv;
-          if (!st || !st.resolveEmote) return img.remove();
-          st.resolveEmote(url).then((u) => {
-            if (u) img.src = u;
-            else img.remove();
-          });
-        });
-        grid.appendChild(img);
+        grid.appendChild(makeCell(fullName(g, name), typeof v === 'string' ? v : v.u));
       }
       sec.append(h, grid);
       body.appendChild(sec);
     }
-    applyFilter();
+    renderFavorites();
   }
 
   function applyFilter() {
     const q = searchInput.value.trim().toLowerCase();
+    let favShown = 0;
+    for (const cell of favGrid.querySelectorAll('.vk7tv-picker-cell')) {
+      const hit = !q || cell.dataset.name.toLowerCase().includes(q);
+      cell.style.display = hit ? '' : 'none';
+      if (hit) favShown++;
+    }
+    // при пустом поиске полоса остаётся с подсказкой, при поиске — только с находками
+    favBox.style.display = favShown || !q ? '' : 'none';
+    favEmpty.style.display = favShown || q ? 'none' : '';
     for (const sec of body.querySelectorAll('.vk7tv-picker-group')) {
       let shown = 0;
-      for (const img of sec.querySelectorAll('img')) {
-        const hit = !q || img.alt.toLowerCase().includes(q);
-        img.style.display = hit ? '' : 'none';
+      for (const cell of sec.querySelectorAll('.vk7tv-picker-cell')) {
+        const hit = !q || cell.dataset.name.toLowerCase().includes(q);
+        cell.style.display = hit ? '' : 'none';
         if (hit) shown++;
       }
       sec.style.display = shown ? '' : 'none';
@@ -328,6 +429,15 @@
   chrome.storage.onChanged.addListener((changes, area) => {
     // позиция и размер — наши же записи, сетку из-за них не перерисовываем
     if (area === 'local' && !changes.setEmotes && !changes.globalEmotes) return;
+    // избранное меняется часто (в том числе в соседней вкладке) — тысячу
+    // картинок из-за него не пересобираем, хватает полосы и звёздочек
+    const keys = Object.keys(changes);
+    if (area === 'sync' && keys.length === 1 && keys[0] === 'favorites') {
+      setFavorites(changes.favorites.newValue || []);
+      renderFavorites();
+      syncStars();
+      return;
+    }
     clearTimeout(reloadTimer);
     reloadTimer = setTimeout(async () => {
       const show = await loadGroups();

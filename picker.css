@@ -103,6 +103,34 @@
   border-color: #4c8bf5;
 }
 
+/* избранное — над прокруткой, поэтому не уезжает при скролле списка */
+.vk7tv-picker-fav {
+  flex: 0 0 auto;
+  padding: 0 10px 6px;
+  border-bottom: 1px solid #26282f;
+}
+
+.vk7tv-picker-fav .vk7tv-picker-grid {
+  max-height: 84px; /* две строки, дальше своя прокрутка — полоса не растёт */
+  overflow-y: auto;
+  padding-top: 4px; /* чтобы прокрутка не срезала звёздочки верхнего ряда */
+}
+
+.vk7tv-picker-fav-title {
+  padding: 2px 2px 4px;
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: #9aa0ab;
+}
+
+.vk7tv-picker-fav-empty {
+  padding: 2px 2px 4px;
+  font-size: 11px;
+  color: #7a8090;
+}
+
 .vk7tv-picker-body {
   flex: 1;
   overflow-y: auto;
@@ -112,6 +140,9 @@
 .vk7tv-picker-group-title {
   position: sticky;
   top: 0;
+  /* ячейки эмоутов позиционированы (в них звёздочка), поэтому без z-index
+     они рисуются поверх липкого заголовка и он выглядит «под эмоутами» */
+  z-index: 2;
   background: #1e1f24;
   padding: 8px 2px 4px;
   font-size: 11px;
@@ -127,6 +158,16 @@
   gap: 2px;
 }
 
+.vk7tv-picker-cell {
+  position: relative;
+  display: inline-flex;
+  border-radius: 6px;
+}
+
+.vk7tv-picker-cell:hover {
+  background: #2c2e36;
+}
+
 .vk7tv-picker-grid img {
   height: 32px;
   width: auto;
@@ -135,8 +176,49 @@
   cursor: pointer;
 }
 
-.vk7tv-picker-grid img:hover {
-  background: #2c2e36;
+/* звёздочка поверх эмоута: у ВК свои стили для button, поэтому всё явно */
+.vk7tv-picker-cell .vk7tv-fav {
+  position: absolute;
+  top: -3px;
+  right: -3px;
+  display: none;
+  width: 15px;
+  height: 15px;
+  margin: 0;
+  padding: 0;
+  border: 1px solid #34363f;
+  border-radius: 50%;
+  background: #1e1f24;
+  box-shadow: none;
+  color: #9aa0ab;
+  font: 9px/13px -apple-system, "Segoe UI", Roboto, sans-serif;
+  text-align: center;
+  cursor: pointer;
+  -webkit-appearance: none;
+  appearance: none;
+}
+
+.vk7tv-picker-cell:hover .vk7tv-fav,
+.vk7tv-picker-cell .vk7tv-fav.vk7tv-fav-on {
+  display: block;
+}
+
+/* в полосе избранного и так всё избранное — звёзды не рябят, только наведение */
+.vk7tv-picker-fav .vk7tv-picker-cell .vk7tv-fav.vk7tv-fav-on {
+  display: none;
+}
+
+.vk7tv-picker-fav .vk7tv-picker-cell:hover .vk7tv-fav {
+  display: block;
+}
+
+.vk7tv-picker-cell .vk7tv-fav:hover {
+  color: #f5b942;
+  border-color: #f5b942;
+}
+
+.vk7tv-picker-cell .vk7tv-fav.vk7tv-fav-on {
+  color: #f5b942;
 }
 
 .vk7tv-picker-foot {
