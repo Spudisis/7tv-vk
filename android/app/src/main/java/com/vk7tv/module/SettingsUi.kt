@@ -129,6 +129,9 @@ object SettingsUi {
             ),
         )
 
+        // Версия модуля — по ней видно, доехало ли обновление через установщик.
+        root.addView(note(ctx, "VK7TV модуль ${BuildConfig.VERSION_NAME}"))
+
         val scroll = ScrollView(ctx).apply {
             background = GradientDrawable().apply {
                 setColor(Ui.BG)
