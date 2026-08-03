@@ -41,6 +41,9 @@
     testRegex = emoteMap.size
       ? new RegExp([...emoteMap.keys()].map(escapeRegex).join('|'))
       : null;
+
+    // общее состояние для autocomplete.js (один isolated world)
+    window.__vk7tv = { emoteMap, enabled };
   }
 
   function makeEmote(name, url) {
