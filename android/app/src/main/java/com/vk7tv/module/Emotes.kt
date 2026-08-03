@@ -2,6 +2,8 @@ package com.vk7tv.module
 
 import org.json.JSONObject
 import java.io.File
+import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.Executors
 
 class Emote(val name: String, val url: String, val zeroWidth: Boolean)
 
@@ -62,8 +64,16 @@ object Emotes {
         val fresh = LinkedHashMap<String, Emote>()
         val builtGroups = ArrayList<Group>()
 
+        // Сеть — самое долгое место загрузки. Тянем все наборы разом, а не по
+        // очереди: раньше цикл ждал каждый fetchSet последовательно, и при
+        // десятке наборов пикер открывался только после последнего.
+        val ids = ArrayList<String>()
+        if (Config.useGlobal) ids.add("global")
+        for (ref in Config.sets) ids.add(ref.id)
+        val fetched = fetchAll(cacheDir, ids, force)
+
         if (Config.useGlobal) {
-            val g = fetchSet(cacheDir, "global", force)
+            val g = fetched["global"]
             if (g != null) {
                 for (e in g.emotes) fresh[e.name] = e
                 builtGroups.add(Group("Глобальные 7TV", g.emotes))
@@ -75,7 +85,7 @@ object Emotes {
         val bareCount = HashMap<String, Int>()
 
         for (ref in Config.sets) {
-            val s = fetchSet(cacheDir, ref.id, force) ?: continue
+            val s = fetched[ref.id] ?: continue
             val slug = ref.slug.ifEmpty { s.slug }
             val forPicker = ArrayList<Emote>(s.emotes.size)
             for (e in s.emotes) {
@@ -135,6 +145,32 @@ object Emotes {
         fetchSet(cacheDir, id)?.emotes?.associateBy { it.name }
 
     private class Fetched(val name: String, val slug: String, val emotes: List<Emote>)
+
+    /**
+     * Тянет несколько наборов параллельно и возвращает id -> набор.
+     * Каждый набор пишет свой файл в кэше, общего состояния нет, так что
+     * гонок нет; при пустом кэше выигрыш — во столько раз, сколько наборов.
+     */
+    private fun fetchAll(cacheDir: File, ids: List<String>, force: Boolean): Map<String, Fetched> {
+        val distinct = ids.distinct()
+        if (distinct.size <= 1) {
+            val out = HashMap<String, Fetched>()
+            distinct.firstOrNull()?.let { id -> fetchSet(cacheDir, id, force)?.let { out[id] = it } }
+            return out
+        }
+        val out = ConcurrentHashMap<String, Fetched>()
+        val pool = Executors.newFixedThreadPool(minOf(distinct.size, 6)) { r ->
+            Thread(r, "vk7tv-set").apply { isDaemon = true }
+        }
+        try {
+            distinct.map { id ->
+                pool.submit { fetchSet(cacheDir, id, force)?.let { out[id] = it } }
+            }.forEach { f -> L.safe("ожидание набора") { f.get() } }
+        } finally {
+            pool.shutdown()
+        }
+        return out
+    }
 
     private fun fetchSet(cacheDir: File, id: String, force: Boolean = false): Fetched? {
         val file = File(cacheDir, "sets/$id.json")

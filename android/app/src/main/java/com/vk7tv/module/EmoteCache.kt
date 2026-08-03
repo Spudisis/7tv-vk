@@ -19,7 +19,10 @@ import java.util.concurrent.Executors
  */
 object EmoteCache {
 
-    private val io = Executors.newFixedThreadPool(3) { r ->
+    // 6 потоков: при открытии пикера сетка просит сотни картинок сразу, и по
+    // три штуки они подтягивались заметно долго. Приоритет держим низким —
+    // качать эмоуты не должно мешать отрисовке самого ВК.
+    private val io = Executors.newFixedThreadPool(6) { r ->
         Thread(r, "vk7tv-img").apply { isDaemon = true; priority = Thread.MIN_PRIORITY }
     }
 
