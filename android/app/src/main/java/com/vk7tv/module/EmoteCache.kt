@@ -32,7 +32,12 @@ object EmoteCache {
         override fun sizeOf(key: String, value: ByteArray) = value.size
     }
 
-    private val loading = Collections.synchronizedSet(HashSet<String>())
+    // url-ключ -> все, кто ждёт эту картинку. Раньше тут был просто Set, и
+    // колбэк на готовность регистрировал ТОЛЬКО первый, кто попросил url:
+    // если тот же эмоут одновременно просили чат и пикер (или несколько
+    // ячеек), будили одного, а остальные висели текстом/пустой ячейкой до
+    // перезахода. Теперь будим всех, кто ждал.
+    private val waiters = HashMap<String, MutableList<() -> Unit>>()
     private val failed = Collections.synchronizedSet(HashSet<String>())
 
     fun init(cacheDir: File) {
@@ -58,22 +63,36 @@ object EmoteCache {
             }
         }
 
-        if (loading.add(key)) {
+        // становимся в очередь ожидающих; качает только тот, кто пришёл первым
+        val first = synchronized(waiters) {
+            val list = waiters.getOrPut(key) { ArrayList(2) }
+            val wasEmpty = list.isEmpty()
+            list.add(onReady)
+            wasEmpty
+        }
+        if (first) {
             io.execute {
                 try {
                     val data = Net.bytes(url)
                     File(dir, key).writeBytes(data)
                     bytes.put(key, data)
-                    onReady()
+                    wake(key)
                 } catch (t: Throwable) {
                     failed.add(key)
+                    // будить не надо: повторный рендер упрётся в failed и
+                    // честно оставит текст, а список ожидающих просто сбрасываем
+                    synchronized(waiters) { waiters.remove(key) }
                     L.v("не скачалось $url: $t")
-                } finally {
-                    loading.remove(key)
                 }
             }
         }
         return null
+    }
+
+    /** Картинка готова — будим всех, кто её ждал, и очищаем очередь. */
+    private fun wake(key: String) {
+        val list = synchronized(waiters) { waiters.remove(key) } ?: return
+        for (cb in list) L.safe("колбэк картинки") { cb() }
     }
 
     private fun decode(data: ByteArray): Drawable? = L.safe("декод картинки") {

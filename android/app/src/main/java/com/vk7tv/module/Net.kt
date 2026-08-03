@@ -8,22 +8,18 @@ object Net {
 
     fun get(url: String): String {
         val conn = open(url)
-        try {
-            if (conn.responseCode != 200) throw RuntimeException("HTTP ${conn.responseCode} $url")
-            return conn.inputStream.bufferedReader().readText()
-        } finally {
-            conn.disconnect()
-        }
+        ok(conn, url)
+        return conn.inputStream.use { it.bufferedReader().readText() }
     }
 
     fun bytes(url: String): ByteArray {
         val conn = open(url)
-        try {
-            if (conn.responseCode != 200) throw RuntimeException("HTTP ${conn.responseCode}")
-            return conn.inputStream.readBytes()
-        } finally {
-            conn.disconnect()
-        }
+        ok(conn, url)
+        // НЕ вызываем disconnect(): он закрывает сокет, и следующая картинка
+        // снова платит за TCP + TLS-рукопожатие к cdn.7tv.app. Именно это, а не
+        // размер файлов, тормозило загрузку пачки эмоутов. Достаточно дочитать
+        // поток и закрыть — соединение вернётся в пул (HTTP keep-alive).
+        return conn.inputStream.use { it.readBytes() }
     }
 
     fun postJson(url: String, body: String): String {
@@ -31,12 +27,16 @@ object Net {
         conn.requestMethod = "POST"
         conn.doOutput = true
         conn.setRequestProperty("Content-Type", "application/json")
-        try {
-            conn.outputStream.use { it.write(body.toByteArray()) }
-            if (conn.responseCode != 200) throw RuntimeException("HTTP ${conn.responseCode} $url")
-            return conn.inputStream.bufferedReader().readText()
-        } finally {
-            conn.disconnect()
+        conn.outputStream.use { it.write(body.toByteArray()) }
+        ok(conn, url)
+        return conn.inputStream.use { it.bufferedReader().readText() }
+    }
+
+    /** 200 или исключение; поток ошибки тоже дренируем, чтобы сокет ушёл в пул. */
+    private fun ok(conn: HttpURLConnection, url: String) {
+        if (conn.responseCode != 200) {
+            L.safe("сброс ошибки") { conn.errorStream?.use { it.readBytes() } }
+            throw RuntimeException("HTTP ${conn.responseCode} $url")
         }
     }
 
