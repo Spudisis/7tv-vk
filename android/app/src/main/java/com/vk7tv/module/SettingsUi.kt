@@ -54,6 +54,9 @@ object SettingsUi {
             toast(ctx, "Применится после перезапуска ВК")
         })
 
+        root.addView(switch(ctx, "Предлагать наборы стримеров", Config.suggest) {
+            Config.setFlag(Config.KEY_SUGGEST, it)
+        })
         root.addView(switch(ctx, "Показывать диагностику", Config.diag) {
             Config.setFlag(Config.KEY_DIAG, it)
         })

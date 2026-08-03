@@ -118,6 +118,7 @@ object Boot {
             Diag.note("модуль загружен ${BuildConfig.VERSION_NAME} в ${app.packageName}")
             val cache = File(app.cacheDir, "vk7tv").apply { mkdirs() }
             EmoteCache.init(cache)
+            Suggest.init(cache)
             Thread({
                 seedDefaultSet()
                 L.safe("загрузка наборов") { Emotes.load(cache) }

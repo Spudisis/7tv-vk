@@ -29,6 +29,7 @@ object Config {
     const val KEY_DOCK = "dockButton"
     const val KEY_SEEDED = "seeded"
     const val KEY_DIAG = "diag"
+    const val KEY_SUGGEST = "suggest"
 
     @Volatile
     var enabled = true
@@ -47,6 +48,10 @@ object Config {
     // сломает очередным обновлением
     @Volatile
     var diag = false
+        private set
+
+    @Volatile
+    var suggest = true
         private set
 
     @Volatile
@@ -76,6 +81,7 @@ object Config {
         useGlobal = p.getBoolean(KEY_USE_GLOBAL, true)
         dockButton = p.getBoolean(KEY_DOCK, true)
         diag = p.getBoolean(KEY_DIAG, false)
+        suggest = p.getBoolean(KEY_SUGGEST, true)
         sets = parseSets(p.getString(KEY_SETS, "[]"))
         custom = parseCustom(p.getString(KEY_CUSTOM, "{}"))
         favorites = parseList(p.getString(KEY_FAVORITES, "[]"))
@@ -98,6 +104,7 @@ object Config {
             KEY_USE_GLOBAL -> useGlobal = value
             KEY_DOCK -> dockButton = value
             KEY_DIAG -> diag = value
+            KEY_SUGGEST -> suggest = value
         }
     }
 

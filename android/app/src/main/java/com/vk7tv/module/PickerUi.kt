@@ -76,6 +76,14 @@ object PickerUi {
         val search = search(ctx)
         rootView.addView(search)
 
+        // предложения: у собеседника есть эмоут из набора, которого нет у нас
+        val sugBox = LinearLayout(ctx).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(Inject.dp(ctx, 10), 0, Inject.dp(ctx, 10), Inject.dp(ctx, 6))
+        }
+        rootView.addView(sugBox)
+        fillSuggests(ctx, sugBox)
+
         // полоса избранного живёт над сеткой и не уезжает при прокрутке
         val favBox = LinearLayout(ctx).apply {
             orientation = LinearLayout.VERTICAL
@@ -206,6 +214,88 @@ object PickerUi {
         )
         lp.setMargins(Inject.dp(ctx, 10), 0, Inject.dp(ctx, 10), Inject.dp(ctx, 8))
         layoutParams = lp
+    }
+
+    /**
+     * Наборы, которые можно подключить: слово вида «имя_ник» пришло в чат,
+     * эмоута у нас нет, а по API он у стримера нашёлся.
+     */
+    private fun fillSuggests(ctx: Context, box: LinearLayout) {
+        box.removeAllViews()
+        val hits = Suggest.hits()
+        if (hits.isEmpty()) {
+            box.visibility = View.GONE
+            return
+        }
+        box.visibility = View.VISIBLE
+        box.addView(label(ctx, "МОЖНО ПОДКЛЮЧИТЬ"))
+        for (h in hits) box.addView(suggestRow(ctx, box, h))
+    }
+
+    private fun suggestRow(ctx: Context, box: LinearLayout, h: Suggest.Hit): View {
+        val row = LinearLayout(ctx).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(Inject.dp(ctx, 6), Inject.dp(ctx, 6), Inject.dp(ctx, 8), Inject.dp(ctx, 6))
+            background = GradientDrawable().apply {
+                setColor(Ui.BG2)
+                cornerRadius = Inject.dp(ctx, 8).toFloat()
+                setStroke(Inject.dp(ctx, 1), Ui.BORDER)
+            }
+            val lp = LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT,
+            )
+            lp.bottomMargin = Inject.dp(ctx, 4)
+            layoutParams = lp
+        }
+
+        val iv = ImageView(ctx)
+        iv.layoutParams = LinearLayout.LayoutParams(Inject.dp(ctx, 32), Inject.dp(ctx, 32))
+        iv.scaleType = ImageView.ScaleType.FIT_CENTER
+        iv.contentDescription = h.name
+        bind(iv, Emote(h.name, h.url, false))
+        row.addView(iv)
+
+        row.addView(
+            TextView(ctx).apply {
+                text = "_${h.ref.slug}\n${h.count} эмоутов"
+                setTextColor(Ui.TEXT)
+                textSize = 12f
+                setPadding(Inject.dp(ctx, 8), 0, 0, 0)
+            },
+            LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f),
+        )
+
+        row.addView(
+            TextView(ctx).apply {
+                text = "подключить"
+                setTextColor(Ui.ACCENT)
+                textSize = 12f
+                typeface = Typeface.DEFAULT_BOLD
+            },
+        )
+
+        row.setOnClickListener { L.safe("подключение набора") { connect(ctx, box, h) } }
+        return row
+    }
+
+    private fun connect(ctx: Context, box: LinearLayout, h: Suggest.Hit) {
+        toast(ctx, "Подключаю ${h.ref.name}…")
+        Thread({
+            val msg = try {
+                Config.addSet(h.ref)
+                Suggest.forget(h.ref.slug)
+                Boot.reload(ctx)
+                "Набор ${h.ref.name} подключён"
+            } catch (t: Throwable) {
+                t.message ?: t.toString()
+            }
+            main.post {
+                toast(ctx, msg)
+                L.safe("обновление предложений") { fillSuggests(ctx, box) }
+            }
+        }, "vk7tv-connect").apply { isDaemon = true }.start()
     }
 
     private fun fillFavorites(ctx: Context, box: LinearLayout, input: EditText) {

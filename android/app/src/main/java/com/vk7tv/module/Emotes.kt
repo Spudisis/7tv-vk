@@ -124,6 +124,10 @@ object Emotes {
         L.i("наборы загружены: эмоутов ${map.size}, групп ${builtGroups.size}")
     }
 
+    /** Эмоуты набора по имени — для проверки предложений. Кэш общий с загрузкой. */
+    fun emotesOf(cacheDir: File, id: String): Map<String, Emote>? =
+        fetchSet(cacheDir, id)?.emotes?.associateBy { it.name }
+
     private class Fetched(val name: String, val slug: String, val emotes: List<Emote>)
 
     private fun fetchSet(cacheDir: File, id: String): Fetched? {

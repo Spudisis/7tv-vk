@@ -4,6 +4,8 @@ import android.os.Handler
 import android.os.Looper
 import android.text.SpannableStringBuilder
 import android.text.Spanned
+import android.text.style.ForegroundColorSpan
+import android.text.style.UnderlineSpan
 import android.widget.EditText
 import android.widget.TextView
 import java.lang.ref.WeakReference
@@ -50,7 +52,9 @@ object Replacer {
         if (Service.isServiceView(tv)) return null
         synchronized(seenViews) { seenViews[tv] = true }
 
-        val hits = scan(text) ?: return null
+        val found = scan(text)
+        val hits = found.hits
+        if (hits == null && found.marks == null) return null
 
         var missing = false
         var out: SpannableStringBuilder? = null
@@ -58,7 +62,7 @@ object Replacer {
         var lastStack: StackDrawable? = null
         val cb = ViewCallback(tv)
 
-        for (h in hits) {
+        for (h in hits.orEmpty()) {
             val d = EmoteCache.drawable(h.emote.url) { onImageReady(tv, text) }
             if (d == null) {
                 missing = true
@@ -83,6 +87,20 @@ object Replacer {
             lastStack = stack
         }
 
+        // Предложения: слово из чужого набора подсвечиваем, а подключение
+        // живёт в пикере. Делать слово нажимаемым нельзя — для этого пришлось бы
+        // подменить movementMethod у чужого TextView, а через него ВК ловит
+        // тапы по ссылкам, упоминаниям и долгие нажатия.
+        found.marks?.let { m ->
+            val sb = out ?: SpannableStringBuilder(text).also { out = it }
+            var i = 0
+            while (i + 1 < m.size) {
+                sb.setSpan(ForegroundColorSpan(Ui.ACCENT), m[i], m[i + 1], Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
+                sb.setSpan(UnderlineSpan(), m[i], m[i + 1], Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
+                i += 2
+            }
+        }
+
         // Отметку «ждём картинку» ставим ДО раннего выхода. Иначе, когда
         // в сообщении не закэшировано вообще ничего, out остаётся null,
         // мы уходим по return, и скачанная картинка потом никого не находит:
@@ -98,9 +116,12 @@ object Replacer {
 
     private class Hit(val start: Int, val end: Int, val emote: Emote)
 
+    /** Найденное в тексте: эмоуты и границы слов-предложений (парами start, end). */
+    private class Found(var hits: ArrayList<Hit>? = null, var marks: ArrayList<Int>? = null)
+
     /** Проход по словам без регулярок: setText зовётся часто, аллокации жалко. */
-    private fun scan(text: CharSequence): List<Hit>? {
-        var hits: ArrayList<Hit>? = null
+    private fun scan(text: CharSequence): Found {
+        val found = Found()
         val n = text.length
         var i = 0
         while (i < n) {
@@ -109,11 +130,30 @@ object Replacer {
             val start = i
             while (i < n && !text[i].isWhitespace()) i++
             val end = i
-            if (!Emotes.mayBe(text, start, end)) continue
-            val em = Emotes.get(text.subSequence(start, end).toString()) ?: continue
-            (hits ?: ArrayList<Hit>(4).also { hits = it }).add(Hit(start, end, em))
+
+            if (Emotes.mayBe(text, start, end)) {
+                val em = Emotes.get(text.subSequence(start, end).toString())
+                if (em != null) {
+                    (found.hits ?: ArrayList<Hit>(4).also { found.hits = it })
+                        .add(Hit(start, end, em))
+                    continue
+                }
+            }
+
+            // эмоута нет, но слово похоже на «имя_ник» — вдруг у собеседника
+            // подключён набор, которого нет у нас
+            if (!Config.suggest) continue
+            if (!Suggest.looksLike(text, start, end)) continue
+            val word = text.subSequence(start, end).toString()
+            if (Suggest.ready(word)) {
+                val m = found.marks ?: ArrayList<Int>(4).also { found.marks = it }
+                m.add(start)
+                m.add(end)
+            } else {
+                Suggest.consider(word)
+            }
         }
-        return hits
+        return found
     }
 
     private fun onlySpaces(text: CharSequence, from: Int, to: Int): Boolean {
