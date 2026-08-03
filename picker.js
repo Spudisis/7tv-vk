@@ -117,11 +117,18 @@
     head.className = 'vk7tv-picker-head';
     const title = document.createElement('span');
     title.textContent = 'Эмоуты';
+    const gh = document.createElement('a');
+    gh.className = 'vk7tv-picker-gh';
+    gh.textContent = 'GitHub';
+    gh.href = 'https://github.com/Spudisis/7tv-vk';
+    gh.target = '_blank';
+    gh.rel = 'noopener';
+    gh.title = 'VK7TV на GitHub';
     const close = document.createElement('span');
     close.className = 'vk7tv-picker-close';
     close.textContent = '✕';
     close.addEventListener('click', () => setOpen(false));
-    head.append(title, close);
+    head.append(title, gh, close);
 
     searchInput = document.createElement('input');
     searchInput.className = 'vk7tv-picker-search';
@@ -216,7 +223,7 @@
     let drag = null;
     handle.addEventListener('pointerdown', (e) => {
       if (e.button !== 0) return;
-      if (e.target.classList.contains('vk7tv-picker-close')) return;
+      if (e.target.classList.contains('vk7tv-picker-close') || e.target.closest('a')) return;
       e.preventDefault(); // не забираем фокус у поля ввода ВК
       const r = widget.getBoundingClientRect();
       drag = { px: e.clientX, py: e.clientY, left: r.left, top: r.top, moved: false };

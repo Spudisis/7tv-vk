@@ -64,6 +64,20 @@
   cursor: grabbing;
 }
 
+.vk7tv-picker-gh {
+  margin-left: auto;
+  margin-right: 10px;
+  font-size: 11px;
+  font-weight: 400;
+  color: #7a8090;
+  text-decoration: none;
+}
+
+.vk7tv-picker-gh:hover {
+  color: #4c8bf5;
+  text-decoration: underline;
+}
+
 .vk7tv-picker-close {
   cursor: pointer;
   color: #7a8090;
