@@ -1,5 +1,6 @@
 package com.vk7tv.module
 
+import android.app.Application
 import android.content.Context
 import android.os.Handler
 import android.os.Looper
@@ -16,37 +17,79 @@ class Vk7tvModule : IXposedHookLoadPackage {
         if (lpp.packageName !in TARGETS) return
         L.i("зацепились за ${lpp.packageName}")
 
-        L.safe("инициализация") {
-            hookSetText()
-            Inject.hook()
+        // Каждый хук в своём try/catch. Раньше они стояли под одним, и падение
+        // первого молча отменяло второй: не было ни эмоутов, ни кнопки, и по
+        // симптому нельзя было понять, что именно сломалось.
+        hookApplication()
+        hookSetText()
+        L.safe("хук панели ввода") { Inject.hook() }
+    }
+
+    /** Контекст нужен как можно раньше: без него диагностику некуда показывать. */
+    private fun hookApplication() {
+        L.safe("хук Application") {
+            XposedHelpers.findAndHookMethod(
+                Application::class.java,
+                "onCreate",
+                object : XC_MethodHook() {
+                    override fun afterHookedMethod(param: MethodHookParam) {
+                        L.safe("старт") { Boot.ensure(param.thisObject as? Context) }
+                    }
+                },
+            )
         }
     }
 
     private fun hookSetText() {
+        val hook = object : XC_MethodHook() {
+            override fun beforeHookedMethod(param: MethodHookParam) {
+                L.safe("setText") {
+                    val tv = param.thisObject as? TextView ?: return@safe
+                    val cs = param.args[0] as? CharSequence ?: return@safe
+                    Boot.ensure(tv.context)
+                    val out = Replacer.apply(tv, cs) ?: return@safe
+                    param.args[0] = out
+                }
+            }
+        }
+
         // Приватный setText(CharSequence, BufferType, boolean, int) — через него
         // TextView прогоняет вообще все варианты setText, включая setText(int).
         // Цепляться за классы ВК нельзя: они обфусцированы и переименовываются
         // от версии к версии, а платформенный TextView стабилен.
-        XposedHelpers.findAndHookMethod(
-            TextView::class.java,
-            "setText",
-            CharSequence::class.java,
-            TextView.BufferType::class.java,
-            java.lang.Boolean.TYPE,
-            Integer.TYPE,
-            object : XC_MethodHook() {
-                override fun beforeHookedMethod(param: MethodHookParam) {
-                    L.safe("setText") {
-                        val tv = param.thisObject as? TextView ?: return@safe
-                        val cs = param.args[0] as? CharSequence ?: return@safe
-                        Boot.ensure(tv.context)
-                        val out = Replacer.apply(tv, cs) ?: return@safe
-                        param.args[0] = out
-                    }
-                }
-            },
+        val full = L.safe("хук setText(4 аргумента)") {
+            XposedHelpers.findAndHookMethod(
+                TextView::class.java,
+                "setText",
+                CharSequence::class.java,
+                TextView.BufferType::class.java,
+                java.lang.Boolean.TYPE,
+                Integer.TYPE,
+                hook,
+            )
+            true
+        }
+        if (full == true) {
+            Diag.note("хук setText установлен")
+            return
+        }
+
+        // На части прошивок приватной перегрузки нет — цепляемся за публичную.
+        // Она ловит меньше (setText(int) пройдёт мимо), но лучше, чем ничего.
+        val simple = L.safe("хук setText(2 аргумента)") {
+            XposedHelpers.findAndHookMethod(
+                TextView::class.java,
+                "setText",
+                CharSequence::class.java,
+                TextView.BufferType::class.java,
+                hook,
+            )
+            true
+        }
+        Diag.note(
+            if (simple == true) "хук setText запасной — работает"
+            else "ХУК setText НЕ ВСТАЛ — эмоутов не будет",
         )
-        L.i("хук setText поставлен")
     }
 
     companion object {
@@ -57,10 +100,6 @@ class Vk7tvModule : IXposedHookLoadPackage {
     }
 }
 
-/**
- * Ленивая инициализация: контекст приложения нужен ради cacheDir, а к моменту
- * первого setText он уже точно есть. Так обходимся без хука на Application.
- */
 object Boot {
 
     @Volatile
@@ -73,11 +112,14 @@ object Boot {
             val app = ctx?.applicationContext ?: return
             started = true
             Config.init(app)
+            Diag.attach(app)
+            Diag.note("модуль загружен, версия ${BuildConfig.VERSION_NAME}")
             val cache = File(app.cacheDir, "vk7tv").apply { mkdirs() }
             EmoteCache.init(cache)
             Thread({
                 seedDefaultSet()
                 L.safe("загрузка наборов") { Emotes.load(cache) }
+                Diag.note("наборов ${Config.sets.size}, эмоутов ${Emotes.size()}")
                 canary()
             }, "vk7tv-sets").apply { isDaemon = true }.start()
         }
@@ -103,23 +145,21 @@ object Boot {
         L.safe("перезагрузка наборов") { Emotes.load(cache) }
     }
 
-    private const val DEFAULT_STREAMER = "bratishkinoff"
-
     /**
-     * Канарейка. Если наборы загрузились, текста через нас прошло много,
-     * а подменять оказалось нечего — скорее всего ВК переехал на Compose
-     * и хук setText больше не видит сообщений. Лучше честная строчка
-     * в журнале, чем неделя догадок «почему пусто».
+     * Канарейка. Если текста через нас прошло много, а подменять оказалось
+     * нечего — скорее всего ВК рисует сообщения не через TextView, и хук
+     * надо переделывать. Лучше честная строчка, чем неделя догадок.
      */
     private fun canary() {
         Handler(Looper.getMainLooper()).postDelayed({
-            L.i("статус: эмоутов ${Emotes.size()}, текстов ${Replacer.seen}, подмен ${Replacer.replaced}")
+            val msg = "текстов ${Replacer.seen}, подмен ${Replacer.replaced}, " +
+                "кнопка ${if (Inject.attached) "есть" else "НЕТ"}"
+            Diag.note(msg)
             if (Emotes.ready && Replacer.seen > 200 && Replacer.replaced == 0L) {
-                L.i(
-                    "ВНИМАНИЕ: ни одной подмены. Похоже, ВК обновился и рисует " +
-                        "сообщения не через TextView — хук надо переделывать."
-                )
+                Diag.note("подмен ноль — похоже, ВК рисует текст не через TextView")
             }
         }, 30_000)
     }
+
+    private const val DEFAULT_STREAMER = "bratishkinoff"
 }

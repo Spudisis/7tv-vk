@@ -28,6 +28,7 @@ object Config {
     const val KEY_FAVORITES = "favorites"
     const val KEY_DOCK = "dockButton"
     const val KEY_SEEDED = "seeded"
+    const val KEY_DIAG = "diag"
 
     @Volatile
     var enabled = true
@@ -39,6 +40,12 @@ object Config {
 
     @Volatile
     var dockButton = true
+        private set
+
+    // пока модуль не обкатан — по умолчанию включена: без неё непонятно,
+    // загрузился ли он вообще, а достать журнал с телефона отдельный квест
+    @Volatile
+    var diag = true
         private set
 
     @Volatile
@@ -67,6 +74,7 @@ object Config {
         enabled = p.getBoolean(KEY_ENABLED, true)
         useGlobal = p.getBoolean(KEY_USE_GLOBAL, true)
         dockButton = p.getBoolean(KEY_DOCK, true)
+        diag = p.getBoolean(KEY_DIAG, true)
         sets = parseSets(p.getString(KEY_SETS, "[]"))
         custom = parseCustom(p.getString(KEY_CUSTOM, "{}"))
         favorites = parseList(p.getString(KEY_FAVORITES, "[]"))
@@ -88,6 +96,7 @@ object Config {
             KEY_ENABLED -> enabled = value
             KEY_USE_GLOBAL -> useGlobal = value
             KEY_DOCK -> dockButton = value
+            KEY_DIAG -> diag = value
         }
     }
 

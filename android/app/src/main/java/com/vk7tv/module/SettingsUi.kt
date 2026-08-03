@@ -54,6 +54,10 @@ object SettingsUi {
             toast(ctx, "Применится после перезапуска ВК")
         })
 
+        root.addView(switch(ctx, "Показывать диагностику", Config.diag) {
+            Config.setFlag(Config.KEY_DIAG, it)
+        })
+
         root.addView(label(ctx, "НАБОРЫ"))
         val setsBox = LinearLayout(ctx).apply { orientation = LinearLayout.VERTICAL }
         root.addView(setsBox)

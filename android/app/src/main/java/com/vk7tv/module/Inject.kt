@@ -30,6 +30,10 @@ object Inject {
 
     private var lastInput = WeakReference<EditText>(null)
 
+    @Volatile
+    var attached = false
+        private set
+
     fun input(): EditText? = lastInput.get()
 
     fun hook() {
@@ -49,7 +53,7 @@ object Inject {
                 }
             },
         )
-        L.i("хук панели ввода поставлен")
+        Diag.note("хук панели ввода установлен")
     }
 
     private fun attach(input: EditText) {
@@ -115,7 +119,8 @@ object Inject {
             }
         }
         row.addView(btn, at)
-        L.i("кнопка встала в панель ввода (позиция $at из ${row.childCount})")
+        attached = true
+        Diag.note("кнопка встала в панель ввода")
     }
 
     private fun floating(input: EditText) {
@@ -130,7 +135,8 @@ object Inject {
         btn.layoutParams = lp
         makeDraggable(btn)
         root.addView(btn)
-        L.i("плавающая кнопка повешена")
+        attached = true
+        Diag.note("ряд иконок не опознан — кнопка плавающая")
     }
 
     private fun button(input: EditText): TextView {
