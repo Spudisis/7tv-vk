@@ -1,0 +1,59 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8">
+  <title>VK7TV</title>
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <header>
+    <h1>VK7TV</h1>
+    <label class="switch" title="Включить/выключить замену эмоутов">
+      <input type="checkbox" id="enabled">
+      <span class="slider"></span>
+    </label>
+  </header>
+
+  <label class="check-row">
+    <input type="checkbox" id="useGlobal">
+    <span>Глобальный набор 7TV <span class="muted" id="globalCount"></span></span>
+  </label>
+
+  <section>
+    <h2>Наборы 7TV</h2>
+    <div class="row">
+      <input type="text" id="setInput" placeholder="Ссылка на набор 7tv.app или ID">
+      <button id="addSet">Добавить</button>
+    </div>
+    <div class="status" id="setStatus"></div>
+    <ul id="setList"></ul>
+    <button class="ghost" id="refreshSets">↻ Обновить наборы</button>
+  </section>
+
+  <details>
+    <summary>Свои эмоуты (имя + ссылка на гифку)</summary>
+    <div class="row">
+      <input type="text" id="customName" placeholder="имяЭмоута">
+      <input type="text" id="customUrl" placeholder="https://…/emote.gif">
+      <button id="addCustom">+</button>
+    </div>
+    <div class="status" id="customStatus"></div>
+    <ul id="customList"></ul>
+  </details>
+
+  <section>
+    <h2>Все эмоуты <span class="muted" id="totalCount"></span></h2>
+    <input type="text" id="search" placeholder="Поиск… (клик по эмоуту копирует имя)">
+    <div id="grid"></div>
+  </section>
+
+  <footer>
+    Эмоут увидят все, у кого стоит расширение с тем же набором.
+  </footer>
+
+  <div id="toast"></div>
+
+  <script src="../default-emotes.js"></script>
+  <script src="popup.js"></script>
+</body>
+</html>
