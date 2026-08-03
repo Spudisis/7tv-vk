@@ -7,8 +7,10 @@
   const EMOTE_CLASS = 'vk7tv-emote';
 
   let enabled = true;
+  let suggestOn = true;
   let emoteMap = new Map(); // имя -> URL картинки
   let testRegex = null; // быстрый префильтр текстовых узлов
+  let stateSig = ''; // подпись набора эмоутов и настроек
 
   function escapeRegex(s) {
     return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -45,16 +47,59 @@
     return p;
   }
 
+  // --- предложение подключить набор стримера ---
+  // Прилетело non_nicosl, а такого эмоута у нас нет: слово с разделителем
+  // выглядит как имя_стример, значит у собеседника подключён набор, которого
+  // нет у нас. Проверять сами не можем — спрашиваем фоновый скрипт, он ходит
+  // в API 7TV и отвечает, есть ли такой стример и лежит ли эмоут в его наборе.
+  // Ответ кладём в кэш (в том числе отрицательный), чтобы одно и то же слово
+  // не дёргало API на каждое сообщение.
+  const PENDING = 'pending';
+  const suggestCache = new Map(); // слово -> PENDING | null | {slug, name, url, …}
+  let probes = 0;
+  const MAX_PROBES = 120; // потолок на вкладку: чат не должен спамить в API
+
+  // слово целиком из букв/цифр/подчёркиваний, с разделителем внутри
+  // и не короче, чем «xx_yyy»
+  const SUGGEST_RE = /^[A-Za-z0-9][A-Za-z0-9_]{4,59}$/;
+  const looksLikeSetEmote = (w) =>
+    SUGGEST_RE.test(w) && w.includes('_') && !w.endsWith('_') && !w.includes('__');
+
+  function probeSuggest(word) {
+    if (probes >= MAX_PROBES) return;
+    probes++;
+    suggestCache.set(word, PENDING);
+    chrome.runtime.sendMessage({ type: 'probe-set', word }, (resp) => {
+      const hit = resp && resp.found ? resp : null;
+      suggestCache.set(word, hit);
+      // Слово могло встретиться в десятке сообщений, а ответ пришёл уже
+      // после их отрисовки — проще перерисовать страницу целиком, чем
+      // помнить все узлы. Ответы на пачку слов сходятся в одну перерисовку.
+      if (hit) scheduleRerender();
+    });
+  }
+
+  let rerenderTimer = null;
+  function scheduleRerender() {
+    clearTimeout(rerenderTimer);
+    rerenderTimer = setTimeout(() => {
+      unrender();
+      if (enabled) scan(document.body);
+    }, 300);
+  }
+
   async function loadState() {
     const sync = await chrome.storage.sync.get({
       enabled: true,
       useGlobal: true,
+      suggest: true,
       sets: [],
       customEmotes: {},
     });
     const local = await chrome.storage.local.get({ setEmotes: {}, globalEmotes: null });
 
     enabled = sync.enabled;
+    suggestOn = sync.suggest;
     emoteMap = new Map();
     if (sync.useGlobal) {
       const g =
@@ -96,6 +141,20 @@
 
     // общее состояние для autocomplete.js и picker.js (один isolated world)
     window.__vk7tv = { emoteMap, enabled, resolveEmote };
+
+    // Подпись состояния: по ней видно, надо ли перерисовывать уже
+    // показанные сообщения. Фоновое обновление наборов раз в полчаса
+    // пишет в хранилище то же самое, и трогать из-за него страницу незачем.
+    const sig = [
+      enabled,
+      suggestOn,
+      sync.useGlobal,
+      emoteMap.size,
+      sync.sets.map((s) => `${s.id}:${s.count}`).join(','),
+    ].join('|');
+    const changed = sig !== stateSig;
+    stateSig = sig;
+    return changed;
   }
 
   function makeEmote(name, url, zeroWidth) {
@@ -119,6 +178,71 @@
     });
     img.src = url;
     return img;
+  }
+
+  // Чип сразу за незнакомым словом: превью эмоута и кнопка «поставить
+  // набор». Клик подключает набор — дальше storage.onChanged перерисует
+  // страницу, и слово превратится в картинку во всех сообщениях сразу.
+  function makeSuggest(hit) {
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'vk7tv-suggest';
+    btn.title =
+      `«${hit.name}» — эмоут из набора «${hit.setName}» (${hit.count} шт.).` +
+      ' Нажми, чтобы подключить набор.';
+
+    const img = document.createElement('img');
+    img.className = 'vk7tv-suggest-img';
+    img.alt = hit.name;
+    img.draggable = false;
+    img.addEventListener('error', () => {
+      if (img.dataset.vk7tvFallback) return img.remove(); // остаётся текст кнопки
+      img.dataset.vk7tvFallback = '1';
+      resolveEmote(hit.url).then((u) => (u ? (img.src = u) : img.remove()));
+    });
+    img.src = hit.url;
+
+    const label = document.createElement('span');
+    label.className = 'vk7tv-suggest-label';
+    label.textContent = '+ ' + hit.slug;
+
+    btn.append(img, label);
+    // ВК вешает свои обработчики на сообщение целиком — клик по чипу
+    // не должен ни открывать диалог, ни забирать фокус у поля ввода
+    btn.addEventListener('pointerdown', (e) => e.preventDefault());
+    btn.addEventListener('mousedown', (e) => e.stopPropagation());
+    btn.addEventListener('click', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      if (btn.disabled) return;
+      btn.disabled = true;
+      label.textContent = 'ставлю…';
+      chrome.runtime.sendMessage({ type: 'add-set', input: hit.slug }, (resp) => {
+        if (!resp || resp.error) {
+          btn.disabled = false;
+          label.textContent = '+ ' + hit.slug;
+          btn.title = (resp && resp.error) || 'Не получилось подключить набор';
+          btn.classList.add('vk7tv-suggest-err');
+          return;
+        }
+        label.textContent = 'готово';
+      });
+    });
+    return btn;
+  }
+
+  // Возвращает чип для слова, если про него уже известно, что это эмоут
+  // из чужого набора. Про незнакомое слово спрашивает фоновый скрипт —
+  // ответ придёт позже и вызовет перерисовку.
+  function suggestFor(word, seen) {
+    if (!suggestOn || seen.has(word) || !looksLikeSetEmote(word)) return null;
+    seen.add(word);
+    const hit = suggestCache.get(word);
+    if (hit === undefined) {
+      probeSuggest(word);
+      return null;
+    }
+    return hit && hit !== PENDING ? makeSuggest(hit) : null;
   }
 
   // Служебные подписи ВК (время сообщения, дата поста, «был в сети…») —
@@ -163,16 +287,21 @@
   }
 
   function processTextNode(node) {
-    if (!enabled || !testRegex) return;
+    if (!enabled) return;
     if (node._vk7tv) return; // уже отрендерен, текст занулён нами
     const text = node.nodeValue;
-    if (!text || !testRegex.test(text)) return;
+    if (!text) return;
+    // префильтр: эмоут в тексте или хотя бы слово с разделителем,
+    // из которого может выйти предложение подключить набор
+    if (!(testRegex && testRegex.test(text)) && !(suggestOn && text.includes('_'))) return;
 
     const parent = node.parentElement;
     if (!parent) return;
-    // не трогаем поле ввода, служебные теги и собственный UI расширения
+    // не трогаем поле ввода, служебные теги и собственный UI расширения;
+    // .vk7tv-text — наш же рендер: без него слово, оставшееся в нём текстом,
+    // обрабатывалось бы заново и обрастало чипами до бесконечности
     if (parent.isContentEditable) return;
-    if (parent.closest('script,style,textarea,input,title,svg,noscript,template,.vk7tv-ac,.vk7tv-picker,.vk7tv-widget')) return;
+    if (parent.closest('script,style,textarea,input,title,svg,noscript,template,.vk7tv-ac,.vk7tv-picker,.vk7tv-widget,.vk7tv-text')) return;
     // подпись ВК, а не текст сообщения — не трогаем ни её саму, ни скобки вокруг
     if (SERVICE_TEXT.test(text.trim())) return;
     if (isServiceText(parent, 3)) return;
@@ -186,6 +315,7 @@
     const frag = document.createDocumentFragment();
     let lastStack = null;
     let pendingWs = '';
+    const seen = new Set(); // одно и то же слово в сообщении — один чип
     for (const part of parts) {
       if (!part) continue;
       if (/^\s+$/.test(part)) {
@@ -197,6 +327,12 @@
         if (pendingWs) frag.appendChild(document.createTextNode(pendingWs));
         pendingWs = '';
         frag.appendChild(document.createTextNode(part));
+        // эмоута нет — может, он из набора, который у нас не подключён
+        const chip = suggestFor(part, seen);
+        if (chip) {
+          frag.appendChild(chip);
+          changed = true;
+        }
         lastStack = null;
         continue;
       }
@@ -233,7 +369,7 @@
   }
 
   function scan(root) {
-    if (!enabled || !testRegex) return;
+    if (!enabled) return;
     if (root.nodeType === Node.TEXT_NODE) {
       processTextNode(root);
       return;
@@ -285,13 +421,20 @@
     }
   });
 
-  chrome.storage.onChanged.addListener(() => {
-    loadState().then(() => {
-      if (!enabled) {
-        unrender();
-      } else {
-        scan(document.body);
-      }
+  // Избранное и позиция виджета меняются часто (в том числе из соседней
+  // вкладки) — из-за них страницу перебирать незачем.
+  const RENDER_KEYS = new Set([
+    'enabled', 'useGlobal', 'suggest', 'sets', 'customEmotes', 'setEmotes', 'globalEmotes',
+  ]);
+
+  chrome.storage.onChanged.addListener((changes) => {
+    if (!Object.keys(changes).some((k) => RENDER_KEYS.has(k))) return;
+    loadState().then((changed) => {
+      // Подключили набор — эмоуты должны появиться и в уже показанных
+      // сообщениях, а чипы «поставить набор» из них уйти. Поэтому
+      // разбираем рендер целиком и собираем заново.
+      if (changed) unrender();
+      if (enabled) scan(document.body);
     });
   });
 

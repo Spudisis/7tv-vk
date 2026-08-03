@@ -20,6 +20,7 @@ async function getState() {
     enabled: true,
     useGlobal: true,
     widget: true,
+    suggest: true,
     sets: [],
     customEmotes: {},
   });
@@ -59,6 +60,7 @@ async function render() {
   $('#enabled').checked = sync.enabled;
   $('#useGlobal').checked = sync.useGlobal;
   $('#widgetOn').checked = sync.widget;
+  $('#suggestOn').checked = sync.suggest;
   $('#globalCount').textContent = `(${Object.keys(DEFAULT_EMOTES).length})`;
 
   const setList = $('#setList');
@@ -152,6 +154,10 @@ $('#widgetOn').addEventListener('change', (e) => {
   chrome.storage.sync.set({ widget: e.target.checked });
 });
 
+$('#suggestOn').addEventListener('change', (e) => {
+  chrome.storage.sync.set({ suggest: e.target.checked });
+});
+
 $('#addSet').addEventListener('click', async () => {
   const input = $('#setInput').value.trim();
   if (!input) return;
@@ -187,6 +193,7 @@ const BACKUP_DEFAULTS = {
   enabled: true,
   useGlobal: true,
   widget: true,
+  suggest: true,
   sets: [],
   customEmotes: {},
   favorites: [],
@@ -230,6 +237,7 @@ $('#importFile').addEventListener('change', async (e) => {
       enabled: data.enabled !== false,
       useGlobal: data.useGlobal !== false,
       widget: data.widget !== false,
+      suggest: data.suggest !== false,
       sets: merged,
       customEmotes: { ...cur.customEmotes, ...(data.customEmotes || {}) },
       favorites: [...new Set([...cur.favorites, ...favorites])],

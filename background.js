@@ -186,6 +186,62 @@ async function refreshAll() {
   return { sets: nextSets.length };
 }
 
+// --- предложение подключить набор стримера ---
+// В чат прилетело non_nicosl, такого эмоута у нас нет: похоже, у собеседника
+// подключён набор nicosl. Прежде чем предлагать его поставить, проверяем по
+// API, что стример существует и эмоут в его наборе правда лежит — иначе
+// расширение предлагало бы наборы на каждое слово с подчёркиванием.
+// Кэш живёт до перезагрузки воркера и хранит в том числе отрицательный
+// ответ (null): чат может сыпать одним и тем же словом сколько угодно.
+const probedSets = new Map(); // slug -> Promise<набор|null>
+
+function probeStreamerSet(slug) {
+  if (!probedSets.has(slug)) probedSets.set(slug, fetchStreamerSet(slug).catch(() => null));
+  return probedSets.get(slug);
+}
+
+// Где в слове проходит граница «эмоут | стример», заранее неизвестно:
+// в ok_bratishkinoff подчёркивание одно, а в SEXALARM_kanba_mx ник сам
+// с подчёркиванием — стример тут kanba_mx. Поэтому перебираем разделители
+// слева направо (ник длиннее — вероятнее) и берём первый вариант, который
+// сойдётся: и стример есть, и эмоут в его наборе лежит.
+const MAX_SPLITS = 3;
+
+function splitCandidates(word) {
+  const out = [];
+  for (let i = word.indexOf('_'); i > 0 && out.length < MAX_SPLITS; i = word.indexOf('_', i + 1)) {
+    const name = word.slice(0, i);
+    const slug = word.slice(i + 1).toLowerCase();
+    if (/^[a-z0-9][a-z0-9_]{2,24}$/.test(slug) && !slug.endsWith('_')) out.push({ name, slug });
+  }
+  return out;
+}
+
+async function probeSet(word) {
+  const { sets } = await chrome.storage.sync.get({ sets: [] });
+  const connected = new Set(sets.map((s) => s.slug || ''));
+  for (const { name, slug } of splitCandidates(word)) {
+    // набор уже подключён — значит, эмоута в нём просто нет; пробуем
+    // следующий разделитель, вдруг граница проходит не здесь
+    if (connected.has(slug)) continue;
+    const set = await probeStreamerSet(slug);
+    // имя сверяем с учётом регистра: подключим набор — эмоут должен
+    // отрендериться ровно тем словом, которое пришло в сообщении
+    const em = set && set.emotes[name];
+    if (em) {
+      return {
+        found: true,
+        name,
+        slug: set.slug || slug,
+        setName: set.name,
+        count: Object.keys(set.emotes).length,
+        url: em.u,
+      };
+    }
+  }
+  return { found: false };
+}
+
 async function fetchAsDataUrl(url) {
   if (imgCache.has(url)) return imgCache.get(url);
   const resp = await fetch(url);
@@ -214,6 +270,10 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   }
   if (msg.type === 'refresh-sets') {
     reply(refreshAll());
+    return true;
+  }
+  if (msg.type === 'probe-set') {
+    reply(probeSet(msg.word));
     return true;
   }
   if (msg.type === 'fetch-emote') {

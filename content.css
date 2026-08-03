@@ -28,6 +28,59 @@ img.vk7tv-emote.vk7tv-zw {
   pointer-events: none;
 }
 
+/* чип «поставить набор стримера» — сразу правее незнакомого слова;
+   у ВК свои стили для button, поэтому всё прописано явно */
+button.vk7tv-suggest {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  vertical-align: middle;
+  box-sizing: border-box;
+  width: auto;
+  height: auto;
+  min-width: 0;
+  margin: -2px 2px;
+  padding: 1px 7px 1px 3px;
+  border: 1px solid #4c8bf5;
+  border-radius: 999px;
+  background: rgba(76, 139, 245, 0.14);
+  box-shadow: none;
+  color: #4c8bf5;
+  font: 600 11px/1.6 -apple-system, "Segoe UI", Roboto, sans-serif;
+  text-transform: none;
+  letter-spacing: 0;
+  white-space: nowrap;
+  cursor: pointer;
+  -webkit-appearance: none;
+  appearance: none;
+}
+
+button.vk7tv-suggest:hover {
+  background: rgba(76, 139, 245, 0.26);
+}
+
+button.vk7tv-suggest[disabled] {
+  opacity: 0.65;
+  cursor: default;
+}
+
+button.vk7tv-suggest.vk7tv-suggest-err {
+  border-color: #ef6a6a;
+  background: rgba(239, 106, 106, 0.14);
+  color: #ef6a6a;
+}
+
+img.vk7tv-suggest-img {
+  display: block;
+  height: 18px;
+  width: auto;
+  border-radius: 3px;
+}
+
+.vk7tv-suggest-label {
+  display: block;
+}
+
 .vk7tv-ac {
   position: fixed;
   z-index: 2147483000;
