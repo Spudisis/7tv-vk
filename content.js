@@ -102,6 +102,7 @@
 
   function processTextNode(node) {
     if (!enabled || !testRegex) return;
+    if (node._vk7tv) return; // уже отрендерен, текст занулён нами
     const text = node.nodeValue;
     if (!text || !testRegex.test(text)) return;
 
@@ -109,7 +110,7 @@
     if (!parent) return;
     // не трогаем поле ввода, служебные теги и собственный UI расширения
     if (parent.isContentEditable) return;
-    if (parent.closest('script,style,textarea,input,title,.vk7tv-ac,.vk7tv-picker,.vk7tv-widget')) return;
+    if (parent.closest('script,style,textarea,input,title,svg,noscript,template,.vk7tv-ac,.vk7tv-picker,.vk7tv-widget')) return;
 
     // эмоут — это отдельное «слово», разделённое пробелами (как в 7TV);
     // zero-width эмоут после обычного накладывается поверх него,
@@ -148,7 +149,21 @@
       changed = true;
     }
     if (pendingWs) frag.appendChild(document.createTextNode(pendingWs));
-    if (changed) node.replaceWith(frag);
+    if (!changed) return;
+
+    // ВК — React-приложение: удалять текстовый узел из-под него нельзя,
+    // React упадёт на следующей перерисовке (removeChild) и уронит кусок
+    // интерфейса. Поэтому узел остаётся на месте с пустым текстом,
+    // а рендер вставляется соседним span'ом. Перерисовал React текст
+    // обратно — обработчик characterData уберёт span и отрендерит заново.
+    const span = document.createElement('span');
+    span.className = 'vk7tv-text';
+    span.appendChild(frag);
+    span._vk7tvSrc = node;
+    span._vk7tvText = text;
+    node._vk7tv = span;
+    node.parentNode.insertBefore(span, node.nextSibling);
+    node.nodeValue = '';
   }
 
   function scan(root) {
@@ -167,12 +182,15 @@
   }
 
   function unrender() {
-    for (const stack of document.querySelectorAll('span.vk7tv-stack')) {
-      const names = [...stack.querySelectorAll('img')].map((i) => i.alt);
-      stack.replaceWith(document.createTextNode(names.join(' ')));
-    }
-    for (const img of document.querySelectorAll('img.' + EMOTE_CLASS)) {
-      img.replaceWith(document.createTextNode(img.alt));
+    for (const span of document.querySelectorAll('span.vk7tv-text')) {
+      const src = span._vk7tvSrc;
+      if (src && src.parentNode) {
+        src._vk7tv = null;
+        src.nodeValue = span._vk7tvText;
+        span.remove();
+      } else {
+        span.replaceWith(document.createTextNode(span._vk7tvText || span.textContent));
+      }
     }
   }
 
@@ -180,8 +198,22 @@
     if (!enabled) return;
     for (const m of mutations) {
       if (m.type === 'characterData') {
-        processTextNode(m.target);
+        const t = m.target;
+        if (t._vk7tv) {
+          if (t.nodeValue === '') continue; // это мы сами и занулили
+          // React вернул тексту значение — перерисовываем заново
+          t._vk7tv.remove();
+          t._vk7tv = null;
+        }
+        processTextNode(t);
       } else {
+        for (const n of m.removedNodes) {
+          // React убрал текстовый узел — подчищаем наш span-рендер
+          if (n.nodeType === Node.TEXT_NODE && n._vk7tv) {
+            n._vk7tv.remove();
+            n._vk7tv = null;
+          }
+        }
         for (const n of m.addedNodes) scan(n);
       }
     }
