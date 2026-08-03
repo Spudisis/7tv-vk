@@ -129,6 +129,16 @@ object SettingsUi {
             ),
         )
 
+        // 7tv.io и cdn.7tv.app в РФ часто режет провайдер — без этой строчки
+        // пустой пикер выглядит как поломка модуля, а не как блокировка.
+        root.addView(
+            note(
+                ctx,
+                "Не грузятся наборы или эмоуты? 7tv.io бывает недоступен без VPN — " +
+                    "включи его и нажми «Обновить наборы».",
+            ),
+        )
+
         // Версия модуля — по ней видно, доехало ли обновление через установщик.
         root.addView(note(ctx, "VK7TV модуль ${BuildConfig.VERSION_NAME}"))
 
@@ -223,7 +233,7 @@ object SettingsUi {
             val msg = try {
                 work()
             } catch (t: Throwable) {
-                t.message ?: t.toString()
+                L.human(t)
             }
             main.post { toast(ctx, msg) }
         }, "vk7tv-settings").apply { isDaemon = true }.start()

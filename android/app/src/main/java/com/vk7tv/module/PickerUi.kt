@@ -342,7 +342,7 @@ object PickerUi {
                 Boot.reload(ctx)
                 "Набор ${h.ref.name} подключён"
             } catch (t: Throwable) {
-                t.message ?: t.toString()
+                L.human(t)
             }
             main.post {
                 toast(ctx, msg)

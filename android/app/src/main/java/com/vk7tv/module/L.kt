@@ -1,6 +1,7 @@
 package com.vk7tv.module
 
 import de.robv.android.xposed.XposedBridge
+import java.io.IOException
 
 // Логи видно в LSPosed → Журнал. Наружу из хуков не должно вылетать
 // ни одного исключения: мы живём в чужом процессе, и неперехваченная
@@ -32,4 +33,19 @@ internal object L {
             e("сбой в $what", t)
             null
         }
+
+    /**
+     * Ошибка → текст для пользователя. Сетевой сбой (таймаут, обрыв, хост не
+     * резолвится) в РФ почти всегда значит, что 7tv.io режет провайдер, —
+     * подсказываем про VPN. Остальное отдаём как есть: там уже человеческий
+     * текст («Стример не найден» и т.п.).
+     */
+    fun human(t: Throwable): String {
+        var e: Throwable? = t
+        while (e != null) {
+            if (e is IOException) return "Не удаётся связаться с 7tv.io — похоже, без VPN он недоступен"
+            e = e.cause
+        }
+        return t.message ?: t.toString()
+    }
 }
