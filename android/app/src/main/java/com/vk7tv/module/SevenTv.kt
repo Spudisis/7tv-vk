@@ -7,8 +7,9 @@ import org.json.JSONObject
  * Резолв набора по ссылке, ID или нику стримера — портировано из background.js
  * расширения, чтобы наборы добавлялись одинаково и там, и здесь.
  *
- * Ник резолвится в Twitch ID через открытый api.ivr.fi, запасной путь —
- * поиск в GQL самого 7TV.
+ * Ник резолвится сначала через GQL самого 7TV — его API надёжнее. Запасной
+ * путь — Twitch ID через сторонний api.ivr.fi: он бывает медленным или лежит,
+ * поэтому не на критическом пути.
  */
 object SevenTv {
 
@@ -34,9 +35,10 @@ object SevenTv {
 
     private fun byLogin(login: String): SetRef =
         try {
-            viaIvr(login)
-        } catch (t: Throwable) {
+            // 7TV-первым: его собственный API надёжнее стороннего ivr
             viaGql(login)
+        } catch (t: Throwable) {
+            viaIvr(login)
         }
 
     private fun viaIvr(login: String): SetRef {
@@ -66,7 +68,9 @@ object SevenTv {
         var userId: String? = null
         for (i in 0 until users.length()) {
             val u = users.optJSONObject(i) ?: continue
-            if (u.optString("username") == login) {
+            // регистр не сверяем: у ника на 7TV бывает свой (Bratishkinoff),
+            // а мы ищем по lowercase — иначе первичный путь мимо цели
+            if (u.optString("username").equals(login, ignoreCase = true)) {
                 userId = u.optString("id")
                 break
             }
