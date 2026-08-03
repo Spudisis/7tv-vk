@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string-array name="xposed_scope">
+        <!-- ВКонтакте -->
+        <item>com.vkontakte.android</item>
+        <!-- VK Мессенджер -->
+        <item>com.vk.im</item>
+    </string-array>
+</resources>

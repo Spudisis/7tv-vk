@@ -1,0 +1,178 @@
+package com.vk7tv.module
+
+import org.json.JSONObject
+import java.io.File
+import java.net.HttpURLConnection
+import java.net.URL
+
+class Emote(val name: String, val url: String, val zeroWidth: Boolean)
+
+class Group(val title: String, val emotes: List<Emote>)
+
+/**
+ * Реестр «имя эмоута -> картинка». Собирается ровно по тем же правилам,
+ * что и в расширении (content.js), иначе ты с телефона и друг с десктопа
+ * увидели бы разные картинки под одним словом:
+ *
+ *  - глобальный набор и «свои» эмоуты получают голое имя всегда;
+ *  - у эмоута из набора всегда есть имя с постфиксом (ok_bratishkinoff);
+ *  - голое имя достаётся набору, только если такой код есть ровно
+ *    в одном подключённом наборе.
+ */
+object Emotes {
+
+    private const val API = "https://7tv.io/v3/emote-sets/"
+    private const val TTL_MS = 30 * 60 * 1000L
+
+    private val map = HashMap<String, Emote>()
+
+    // дешёвый префильтр: до подстроки и хеш-лукапа отсекаем слова,
+    // которые эмоутом быть не могут. setText зовётся часто, экономим.
+    private var minLen = Int.MAX_VALUE
+    private var maxLen = 0
+    private val firstAscii = BooleanArray(128)
+    private var firstNonAscii = false
+
+    @Volatile
+    var ready = false
+        private set
+
+    @Volatile
+    var groups: List<Group> = emptyList()
+        private set
+
+    fun get(name: String): Emote? = map[name]
+
+    fun size(): Int = map.size
+
+    /** Может ли этот кусок текста вообще быть именем эмоута. */
+    fun mayBe(text: CharSequence, start: Int, end: Int): Boolean {
+        val len = end - start
+        if (len < minLen || len > maxLen) return false
+        val c = text[start]
+        return if (c.code < 128) firstAscii[c.code] else firstNonAscii
+    }
+
+    /** Тянет наборы (сначала из дискового кэша, потом из сети). Только не на UI-потоке. */
+    fun load(cacheDir: File) {
+        val fresh = LinkedHashMap<String, Emote>()
+        val builtGroups = ArrayList<Group>()
+
+        if (Config.useGlobal) {
+            val g = fetchSet(cacheDir, "global")
+            if (g != null) {
+                for (e in g.emotes) fresh[e.name] = e
+                builtGroups.add(Group("Глобальные 7TV", g.emotes))
+            }
+        }
+
+        // голое имя набору достаётся только при отсутствии коллизий
+        val bare = HashMap<String, Emote>()
+        val bareCount = HashMap<String, Int>()
+
+        for (ref in Config.sets) {
+            val s = fetchSet(cacheDir, ref.id) ?: continue
+            val slug = ref.slug.ifEmpty { s.slug }
+            val forPicker = ArrayList<Emote>(s.emotes.size)
+            for (e in s.emotes) {
+                if (slug.isNotEmpty()) {
+                    val full = "${e.name}_$slug"
+                    fresh[full] = Emote(full, e.url, e.zeroWidth)
+                    forPicker.add(Emote(full, e.url, e.zeroWidth))
+                } else {
+                    forPicker.add(e)
+                }
+                bareCount[e.name] = (bareCount[e.name] ?: 0) + 1
+                bare[e.name] = e
+            }
+            builtGroups.add(Group(ref.name.ifEmpty { s.name }, forPicker))
+        }
+
+        for ((name, count) in bareCount) {
+            if (count == 1 && !fresh.containsKey(name)) {
+                val e = bare[name] ?: continue
+                fresh[name] = e
+            }
+        }
+
+        if (Config.custom.isNotEmpty()) {
+            val own = ArrayList<Emote>()
+            for ((name, url) in Config.custom) {
+                val e = Emote(name, url, false)
+                fresh[name] = e
+                own.add(e)
+            }
+            builtGroups.add(Group("Свои эмоуты", own))
+        }
+
+        synchronized(map) {
+            map.clear()
+            map.putAll(fresh)
+            minLen = Int.MAX_VALUE
+            maxLen = 0
+            java.util.Arrays.fill(firstAscii, false)
+            firstNonAscii = false
+            for (name in map.keys) {
+                if (name.isEmpty()) continue
+                if (name.length < minLen) minLen = name.length
+                if (name.length > maxLen) maxLen = name.length
+                val c = name[0]
+                if (c.code < 128) firstAscii[c.code] = true else firstNonAscii = true
+            }
+            if (map.isEmpty()) minLen = Int.MAX_VALUE
+        }
+        groups = builtGroups
+        ready = map.isNotEmpty()
+        L.i("наборы загружены: эмоутов ${map.size}, групп ${builtGroups.size}")
+    }
+
+    private class Fetched(val name: String, val slug: String, val emotes: List<Emote>)
+
+    private fun fetchSet(cacheDir: File, id: String): Fetched? {
+        val file = File(cacheDir, "sets/$id.json")
+        val stale = !file.isFile || System.currentTimeMillis() - file.lastModified() > TTL_MS
+
+        if (stale) {
+            L.safe("загрузка набора $id") {
+                val body = httpGet(API + id)
+                file.parentFile?.mkdirs()
+                file.writeText(body)
+            }
+        }
+        if (!file.isFile) return null
+
+        return L.safe("разбор набора $id") {
+            val json = JSONObject(file.readText())
+            val arr = json.optJSONArray("emotes")
+            val list = ArrayList<Emote>(arr?.length() ?: 0)
+            for (i in 0 until (arr?.length() ?: 0)) {
+                val e = arr!!.optJSONObject(i) ?: continue
+                val name = e.optString("name")
+                val eid = e.optString("id")
+                if (name.isEmpty() || eid.isEmpty()) continue
+                // флаг 1 у эмоута в 7TV — ZERO_WIDTH: не занимает своё место,
+                // а накладывается поверх предыдущего
+                val zw = (e.optInt("flags") and 1) != 0
+                list.add(Emote(name, "https://cdn.7tv.app/emote/$eid/2x.webp", zw))
+            }
+            val owner = json.optJSONObject("owner")
+            Fetched(json.optString("name", id), slugify(owner?.optString("username") ?: ""), list)
+        }
+    }
+
+    private fun slugify(s: String): String =
+        s.trim().lowercase().replace(Regex("\\s+"), "-").replace(Regex("[^\\p{L}\\p{N}_-]"), "")
+
+    private fun httpGet(url: String): String {
+        val conn = URL(url).openConnection() as HttpURLConnection
+        conn.connectTimeout = 10_000
+        conn.readTimeout = 15_000
+        conn.setRequestProperty("User-Agent", "VK7TV-module")
+        try {
+            if (conn.responseCode != 200) throw RuntimeException("HTTP ${conn.responseCode} $url")
+            return conn.inputStream.bufferedReader().readText()
+        } finally {
+            conn.disconnect()
+        }
+    }
+}

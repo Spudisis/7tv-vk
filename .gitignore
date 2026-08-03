@@ -1,3 +1,9 @@
 .idea/
 .DS_Store
 dist/
+
+# сборка Android-модуля
+android/.gradle/
+android/build/
+android/app/build/
+android/local.properties

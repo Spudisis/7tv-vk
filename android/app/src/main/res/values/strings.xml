@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">VK7TV</string>
+    <string name="module_desc">Эмоуты 7TV в приложении ВКонтакте: слова-коды заменяются на картинки, в панели ввода появляется своя кнопка с пикером.</string>
+</resources>

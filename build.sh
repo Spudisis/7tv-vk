@@ -46,8 +46,9 @@ mkdir -p "$STAGE"
 # поэтому «vk7tv-0.8.1» рядом со старой папкой браузер посчитал бы другим
 # расширением и завёл бы ему пустое хранилище — наборы «пропали бы».
 # в архив идёт только то, что под гитом, — без .idea, .DS_Store и dist;
-# служебные файлы сборки и картинки для README расширению не нужны
-git ls-files -z | grep -zv -e '^build\.sh$' -e '^\.gitignore$' -e '^docs/' | while IFS= read -r -d '' f; do
+# служебные файлы сборки, картинки для README и модуль для Android
+# расширению не нужны — у модуля своя сборка в android/
+git ls-files -z | grep -zv -e '^build\.sh$' -e '^\.gitignore$' -e '^docs/' -e '^android/' | while IFS= read -r -d '' f; do
   mkdir -p "$STAGE/$(dirname "$f")"
   cp "$f" "$STAGE/$f"
 done
