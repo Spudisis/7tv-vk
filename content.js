@@ -100,6 +100,30 @@
     return img;
   }
 
+  // Служебные подписи ВК (время сообщения, дата поста, «был в сети…») —
+  // не текст пользователя, и менять их нельзя: в наборах попадаются эмоуты
+  // с именами вроде «20:00», и без этой проверки время у сообщения
+  // превращалось в картинку.
+  const SERVICE_TOKENS = new Set([
+    'time', 'times', 'timestamp', 'timestamps', 'date', 'dates', 'datetime',
+    'clock', 'ago', 'online', 'offline', 'seen', 'lastseen',
+  ]);
+  // ровно время и ничего больше: «20:00», «9:05», «20:00:30»
+  const TIME_ONLY = /^\d{1,2}:\d{2}(:\d{2})?$/;
+
+  function isServiceLabel(el) {
+    for (let n = el, depth = 0; n && n !== document.body && depth < 6; n = n.parentElement, depth++) {
+      if (n.tagName === 'TIME' || n.hasAttribute('datetime')) return true;
+      const raw = (n.getAttribute('class') || '') + ' ' + (n.getAttribute('data-testid') || '');
+      if (!raw.trim()) continue;
+      // «MessageTime» → message time, «im-mess--time» → im mess time,
+      // «_time_1a2b3» → time; при этом «update» словом «date» не считается
+      const tokens = raw.replace(/([a-z0-9])([A-Z])/g, '$1 $2').toLowerCase().split(/[^a-z]+/);
+      for (const t of tokens) if (SERVICE_TOKENS.has(t)) return true;
+    }
+    return false;
+  }
+
   function processTextNode(node) {
     if (!enabled || !testRegex) return;
     if (node._vk7tv) return; // уже отрендерен, текст занулён нами
@@ -111,6 +135,9 @@
     // не трогаем поле ввода, служебные теги и собственный UI расширения
     if (parent.isContentEditable) return;
     if (parent.closest('script,style,textarea,input,title,svg,noscript,template,.vk7tv-ac,.vk7tv-picker,.vk7tv-widget')) return;
+    // узел целиком — время: это подпись ВК, а не сообщение
+    if (TIME_ONLY.test(text.trim())) return;
+    if (isServiceLabel(parent)) return;
 
     // эмоут — это отдельное «слово», разделённое пробелами (как в 7TV);
     // zero-width эмоут после обычного накладывается поверх него,
