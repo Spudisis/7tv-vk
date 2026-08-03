@@ -48,8 +48,11 @@ object SevenTv {
             ?: throw RuntimeException("У «$login» нет активного набора 7TV")
         val id = es.optString("id")
         if (id.isEmpty()) throw RuntimeException("У «$login» нет активного набора 7TV")
-        // ник, по которому добавляли, — самый понятный постфикс
-        return bySetId(id, login)
+        // Имя набора уже пришло в этом же ответе — за ним не надо ходить
+        // отдельно. Раньше тут вызывался bySetId, и он выкачивал весь набор
+        // (у стримеров это сотни килобайт) только ради названия.
+        // Ник, по которому добавляли, — самый понятный постфикс.
+        return SetRef(id, login, es.optString("name").ifEmpty { login })
     }
 
     private fun viaGql(login: String): SetRef {

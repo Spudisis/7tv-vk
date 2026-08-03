@@ -152,12 +152,24 @@ async function removeSet(id) {
   await chrome.storage.sync.set({ sets: sets.filter((s) => s.id !== id) });
 }
 
-async function refreshAll() {
+// Наборы меняются редко — раз в месяц кто-то добавит эмоут, — а проверка
+// каждого при старте браузера это запрос к API на набор. Поэтому по умолчанию
+// берём кэш и ходим в сеть только за тем, чего в нём нет; полное обновление —
+// по кнопке «↻ Обновить наборы» в попапе.
+async function refreshAll(force = false) {
   const { sets } = await chrome.storage.sync.get({ sets: [] });
-  const { setEmotes: oldCache } = await chrome.storage.local.get({ setEmotes: {} });
+  const { setEmotes: oldCache, globalEmotes } = await chrome.storage.local.get({
+    setEmotes: {},
+    globalEmotes: null,
+  });
   const setEmotes = {};
   const nextSets = [];
   for (const s of sets) {
+    if (!force && oldCache[s.id]) {
+      setEmotes[s.id] = oldCache[s.id];
+      nextSets.push(s);
+      continue;
+    }
     try {
       const set = await fetchSet(s.id);
       setEmotes[set.id] = set.emotes;
@@ -175,11 +187,13 @@ async function refreshAll() {
     }
   }
   const localPatch = { setEmotes };
-  try {
-    const g = await fetchSet('global');
-    if (Object.keys(g.emotes).length) localPatch.globalEmotes = g.emotes;
-  } catch (e) {
-    // глобальный набор есть в default-emotes.js, без обновления не страшно
+  if (force || !globalEmotes || !Object.keys(globalEmotes).length) {
+    try {
+      const g = await fetchSet('global');
+      if (Object.keys(g.emotes).length) localPatch.globalEmotes = g.emotes;
+    } catch (e) {
+      // глобальный набор есть в default-emotes.js, без обновления не страшно
+    }
   }
   await chrome.storage.local.set(localPatch);
   await chrome.storage.sync.set({ sets: nextSets });
@@ -269,7 +283,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     return true;
   }
   if (msg.type === 'refresh-sets') {
-    reply(refreshAll());
+    reply(refreshAll(!!msg.force));
     return true;
   }
   if (msg.type === 'probe-set') {
@@ -283,14 +297,9 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
 });
 
 chrome.runtime.onInstalled.addListener(() => {
-  chrome.alarms.create('refresh-sets', { periodInMinutes: 30 });
   seedDefaultSet().then(() => refreshAll().catch(() => {}));
 });
 
 chrome.runtime.onStartup.addListener(() => {
   seedDefaultSet().then(() => refreshAll().catch(() => {}));
-});
-
-chrome.alarms.onAlarm.addListener((a) => {
-  if (a.name === 'refresh-sets') refreshAll().catch(() => {});
 });

@@ -145,10 +145,13 @@ object Boot {
         if (ok == true) Config.markSeeded()
     }
 
-    /** Перечитать наборы после правки настроек. Только не на UI-потоке. */
-    fun reload(ctx: Context) {
+    /**
+     * Перечитать наборы. Только не на UI-потоке.
+     * force — выкачать заново даже то, что уже лежит в кэше (кнопка в настройках).
+     */
+    fun reload(ctx: Context, force: Boolean = false) {
         val cache = File(ctx.applicationContext.cacheDir, "vk7tv").apply { mkdirs() }
-        L.safe("перезагрузка наборов") { Emotes.load(cache) }
+        L.safe("перезагрузка наборов") { Emotes.load(cache, force) }
         Replacer.rerenderAll()
         Inject.markReady()
     }

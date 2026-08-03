@@ -113,8 +113,9 @@ object SettingsUi {
 
         root.addView(
             button(ctx, "Обновить наборы с 7tv.io") {
+                // единственное место, где кэш выкидывается и всё качается заново
                 busy(ctx, "Обновляем…") {
-                    Boot.reload(ctx)
+                    Boot.reload(ctx, force = true)
                     "Готово: эмоутов ${Emotes.size()}"
                 }
             },

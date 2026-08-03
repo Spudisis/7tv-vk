@@ -20,7 +20,6 @@ class Group(val title: String, val emotes: List<Emote>)
 object Emotes {
 
     private const val API = "https://7tv.io/v3/emote-sets/"
-    private const val TTL_MS = 30 * 60 * 1000L
 
     private val map = HashMap<String, Emote>()
 
@@ -51,13 +50,20 @@ object Emotes {
         return if (c.code < 128) firstAscii[c.code] else firstNonAscii
     }
 
-    /** Тянет наборы (сначала из дискового кэша, потом из сети). Только не на UI-потоке. */
-    fun load(cacheDir: File) {
+    /**
+     * Тянет наборы. Только не на UI-потоке.
+     *
+     * По умолчанию берёт всё, что уже лежит на диске, и ходит в сеть только
+     * за тем, чего нет: наборы меняются редко, а проверка каждого при запуске
+     * приложения — это запрос к API на набор. Полное обновление — по кнопке
+     * «Обновить наборы» в настройках.
+     */
+    fun load(cacheDir: File, force: Boolean = false) {
         val fresh = LinkedHashMap<String, Emote>()
         val builtGroups = ArrayList<Group>()
 
         if (Config.useGlobal) {
-            val g = fetchSet(cacheDir, "global")
+            val g = fetchSet(cacheDir, "global", force)
             if (g != null) {
                 for (e in g.emotes) fresh[e.name] = e
                 builtGroups.add(Group("Глобальные 7TV", g.emotes))
@@ -69,7 +75,7 @@ object Emotes {
         val bareCount = HashMap<String, Int>()
 
         for (ref in Config.sets) {
-            val s = fetchSet(cacheDir, ref.id) ?: continue
+            val s = fetchSet(cacheDir, ref.id, force) ?: continue
             val slug = ref.slug.ifEmpty { s.slug }
             val forPicker = ArrayList<Emote>(s.emotes.size)
             for (e in s.emotes) {
@@ -130,11 +136,10 @@ object Emotes {
 
     private class Fetched(val name: String, val slug: String, val emotes: List<Emote>)
 
-    private fun fetchSet(cacheDir: File, id: String): Fetched? {
+    private fun fetchSet(cacheDir: File, id: String, force: Boolean = false): Fetched? {
         val file = File(cacheDir, "sets/$id.json")
-        val stale = !file.isFile || System.currentTimeMillis() - file.lastModified() > TTL_MS
 
-        if (stale) {
+        if (force || !file.isFile) {
             L.safe("загрузка набора $id") {
                 val body = Net.get(API + id)
                 file.parentFile?.mkdirs()

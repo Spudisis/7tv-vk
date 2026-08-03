@@ -35,7 +35,9 @@ object Suggest {
     // превращаться в тысячу запросов к API
     private const val MAX_PROBES = 40
 
-    private val io = Executors.newSingleThreadExecutor { r ->
+    // три потока: в чате обычно несколько незнакомых слов, и в одну очередь
+    // они складывались в заметное ожидание
+    private val io = Executors.newFixedThreadPool(3) { r ->
         Thread(r, "vk7tv-suggest").apply { isDaemon = true; priority = Thread.MIN_PRIORITY }
     }
 
@@ -118,6 +120,8 @@ object Suggest {
             // следующий разделитель, вдруг граница проходит не здесь
             if (slug in connected) continue
             val ref = probeSet(slug) ?: continue
+            // Набор кладётся в тот же дисковый кэш, из которого потом читает
+            // Emotes.load, — поэтому подключение по кнопке уже не качает ничего.
             val emotes = Emotes.emotesOf(cacheDir, ref.id) ?: continue
             // имя сверяем с учётом регистра: подключим набор — эмоут должен
             // отрендериться ровно тем словом, которое пришло в сообщении

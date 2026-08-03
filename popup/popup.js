@@ -179,7 +179,8 @@ $('#refreshSets').addEventListener('click', async () => {
   const status = $('#setStatus');
   status.classList.remove('error');
   status.textContent = 'Обновляю…';
-  await sendMessage({ type: 'refresh-sets' });
+  // по кнопке — принудительно, иначе сеть не трогается и кэш остаётся как есть
+  await sendMessage({ type: 'refresh-sets', force: true });
   status.textContent = 'Наборы обновлены';
   render();
 });
