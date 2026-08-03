@@ -210,7 +210,7 @@
     favGrid.className = 'vk7tv-picker-grid';
     favEmpty = document.createElement('div');
     favEmpty.className = 'vk7tv-picker-fav-empty';
-    favEmpty.textContent = 'Наведи на эмоут и нажми ☆ — он закрепится здесь';
+    favEmpty.textContent = 'Наведи на эмоут и нажми ★ — он закрепится здесь';
     favBox.append(favTitle, favGrid, favEmpty);
 
     body = document.createElement('div');
@@ -259,6 +259,7 @@
     const star = document.createElement('button');
     star.className = 'vk7tv-fav';
     star.type = 'button';
+    star.appendChild(starIcon());
     setStar(star, favSet.has(name));
     star.addEventListener('pointerdown', (e) => e.preventDefault()); // не забираем фокус у поля ВК
     star.addEventListener('click', (e) => {
@@ -270,8 +271,27 @@
     return cell;
   }
 
+  // залитая звезда картинкой, а не глифом: у ★ ink сидит выше середины строки
+  // и в кружке 15px это заметно, а тут центр — просто геометрия viewBox
+  const STAR_PATH =
+    'M12.00 2.95 L14.70 9.23 L21.51 9.86 L16.37 14.38 L17.88 21.05 ' +
+    'L12.00 17.55 L6.12 21.05 L7.63 14.38 L2.49 9.86 L9.30 9.23 Z';
+
+  function starIcon() {
+    const NS = 'http://www.w3.org/2000/svg';
+    const svg = document.createElementNS(NS, 'svg');
+    svg.setAttribute('viewBox', '0 0 24 24');
+    svg.setAttribute('width', '10');
+    svg.setAttribute('height', '10');
+    const path = document.createElementNS(NS, 'path');
+    path.setAttribute('fill', 'currentColor');
+    path.setAttribute('d', STAR_PATH);
+    svg.appendChild(path);
+    return svg;
+  }
+
+  // состояние показываем цветом — звезда всегда залита
   function setStar(btn, on) {
-    btn.textContent = on ? '★' : '☆';
     btn.classList.toggle('vk7tv-fav-on', on);
     btn.title = on ? 'Убрать из избранного' : 'В избранное';
   }
