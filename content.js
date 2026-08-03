@@ -76,9 +76,9 @@
 
     const parent = node.parentElement;
     if (!parent) return;
-    // не трогаем поле ввода и служебные теги
+    // не трогаем поле ввода, служебные теги и собственный UI расширения
     if (parent.isContentEditable) return;
-    if (parent.closest('script,style,textarea,input,title')) return;
+    if (parent.closest('script,style,textarea,input,title,.vk7tv-ac,.vk7tv-picker,.vk7tv-widget')) return;
 
     // эмоут — это отдельное «слово», разделённое пробелами (как в 7TV)
     const parts = text.split(/(\s+)/);

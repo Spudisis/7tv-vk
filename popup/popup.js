@@ -19,6 +19,7 @@ async function getState() {
   const sync = await chrome.storage.sync.get({
     enabled: true,
     useGlobal: true,
+    widget: true,
     sets: [],
     customEmotes: {},
   });
@@ -49,6 +50,7 @@ async function render() {
 
   $('#enabled').checked = sync.enabled;
   $('#useGlobal').checked = sync.useGlobal;
+  $('#widgetOn').checked = sync.widget;
   $('#globalCount').textContent = `(${Object.keys(DEFAULT_EMOTES).length})`;
 
   const setList = $('#setList');
@@ -131,6 +133,10 @@ $('#enabled').addEventListener('change', (e) => {
 $('#useGlobal').addEventListener('change', async (e) => {
   await chrome.storage.sync.set({ useGlobal: e.target.checked });
   render();
+});
+
+$('#widgetOn').addEventListener('change', (e) => {
+  chrome.storage.sync.set({ widget: e.target.checked });
 });
 
 $('#addSet').addEventListener('click', async () => {

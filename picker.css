@@ -1,0 +1,135 @@
+.vk7tv-widget {
+  position: fixed;
+  z-index: 2147483000;
+  width: 46px;
+  height: 46px;
+  border-radius: 50%;
+  background: #1e1f24;
+  border: 1px solid #34363f;
+  color: #e4e6eb;
+  display: none;
+  align-items: center;
+  justify-content: center;
+  font: 700 12px -apple-system, "Segoe UI", Roboto, sans-serif;
+  letter-spacing: 0.5px;
+  cursor: grab;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.35);
+  user-select: none;
+  touch-action: none;
+}
+
+.vk7tv-widget:hover {
+  border-color: #4c8bf5;
+  color: #fff;
+}
+
+.vk7tv-widget:active {
+  cursor: grabbing;
+}
+
+.vk7tv-picker {
+  position: fixed;
+  z-index: 2147483000;
+  display: none;
+  flex-direction: column;
+  width: 340px;
+  height: 430px;
+  background: #1e1f24;
+  border: 1px solid #34363f;
+  border-radius: 12px;
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.5);
+  font: 13px -apple-system, "Segoe UI", Roboto, sans-serif;
+  color: #e4e6eb;
+  overflow: hidden;
+}
+
+.vk7tv-picker-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 12px;
+  font-weight: 700;
+  cursor: grab;
+  user-select: none;
+  touch-action: none;
+  border-bottom: 1px solid #26282f;
+}
+
+.vk7tv-picker-head:active {
+  cursor: grabbing;
+}
+
+.vk7tv-picker-close {
+  cursor: pointer;
+  color: #7a8090;
+  padding: 0 4px;
+}
+
+.vk7tv-picker-close:hover {
+  color: #ef6a6a;
+}
+
+.vk7tv-picker-search {
+  margin: 8px 10px;
+  padding: 7px 10px;
+  background: #23252c;
+  border: 1px solid #34363f;
+  border-radius: 8px;
+  color: #e4e6eb;
+  font-size: 13px;
+  outline: none;
+}
+
+.vk7tv-picker-search:focus {
+  border-color: #4c8bf5;
+}
+
+.vk7tv-picker-body {
+  flex: 1;
+  overflow-y: auto;
+  padding: 0 10px 8px;
+}
+
+.vk7tv-picker-group-title {
+  position: sticky;
+  top: 0;
+  background: #1e1f24;
+  padding: 8px 2px 4px;
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: #9aa0ab;
+}
+
+.vk7tv-picker-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px;
+}
+
+.vk7tv-picker-grid img {
+  height: 32px;
+  width: auto;
+  padding: 3px;
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.vk7tv-picker-grid img:hover {
+  background: #2c2e36;
+}
+
+.vk7tv-picker-foot {
+  padding: 8px 12px;
+  border-top: 1px solid #26282f;
+  font-size: 11px;
+  color: #7a8090;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.vk7tv-picker-foot.vk7tv-flash {
+  color: #4c8bf5;
+}
