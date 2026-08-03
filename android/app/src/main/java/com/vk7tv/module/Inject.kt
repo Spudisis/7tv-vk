@@ -1,5 +1,6 @@
 package com.vk7tv.module
 
+import android.content.res.ColorStateList
 import android.graphics.Color
 import android.graphics.drawable.GradientDrawable
 import android.view.Gravity
@@ -10,6 +11,7 @@ import android.widget.EditText
 import android.widget.FrameLayout
 import android.widget.ImageView
 import android.widget.LinearLayout
+import android.widget.ProgressBar
 import android.widget.TextView
 import de.robv.android.xposed.XC_MethodHook
 import de.robv.android.xposed.XposedHelpers
@@ -36,6 +38,9 @@ object Inject {
     @Volatile
     var attached = false
         private set
+
+    // живые кнопки — чтобы снять с них лоадер, когда наборы догрузятся
+    private val buttons = ArrayList<WeakReference<ViewGroup>>()
 
     fun input(): EditText? = lastInput.get()
 
@@ -111,7 +116,7 @@ object Inject {
     private fun dock(row: LinearLayout, input: EditText) {
         val ctx = row.context
         val size = dp(ctx, 30)
-        val btn = button(input)
+        val btn: View = button(input)
         val lp = LinearLayout.LayoutParams(size, size)
         lp.gravity = Gravity.CENTER_VERTICAL
         lp.leftMargin = dp(ctx, 2)
@@ -135,7 +140,7 @@ object Inject {
         val root = input.rootView.findViewById<ViewGroup>(android.R.id.content) ?: return
         val ctx = root.context
         val size = dp(ctx, 44)
-        val btn = button(input)
+        val btn: View = button(input)
         val lp = FrameLayout.LayoutParams(size, size)
         lp.gravity = Gravity.END or Gravity.BOTTOM
         lp.rightMargin = dp(ctx, 12)
@@ -147,31 +152,73 @@ object Inject {
         Diag.note("ряд иконок не опознан — кнопка плавающая")
     }
 
-    private fun button(input: EditText): TextView {
+    /**
+     * Кнопка «7TV». Пока наборы качаются, вместо подписи крутится индикатор:
+     * первый запуск тянет ~1000 эмоутов, и без него кнопка выглядит мёртвой.
+     */
+    private fun button(input: EditText): ViewGroup {
         val ctx = input.context
-        val btn = TextView(ctx)
-        btn.contentDescription = MARK
-        btn.text = "7TV"
-        btn.textSize = 9f
-        btn.setTextColor(Ui.TEXT)
-        btn.gravity = Gravity.CENTER
-        btn.typeface = android.graphics.Typeface.DEFAULT_BOLD
-        btn.background = GradientDrawable().apply {
+        val box = FrameLayout(ctx)
+        box.contentDescription = MARK
+        box.background = GradientDrawable().apply {
             shape = GradientDrawable.OVAL
             setColor(Ui.BG)
             setStroke(dp(ctx, 1), Ui.BORDER)
         }
-        btn.isClickable = true
-        btn.setOnClickListener {
-            L.safe("открытие пикера") { PickerUi.toggle(btn, lastInput.get() ?: input) }
+
+        val label = TextView(ctx).apply {
+            text = "7TV"
+            textSize = 9f
+            setTextColor(Ui.TEXT)
+            gravity = Gravity.CENTER
+            typeface = android.graphics.Typeface.DEFAULT_BOLD
+        }
+        box.addView(
+            label,
+            FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.MATCH_PARENT,
+            ),
+        )
+
+        val spin = ProgressBar(ctx, null, android.R.attr.progressBarStyleSmall).apply {
+            isIndeterminate = true
+            indeterminateTintList = ColorStateList.valueOf(Ui.ACCENT)
+        }
+        val slp = FrameLayout.LayoutParams(dp(ctx, 18), dp(ctx, 18))
+        slp.gravity = Gravity.CENTER
+        box.addView(spin, slp)
+
+        box.isClickable = true
+        box.setOnClickListener {
+            L.safe("открытие пикера") { PickerUi.toggle(box, lastInput.get() ?: input) }
         }
         // настроек отдельным приложением нет — конфиг лежит в хранилище ВК,
         // поэтому и правится отсюда же
-        btn.setOnLongClickListener {
-            L.safe("открытие настроек") { SettingsUi.show(btn) }
+        box.setOnLongClickListener {
+            L.safe("открытие настроек") { SettingsUi.show(box) }
             true
         }
-        return btn
+
+        synchronized(buttons) { buttons.add(WeakReference(box)) }
+        applyState(box)
+        return box
+    }
+
+    /** Наборы догрузились — гасим индикатор на всех живых кнопках. */
+    fun markReady() {
+        val list = synchronized(buttons) { ArrayList(buttons) }
+        for (ref in list) {
+            val box = ref.get() ?: continue
+            box.post { L.safe("состояние кнопки") { applyState(box) } }
+        }
+    }
+
+    private fun applyState(box: ViewGroup) {
+        if (box.childCount < 2) return
+        val ready = Emotes.ready
+        box.getChildAt(0).visibility = if (ready) View.VISIBLE else View.INVISIBLE
+        box.getChildAt(1).visibility = if (ready) View.GONE else View.VISIBLE
     }
 
     private fun makeDraggable(btn: View) {

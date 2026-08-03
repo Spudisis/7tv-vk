@@ -83,11 +83,16 @@ object Replacer {
             lastStack = stack
         }
 
+        // Отметку «ждём картинку» ставим ДО раннего выхода. Иначе, когда
+        // в сообщении не закэшировано вообще ничего, out остаётся null,
+        // мы уходим по return, и скачанная картинка потом никого не находит:
+        // эмоут остаётся текстом навсегда, пока вьюху не перерисуют извне.
+        if (missing) onImageWanted(tv)
+
         val result = out ?: return null
         // оригинал носим с собой: по нему перерисуемся, когда докачается картинка
         result.setSpan(Vk7tvMark(text), 0, result.length, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
         replaced++
-        if (missing) onImageWanted(tv)
         return result
     }
 

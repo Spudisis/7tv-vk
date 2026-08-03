@@ -42,10 +42,11 @@ object Config {
     var dockButton = true
         private set
 
-    // пока модуль не обкатан — по умолчанию включена: без неё непонятно,
-    // загрузился ли он вообще, а достать журнал с телефона отдельный квест
+    // выключена: своё дело она сделала, а тосты при каждом запуске мешают.
+    // Переключатель остался в настройках — пригодится, когда ВК что-нибудь
+    // сломает очередным обновлением
     @Volatile
-    var diag = true
+    var diag = false
         private set
 
     @Volatile
@@ -74,7 +75,7 @@ object Config {
         enabled = p.getBoolean(KEY_ENABLED, true)
         useGlobal = p.getBoolean(KEY_USE_GLOBAL, true)
         dockButton = p.getBoolean(KEY_DOCK, true)
-        diag = p.getBoolean(KEY_DIAG, true)
+        diag = p.getBoolean(KEY_DIAG, false)
         sets = parseSets(p.getString(KEY_SETS, "[]"))
         custom = parseCustom(p.getString(KEY_CUSTOM, "{}"))
         favorites = parseList(p.getString(KEY_FAVORITES, "[]"))
