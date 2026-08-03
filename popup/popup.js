@@ -27,6 +27,9 @@ async function getState() {
   return { sync, local };
 }
 
+// значение эмоута: {u: url, z: zero-width}; старый кэш и «свои» — просто строка
+const normEmote = (v) => (typeof v === 'string' ? { u: v, z: 0 } : v);
+
 function activeEmotes({ sync, local }) {
   const map = new Map();
   if (sync.useGlobal) {
@@ -34,13 +37,13 @@ function activeEmotes({ sync, local }) {
       local.globalEmotes && Object.keys(local.globalEmotes).length
         ? local.globalEmotes
         : DEFAULT_EMOTES;
-    for (const [n, u] of Object.entries(g)) map.set(n, u);
+    for (const [n, v] of Object.entries(g)) map.set(n, normEmote(v));
   }
   for (const s of sync.sets) {
     const m = local.setEmotes[s.id];
-    if (m) for (const [n, u] of Object.entries(m)) map.set(n, u);
+    if (m) for (const [n, v] of Object.entries(m)) map.set(n, normEmote(v));
   }
-  for (const [n, u] of Object.entries(sync.customEmotes)) map.set(n, u);
+  for (const [n, v] of Object.entries(sync.customEmotes)) map.set(n, normEmote(v));
   return map;
 }
 
@@ -109,10 +112,10 @@ function renderGrid(map) {
   const grid = $('#grid');
   grid.innerHTML = '';
   let shown = 0;
-  for (const [name, url] of map) {
+  for (const [name, v] of map) {
     if (query && !name.toLowerCase().includes(query)) continue;
     const img = document.createElement('img');
-    img.src = url;
+    img.src = v.u;
     img.alt = name;
     img.title = name;
     img.loading = 'lazy';

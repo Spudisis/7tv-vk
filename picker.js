@@ -159,9 +159,9 @@
       h.textContent = g.title;
       const grid = document.createElement('div');
       grid.className = 'vk7tv-picker-grid';
-      for (const [name, url] of Object.entries(g.emotes)) {
+      for (const [name, v] of Object.entries(g.emotes)) {
         const img = document.createElement('img');
-        img.src = url;
+        img.src = typeof v === 'string' ? v : v.u;
         img.alt = name;
         img.title = name;
         img.loading = 'lazy';

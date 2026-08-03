@@ -10,11 +10,17 @@ const ULID_RE = /[0-9A-HJKMNP-TV-Z]{26}/i;
 
 const imgCache = new Map();
 
+// Формат значения: {u: url картинки, z: 1 если zero-width}.
+// Флаг 1 у активного эмоута в 7TV — ZERO_WIDTH: эмоут не занимает
+// место, а накладывается поверх предыдущего.
 function emoteMapFromSet(setJson) {
   const map = {};
   for (const e of setJson.emotes || []) {
     if (e && e.name && e.id) {
-      map[e.name] = `https://cdn.7tv.app/emote/${e.id}/2x.webp`;
+      map[e.name] = {
+        u: `https://cdn.7tv.app/emote/${e.id}/2x.webp`,
+        z: (e.flags || 0) & 1 ? 1 : 0,
+      };
     }
   }
   return map;

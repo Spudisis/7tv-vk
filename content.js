@@ -14,6 +14,11 @@
     return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
   }
 
+  // старый кэш и «свои» эмоуты хранят просто строку-URL
+  function normEmote(v) {
+    return typeof v === 'string' ? { u: v, z: 0 } : v;
+  }
+
   async function loadState() {
     const sync = await chrome.storage.sync.get({
       enabled: true,
@@ -30,13 +35,13 @@
         local.globalEmotes && Object.keys(local.globalEmotes).length
           ? local.globalEmotes
           : DEFAULT_EMOTES;
-      for (const [n, u] of Object.entries(g)) emoteMap.set(n, u);
+      for (const [n, v] of Object.entries(g)) emoteMap.set(n, normEmote(v));
     }
     for (const s of sync.sets) {
       const m = local.setEmotes[s.id];
-      if (m) for (const [n, u] of Object.entries(m)) emoteMap.set(n, u);
+      if (m) for (const [n, v] of Object.entries(m)) emoteMap.set(n, normEmote(v));
     }
-    for (const [n, u] of Object.entries(sync.customEmotes)) emoteMap.set(n, u);
+    for (const [n, v] of Object.entries(sync.customEmotes)) emoteMap.set(n, normEmote(v));
 
     testRegex = emoteMap.size
       ? new RegExp([...emoteMap.keys()].map(escapeRegex).join('|'))
@@ -46,9 +51,9 @@
     window.__vk7tv = { emoteMap, enabled };
   }
 
-  function makeEmote(name, url) {
+  function makeEmote(name, url, zeroWidth) {
     const img = document.createElement('img');
-    img.className = EMOTE_CLASS;
+    img.className = EMOTE_CLASS + (zeroWidth ? ' vk7tv-zw' : '');
     img.alt = name;
     img.title = name;
     img.draggable = false;
@@ -80,19 +85,43 @@
     if (parent.isContentEditable) return;
     if (parent.closest('script,style,textarea,input,title,.vk7tv-ac,.vk7tv-picker,.vk7tv-widget')) return;
 
-    // эмоут — это отдельное «слово», разделённое пробелами (как в 7TV)
+    // эмоут — это отдельное «слово», разделённое пробелами (как в 7TV);
+    // zero-width эмоут после обычного накладывается поверх него,
+    // пробел между ними при рендере съедается
     const parts = text.split(/(\s+)/);
     let changed = false;
     const frag = document.createDocumentFragment();
+    let lastStack = null;
+    let pendingWs = '';
     for (const part of parts) {
-      const url = emoteMap.get(part);
-      if (url) {
-        frag.appendChild(makeEmote(part, url));
-        changed = true;
-      } else if (part) {
-        frag.appendChild(document.createTextNode(part));
+      if (!part) continue;
+      if (/^\s+$/.test(part)) {
+        pendingWs += part;
+        continue;
       }
+      const em = emoteMap.get(part);
+      if (!em) {
+        if (pendingWs) frag.appendChild(document.createTextNode(pendingWs));
+        pendingWs = '';
+        frag.appendChild(document.createTextNode(part));
+        lastStack = null;
+        continue;
+      }
+      if (em.z && lastStack) {
+        lastStack.appendChild(makeEmote(part, em.u, true));
+        pendingWs = '';
+        changed = true;
+        continue;
+      }
+      if (pendingWs) frag.appendChild(document.createTextNode(pendingWs));
+      pendingWs = '';
+      lastStack = document.createElement('span');
+      lastStack.className = 'vk7tv-stack';
+      lastStack.appendChild(makeEmote(part, em.u, false));
+      frag.appendChild(lastStack);
+      changed = true;
     }
+    if (pendingWs) frag.appendChild(document.createTextNode(pendingWs));
     if (changed) node.replaceWith(frag);
   }
 
@@ -112,6 +141,10 @@
   }
 
   function unrender() {
+    for (const stack of document.querySelectorAll('span.vk7tv-stack')) {
+      const names = [...stack.querySelectorAll('img')].map((i) => i.alt);
+      stack.replaceWith(document.createTextNode(names.join(' ')));
+    }
     for (const img of document.querySelectorAll('img.' + EMOTE_CLASS)) {
       img.replaceWith(document.createTextNode(img.alt));
     }

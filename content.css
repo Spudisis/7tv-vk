@@ -8,9 +8,24 @@ img.vk7tv-emote {
   transition: transform 0.12s ease;
 }
 
-img.vk7tv-emote:hover {
+img.vk7tv-emote:not(.vk7tv-zw):hover {
   transform: scale(1.6);
   z-index: 100;
+}
+
+.vk7tv-stack {
+  position: relative;
+  display: inline-block;
+}
+
+/* zero-width: не занимает места, лежит поверх предыдущего эмоута */
+img.vk7tv-emote.vk7tv-zw {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  margin: 0;
+  pointer-events: none;
 }
 
 .vk7tv-ac {

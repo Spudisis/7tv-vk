@@ -107,8 +107,8 @@
     const lower = word.toLowerCase();
 
     const matches = [];
-    for (const [name, url] of st.emoteMap) {
-      if (name.toLowerCase().startsWith(lower)) matches.push({ name, url });
+    for (const [name, v] of st.emoteMap) {
+      if (name.toLowerCase().startsWith(lower)) matches.push({ name, url: v.u });
     }
     if (!matches.length) return hide();
 
