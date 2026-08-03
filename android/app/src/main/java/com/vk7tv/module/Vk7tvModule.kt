@@ -14,7 +14,11 @@ import java.io.File
 class Vk7tvModule : IXposedHookLoadPackage {
 
     override fun handleLoadPackage(lpp: XC_LoadPackage.LoadPackageParam) {
-        if (lpp.packageName !in TARGETS) return
+        // Белого списка пакетов тут нет намеренно. Приложение уже выбрано
+        // человеком — в LSPatch при патче, в LSPosed в области действия.
+        // Фильтровать второй раз означало бы ломать сторонние клиенты ВК
+        // (Sova, Kate и прочие), у которых свои имена пакетов.
+        if (lpp.packageName in SKIP) return
         L.i("зацепились за ${lpp.packageName}")
 
         // Каждый хук в своём try/catch. Раньше они стояли под одним, и падение
@@ -93,10 +97,8 @@ class Vk7tvModule : IXposedHookLoadPackage {
     }
 
     companion object {
-        val TARGETS = setOf(
-            "com.vkontakte.android", // ВКонтакте
-            "com.vk.im",             // VK Мессенджер
-        )
+        // системный процесс и мы сами — единственное, куда лезть не надо
+        val SKIP = setOf("android", BuildConfig.APPLICATION_ID)
     }
 }
 
@@ -113,7 +115,7 @@ object Boot {
             started = true
             Config.init(app)
             Diag.attach(app)
-            Diag.note("модуль загружен, версия ${BuildConfig.VERSION_NAME}")
+            Diag.note("модуль загружен ${BuildConfig.VERSION_NAME} в ${app.packageName}")
             val cache = File(app.cacheDir, "vk7tv").apply { mkdirs() }
             EmoteCache.init(cache)
             Thread({
