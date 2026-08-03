@@ -40,16 +40,39 @@
     }
   });
 
+  // если пользователь ещё не кликал в поле ввода — ищем видимый
+  // contenteditable на странице; инпут сообщения обычно ниже всех
+  function findMessageInput() {
+    let best = null;
+    let bestBottom = -1;
+    for (const el of document.querySelectorAll('[contenteditable="true"]')) {
+      if (isOurs(el)) continue;
+      const r = el.getBoundingClientRect();
+      if (!r.width || !r.height) continue;
+      if (r.top >= window.innerHeight || r.bottom <= 0) continue;
+      if (r.bottom > bestBottom) {
+        best = el;
+        bestBottom = r.bottom;
+      }
+    }
+    return best;
+  }
+
   function insertEmote(name) {
-    if (lastInput && lastInput.isConnected) {
-      lastInput.focus();
+    let target = lastInput && lastInput.isConnected ? lastInput : null;
+    if (!target) {
+      target = findMessageInput();
+      lastRange = null;
+    }
+    if (target) {
+      target.focus();
       const sel = window.getSelection();
       sel.removeAllRanges();
-      if (lastRange && lastInput.contains(lastRange.startContainer)) {
+      if (lastRange && target.contains(lastRange.startContainer)) {
         sel.addRange(lastRange);
       } else {
         const r = document.createRange();
-        r.selectNodeContents(lastInput);
+        r.selectNodeContents(target);
         r.collapse(false);
         sel.addRange(r);
       }
@@ -57,7 +80,7 @@
       flash(`${name} — вставлено`);
     } else {
       navigator.clipboard.writeText(name);
-      flash(`${name} — скопировано, поле ввода не открыто`);
+      flash(`${name} — скопировано, поле ввода не найдено`);
     }
   }
 
@@ -154,6 +177,7 @@
 
     makeDraggable(widget, true);
     makeDraggable(head, false);
+    sizeObserver.observe(picker);
   }
 
   function renderBody() {
@@ -167,15 +191,26 @@
       const grid = document.createElement('div');
       grid.className = 'vk7tv-picker-grid';
       for (const [name, v] of Object.entries(g.emotes)) {
+        const url = typeof v === 'string' ? v : v.u;
         const img = document.createElement('img');
-        img.src = typeof v === 'string' ? v : v.u;
+        img.src = url;
         img.alt = name;
         img.title = name;
         img.loading = 'lazy';
         img.decoding = 'async';
         img.draggable = false;
         img.addEventListener('click', () => insertEmote(name));
-        img.addEventListener('error', () => img.remove());
+        // CSP ВК режет cdn.7tv.app — перезагружаем через фоновый скрипт (blob:)
+        img.addEventListener('error', () => {
+          if (img.dataset.fb) return img.remove();
+          img.dataset.fb = '1';
+          const st = window.__vk7tv;
+          if (!st || !st.resolveEmote) return img.remove();
+          st.resolveEmote(url).then((u) => {
+            if (u) img.src = u;
+            else img.remove();
+          });
+        });
         grid.appendChild(img);
       }
       sec.append(h, grid);
@@ -272,7 +307,7 @@
   }
 
   let sizeTimer = null;
-  new ResizeObserver(() => {
+  const sizeObserver = new ResizeObserver(() => {
     if (!open) return;
     clearTimeout(sizeTimer);
     sizeTimer = setTimeout(() => {
@@ -281,7 +316,7 @@
       chrome.storage.local.set({ pickerSize: { w: Math.round(r.width), h: Math.round(r.height) } });
       clampPicker();
     }, 250);
-  }).observe(picker);
+  });
 
   // --- реакция на настройки и ресайз ---
 

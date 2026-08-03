@@ -44,7 +44,17 @@
       const img = document.createElement('img');
       img.src = it.url;
       img.alt = '';
-      img.addEventListener('error', () => img.remove());
+      // CSP ВК режет cdn.7tv.app — перезагружаем через фоновый скрипт (blob:)
+      img.addEventListener('error', () => {
+        if (img.dataset.fb) return img.remove();
+        img.dataset.fb = '1';
+        const st = state();
+        if (!st || !st.resolveEmote) return img.remove();
+        st.resolveEmote(it.url).then((u) => {
+          if (u) img.src = u;
+          else img.remove();
+        });
+      });
       const span = document.createElement('span');
       span.textContent = it.name;
       row.append(img, span);

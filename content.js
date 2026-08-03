@@ -19,6 +19,32 @@
     return typeof v === 'string' ? { u: v, z: 0 } : v;
   }
 
+  // CSP ВК не пускает картинки с cdn.7tv.app, но разрешает blob: и data:.
+  // Фоновый скрипт качает картинку, здесь она превращается в blob:-URL;
+  // кэш по URL — повторные эмоуты в чате не ходят в сеть.
+  const blobCache = new Map(); // url -> Promise<string|null>
+  function resolveEmote(url) {
+    if (blobCache.has(url)) return blobCache.get(url);
+    const p = new Promise((resolve) => {
+      chrome.runtime.sendMessage({ type: 'fetch-emote', url }, (resp) => {
+        if (!resp || !resp.dataUrl) return resolve(null);
+        try {
+          const comma = resp.dataUrl.indexOf(',');
+          const meta = resp.dataUrl.slice(0, comma);
+          const mime = meta.slice(5, meta.indexOf(';'));
+          const bin = atob(resp.dataUrl.slice(comma + 1));
+          const bytes = new Uint8Array(bin.length);
+          for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+          resolve(URL.createObjectURL(new Blob([bytes], { type: mime })));
+        } catch (e) {
+          resolve(resp.dataUrl);
+        }
+      });
+    });
+    blobCache.set(url, p);
+    return p;
+  }
+
   async function loadState() {
     const sync = await chrome.storage.sync.get({
       enabled: true,
@@ -47,8 +73,8 @@
       ? new RegExp([...emoteMap.keys()].map(escapeRegex).join('|'))
       : null;
 
-    // общее состояние для autocomplete.js (один isolated world)
-    window.__vk7tv = { emoteMap, enabled };
+    // общее состояние для autocomplete.js и picker.js (один isolated world)
+    window.__vk7tv = { emoteMap, enabled, resolveEmote };
   }
 
   function makeEmote(name, url, zeroWidth) {
@@ -60,13 +86,13 @@
     img.loading = 'lazy';
     img.addEventListener('error', () => {
       if (img.dataset.vk7tvFallback) {
-        // и data:-URL не загрузился — возвращаем текст, чтобы не терять сообщение
+        // и blob не загрузился — возвращаем текст, чтобы не терять сообщение
         img.replaceWith(document.createTextNode(name));
         return;
       }
       img.dataset.vk7tvFallback = '1';
-      chrome.runtime.sendMessage({ type: 'fetch-emote', url }, (resp) => {
-        if (resp && resp.dataUrl) img.src = resp.dataUrl;
+      resolveEmote(url).then((u) => {
+        if (u) img.src = u;
         else img.replaceWith(document.createTextNode(name));
       });
     });
