@@ -25,6 +25,9 @@
   // Фоновый скрипт качает картинку, здесь она превращается в blob:-URL;
   // кэш по URL — повторные эмоуты в чате не ходят в сеть.
   const blobCache = new Map(); // url -> Promise<string|null>
+  // На vk.com прямая загрузка с CDN не проходит никогда. Первая картинка
+  // это выясняет, остальные уже не тратят время на заведомо мёртвый запрос.
+  let cdnBlocked = false;
   function resolveEmote(url) {
     if (blobCache.has(url)) return blobCache.get(url);
     const p = new Promise((resolve) => {
@@ -164,19 +167,24 @@
     img.title = name;
     img.draggable = false;
     img.loading = 'lazy';
+    const viaBackground = () => {
+      img.dataset.vk7tvFallback = '1';
+      resolveEmote(url).then((u) => {
+        if (u) img.src = u;
+        else img.replaceWith(document.createTextNode(name));
+      });
+    };
     img.addEventListener('error', () => {
       if (img.dataset.vk7tvFallback) {
         // и blob не загрузился — возвращаем текст, чтобы не терять сообщение
         img.replaceWith(document.createTextNode(name));
         return;
       }
-      img.dataset.vk7tvFallback = '1';
-      resolveEmote(url).then((u) => {
-        if (u) img.src = u;
-        else img.replaceWith(document.createTextNode(name));
-      });
+      cdnBlocked = true;
+      viaBackground();
     });
-    img.src = url;
+    if (cdnBlocked) viaBackground();
+    else img.src = url;
     return img;
   }
 

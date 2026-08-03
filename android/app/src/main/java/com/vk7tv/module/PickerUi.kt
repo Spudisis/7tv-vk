@@ -137,35 +137,42 @@ object PickerUi {
         )
 
         // Поповер встаёт НАД панелью ввода, а не поверх неё: иначе не видно,
-        // что вставилось в поле. Считаем расстояние от низа экрана до верха
-        // панели — с Gravity.BOTTOM смещение как раз поднимает окно.
+        // что вставилось в поле.
+        //
+        // Позиционируем абсолютными координатами (NO_GRAVITY), а не отступом
+        // от низа: положение панели мы меряем через getLocationOnScreen, то есть
+        // в координатах экрана, а Gravity.BOTTOM отсчитывается от окна
+        // приложения. Там, где системные панели устроены иначе (Sova RE),
+        // эти системы расходятся, и поповер наезжал на поле ввода.
         val dm = ctx.resources.displayMetrics
         val gap = Inject.dp(ctx, 6)
         val top = panelTop(anchor, input)
-        val yOff = (dm.heightPixels - top + gap).coerceAtLeast(0)
-        val available = (top - gap * 2).coerceAtLeast(0)
-        val h = minOf((dm.heightPixels * 0.45f).toInt(), available)
-            .coerceAtLeast(Inject.dp(ctx, 180))
+        val room = (top - gap - Inject.dp(ctx, 24)).coerceAtLeast(Inject.dp(ctx, 180))
+        val h = minOf((dm.heightPixels * 0.45f).toInt(), room)
+        val y = (top - h - gap).coerceAtLeast(0)
 
         val pw = PopupWindow(rootView, WindowManager.LayoutParams.MATCH_PARENT, h, true)
         pw.setBackgroundDrawable(ColorDrawable(Color.TRANSPARENT))
         pw.isOutsideTouchable = true
         pw.inputMethodMode = PopupWindow.INPUT_METHOD_NEEDED
-        pw.showAtLocation(anchor, Gravity.BOTTOM, 0, yOff)
+        pw.showAtLocation(anchor, Gravity.NO_GRAVITY, 0, y)
         popup = pw
     }
 
-    /** Верхняя граница панели ввода: берём то, что выше — кнопку или само поле. */
+    /**
+     * Верхняя граница панели ввода в координатах экрана: берём то, что выше —
+     * кнопку, само поле или строку, в которой они лежат. Строка нужна затем,
+     * что у кнопки бывают отступы, и без неё поповер сел бы ей на макушку.
+     */
     private fun panelTop(anchor: View, input: EditText): Int {
-        val a = IntArray(2)
-        anchor.getLocationOnScreen(a)
-        var top = a[1]
-        if (input.isAttachedToWindow) {
-            val b = IntArray(2)
-            input.getLocationOnScreen(b)
-            if (b[1] in 1 until top) top = b[1]
+        var top = Int.MAX_VALUE
+        for (v in listOf(anchor, anchor.parent as? View, input, input.parent as? View)) {
+            if (v == null || !v.isAttachedToWindow) continue
+            val p = IntArray(2)
+            v.getLocationOnScreen(p)
+            if (p[1] in 1 until top) top = p[1]
         }
-        return top.coerceAtLeast(0)
+        return if (top == Int.MAX_VALUE) 0 else top
     }
 
     private fun header(ctx: Context): View {

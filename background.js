@@ -256,20 +256,37 @@ async function probeSet(word) {
   return { found: false };
 }
 
+// Картинки эмоутов держим в Cache API, а не только в памяти воркера:
+// MV3 усыпляет воркер через полминуты простоя вместе со всем, что он
+// накопил, и без этого каждая перезагрузка страницы качала эмоуты заново.
+// Инвалидация не нужна: id эмоута в 7TV неизменен, меняется картинка —
+// меняется и URL.
+const IMG_CACHE = 'vk7tv-images';
+
 async function fetchAsDataUrl(url) {
   if (imgCache.has(url)) return imgCache.get(url);
-  const resp = await fetch(url);
-  if (!resp.ok) throw new Error('HTTP ' + resp.status);
-  const mime = resp.headers.get('content-type') || 'image/webp';
-  const bytes = new Uint8Array(await resp.arrayBuffer());
-  let bin = '';
-  const CHUNK = 0x8000;
-  for (let i = 0; i < bytes.length; i += CHUNK) {
-    bin += String.fromCharCode.apply(null, bytes.subarray(i, i + CHUNK));
-  }
-  const dataUrl = `data:${mime};base64,${btoa(bin)}`;
-  imgCache.set(url, dataUrl);
-  return dataUrl;
+  // кладём промис, а не результат: две картинки подряд не пойдут в сеть дважды
+  const p = (async () => {
+    const cache = await caches.open(IMG_CACHE);
+    let resp = await cache.match(url);
+    if (!resp) {
+      const net = await fetch(url);
+      if (!net.ok) throw new Error('HTTP ' + net.status);
+      await cache.put(url, net.clone());
+      resp = net;
+    }
+    const mime = resp.headers.get('content-type') || 'image/webp';
+    const bytes = new Uint8Array(await resp.arrayBuffer());
+    let bin = '';
+    const CHUNK = 0x8000;
+    for (let i = 0; i < bytes.length; i += CHUNK) {
+      bin += String.fromCharCode.apply(null, bytes.subarray(i, i + CHUNK));
+    }
+    return `data:${mime};base64,${btoa(bin)}`;
+  })();
+  imgCache.set(url, p);
+  p.catch(() => imgCache.delete(url)); // не запоминаем неудачу навсегда
+  return p;
 }
 
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
