@@ -117,7 +117,8 @@
     }
     for (const s of sync.sets) {
       const m = local.setEmotes[s.id];
-      if (m && Object.keys(m).length) groups.push({ title: s.name, emotes: m });
+      // suffix — постфикс набора: пикер всегда вставляет имя с ним
+      if (m && Object.keys(m).length) groups.push({ title: s.name, emotes: m, suffix: s.slug || '' });
     }
     if (Object.keys(sync.customEmotes).length) {
       groups.push({ title: 'Свои', emotes: sync.customEmotes });
@@ -187,19 +188,22 @@
       sec.className = 'vk7tv-picker-group';
       const h = document.createElement('div');
       h.className = 'vk7tv-picker-group-title';
-      h.textContent = g.title;
+      h.textContent = g.suffix ? `${g.title} · _${g.suffix}` : g.title;
       const grid = document.createElement('div');
       grid.className = 'vk7tv-picker-grid';
       for (const [name, v] of Object.entries(g.emotes)) {
         const url = typeof v === 'string' ? v : v.u;
+        // вставляем всегда полное имя с постфиксом — так эмоут не спутается
+        // с одноимённым из другого набора и с обычным словом
+        const full = g.suffix ? `${name}_${g.suffix}` : name;
         const img = document.createElement('img');
         img.src = url;
-        img.alt = name;
-        img.title = name;
+        img.alt = full;
+        img.title = full;
         img.loading = 'lazy';
         img.decoding = 'async';
         img.draggable = false;
-        img.addEventListener('click', () => insertEmote(name));
+        img.addEventListener('click', () => insertEmote(full));
         // CSP ВК режет cdn.7tv.app — перезагружаем через фоновый скрипт (blob:)
         img.addEventListener('error', () => {
           if (img.dataset.fb) return img.remove();

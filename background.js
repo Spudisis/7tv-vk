@@ -26,11 +26,26 @@ function emoteMapFromSet(setJson) {
   return map;
 }
 
+// Постфикс набора: из него получается второе имя эмоута — ok_bratishkinoff.
+// Берём ник владельца набора на 7TV, он же ник стримера на Twitch.
+function slugify(s) {
+  return String(s)
+    .trim()
+    .toLowerCase()
+    .replace(/\s+/g, '-')
+    .replace(/[^\p{L}\p{N}_-]/gu, '');
+}
+
 async function fetchSet(idOrGlobal) {
   const resp = await fetch(SET_API + idOrGlobal, { cache: 'no-cache' });
   if (!resp.ok) throw new Error('7TV API: HTTP ' + resp.status);
   const json = await resp.json();
-  return { id: json.id, name: json.name || idOrGlobal, emotes: emoteMapFromSet(json) };
+  return {
+    id: json.id,
+    name: json.name || idOrGlobal,
+    slug: slugify((json.owner && json.owner.username) || json.name || ''),
+    emotes: emoteMapFromSet(json),
+  };
 }
 
 // Ник стримера -> его Twitch ID -> активный набор 7TV.
@@ -53,10 +68,11 @@ async function viaIvr(login) {
   if (!uResp.ok) throw new Error(`У «${login}» нет профиля 7TV`);
   const es = (await uResp.json()).emote_set;
   if (!es || !es.id) throw new Error(`У «${login}» нет активного набора 7TV`);
+  // ник, по которому добавляли, — самый понятный постфикс
   if (es.emotes && es.emotes.length) {
-    return { id: es.id, name: es.name || login, emotes: emoteMapFromSet(es) };
+    return { id: es.id, name: es.name || login, slug: slugify(login), emotes: emoteMapFromSet(es) };
   }
-  return fetchSet(es.id);
+  return { ...(await fetchSet(es.id)), slug: slugify(login) };
 }
 
 async function viaGql(login) {
@@ -78,7 +94,7 @@ async function viaGql(login) {
     (c) => c.platform === 'TWITCH' && c.emote_set_id
   );
   if (!conn) throw new Error(`У «${login}» нет активного набора 7TV`);
-  return fetchSet(conn.emote_set_id);
+  return { ...(await fetchSet(conn.emote_set_id)), slug: slugify(login) };
 }
 
 // Принимает ссылку вида https://7tv.app/emote-sets/<id>, голый ID
@@ -101,7 +117,12 @@ async function storeSet(set) {
   const { sets } = await chrome.storage.sync.get({ sets: [] });
   const { setEmotes } = await chrome.storage.local.get({ setEmotes: {} });
   setEmotes[set.id] = set.emotes;
-  const meta = { id: set.id, name: set.name, count: Object.keys(set.emotes).length };
+  const meta = {
+    id: set.id,
+    name: set.name,
+    slug: set.slug || '',
+    count: Object.keys(set.emotes).length,
+  };
   await chrome.storage.local.set({ setEmotes });
   await chrome.storage.sync.set({ sets: sets.filter((s) => s.id !== set.id).concat(meta) });
   return meta;
@@ -140,7 +161,13 @@ async function refreshAll() {
     try {
       const set = await fetchSet(s.id);
       setEmotes[set.id] = set.emotes;
-      nextSets.push({ id: set.id, name: set.name, count: Object.keys(set.emotes).length });
+      nextSets.push({
+        id: set.id,
+        name: set.name,
+        // набор мог быть добавлен по нику — тогда постфикс уже сохранён
+        slug: s.slug || set.slug || '',
+        count: Object.keys(set.emotes).length,
+      });
     } catch (e) {
       // API недоступен — оставляем прошлый кэш этого набора
       if (oldCache[s.id]) setEmotes[s.id] = oldCache[s.id];

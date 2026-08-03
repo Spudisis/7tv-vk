@@ -65,13 +65,24 @@
     }
     for (const s of sync.sets) {
       const m = local.setEmotes[s.id];
-      if (m) for (const [n, v] of Object.entries(m)) emoteMap.set(n, normEmote(v));
+      if (!m) continue;
+      for (const [n, v] of Object.entries(m)) {
+        const em = normEmote(v);
+        emoteMap.set(n, em);
+        // второе имя с постфиксом набора: ok_bratishkinoff. Голое имя тоже
+        // работает, но постфикс снимает коллизию, когда один код есть
+        // в нескольких наборах — и его вставляет пикер.
+        // a: 1 — пометка «это алиас», чтобы не дублировать в автозаполнении
+        if (s.slug) emoteMap.set(`${n}_${s.slug}`, { u: em.u, z: em.z, a: 1 });
+      }
     }
     for (const [n, v] of Object.entries(sync.customEmotes)) emoteMap.set(n, normEmote(v));
 
-    testRegex = emoteMap.size
-      ? new RegExp([...emoteMap.keys()].map(escapeRegex).join('|'))
-      : null;
+    // префильтр строим по голым именам: имя с постфиксом содержит голое
+    // как подстроку, так что такой текст регексп всё равно поймает
+    const base = [];
+    for (const [n, v] of emoteMap) if (!v.a) base.push(n);
+    testRegex = base.length ? new RegExp(base.map(escapeRegex).join('|')) : null;
 
     // общее состояние для autocomplete.js и picker.js (один isolated world)
     window.__vk7tv = { emoteMap, enabled, resolveEmote };
@@ -107,9 +118,26 @@
   const SERVICE_TOKENS = new Set([
     'time', 'times', 'timestamp', 'timestamps', 'date', 'dates', 'datetime',
     'clock', 'ago', 'online', 'offline', 'seen', 'lastseen',
+    'edited', 'edit', 'changed',
   ]);
-  // ровно время и ничего больше: «20:00», «9:05», «20:00:30»
-  const TIME_ONLY = /^\d{1,2}:\d{2}(:\d{2})?$/;
+  // Подпись целиком: время («20:00», «9:05», «20:00:30») или пометка ВК
+  // об изменении («(ред.)», «(edited)»). Скобки у «( ред. )» ВК рисует
+  // отдельно от слова, а «(» и «)» в наборах числятся эмоутами —
+  // поэтому подпись проверяем и по тексту всего элемента-родителя.
+  const SERVICE_TEXT =
+    /^\(?\s*(?:\d{1,2}:\d{2}(?::\d{2})?|ред\.?|изменено|отредактировано|edited)\s*\)?$/i;
+
+  // Подпись может быть разбита на куски: «(» + «ред.» + «)». Поднимаемся
+  // вверх, пока текст элемента остаётся коротким: как только он длиннее
+  // подписи — это уже сообщение, и дальше идти незачем.
+  function isServiceText(el, depth) {
+    for (let n = el, i = 0; n && i <= depth; n = n.parentElement, i++) {
+      const t = (n.textContent || '').trim();
+      if (t.length > 24) return false;
+      if (SERVICE_TEXT.test(t)) return true;
+    }
+    return false;
+  }
 
   function isServiceLabel(el) {
     for (let n = el, depth = 0; n && n !== document.body && depth < 6; n = n.parentElement, depth++) {
@@ -135,8 +163,9 @@
     // не трогаем поле ввода, служебные теги и собственный UI расширения
     if (parent.isContentEditable) return;
     if (parent.closest('script,style,textarea,input,title,svg,noscript,template,.vk7tv-ac,.vk7tv-picker,.vk7tv-widget')) return;
-    // узел целиком — время: это подпись ВК, а не сообщение
-    if (TIME_ONLY.test(text.trim())) return;
+    // подпись ВК, а не текст сообщения — не трогаем ни её саму, ни скобки вокруг
+    if (SERVICE_TEXT.test(text.trim())) return;
+    if (isServiceText(parent, 3)) return;
     if (isServiceLabel(parent)) return;
 
     // эмоут — это отдельное «слово», разделённое пробелами (как в 7TV);

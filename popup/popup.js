@@ -39,9 +39,14 @@ function activeEmotes({ sync, local }) {
         : DEFAULT_EMOTES;
     for (const [n, v] of Object.entries(g)) map.set(n, normEmote(v));
   }
+  // эмоуты набора показываем под полным именем — с постфиксом набора,
+  // ровно в таком виде их вставляет пикер на странице
   for (const s of sync.sets) {
     const m = local.setEmotes[s.id];
-    if (m) for (const [n, v] of Object.entries(m)) map.set(n, normEmote(v));
+    if (!m) continue;
+    for (const [n, v] of Object.entries(m)) {
+      map.set(s.slug ? `${n}_${s.slug}` : n, normEmote(v));
+    }
   }
   for (const [n, v] of Object.entries(sync.customEmotes)) map.set(n, normEmote(v));
   return map;
@@ -64,6 +69,11 @@ async function render() {
     name.className = 'name';
     name.textContent = s.name;
     name.title = s.id;
+    // постфикс, который приписывается к именам эмоутов этого набора
+    const slug = document.createElement('span');
+    slug.className = 'muted';
+    slug.textContent = s.slug ? '_' + s.slug : '';
+    slug.title = 'Постфикс: эмоуты набора работают и как имя_постфикс';
     const count = document.createElement('span');
     count.className = 'muted';
     count.textContent = s.count;
@@ -75,7 +85,7 @@ async function render() {
       await sendMessage({ type: 'remove-set', id: s.id });
       render();
     });
-    li.append(name, count, del);
+    li.append(name, slug, count, del);
     setList.appendChild(li);
   }
 
