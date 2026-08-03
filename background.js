@@ -88,6 +88,10 @@ async function addSet(input) {
   } else {
     throw new Error('Вставь ссылку на набор с 7tv.app или ник стримера на Twitch.');
   }
+  return storeSet(set);
+}
+
+async function storeSet(set) {
   const { sets } = await chrome.storage.sync.get({ sets: [] });
   const { setEmotes } = await chrome.storage.local.get({ setEmotes: {} });
   setEmotes[set.id] = set.emotes;
@@ -95,6 +99,22 @@ async function addSet(input) {
   await chrome.storage.local.set({ setEmotes });
   await chrome.storage.sync.set({ sets: sets.filter((s) => s.id !== set.id).concat(meta) });
   return meta;
+}
+
+// Набор, который подключается сам при первой установке.
+// Одноразово (флаг seeded): если пользователь удалит его из списка,
+// заново не добавится.
+const DEFAULT_STREAMER = 'bratishkinoff';
+
+async function seedDefaultSet() {
+  const { seeded } = await chrome.storage.sync.get({ seeded: false });
+  if (seeded) return;
+  try {
+    await storeSet(await fetchStreamerSet(DEFAULT_STREAMER));
+    await chrome.storage.sync.set({ seeded: true });
+  } catch (e) {
+    // не было сети — попробуем при следующем запуске браузера
+  }
 }
 
 async function removeSet(id) {
@@ -171,11 +191,11 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
 
 chrome.runtime.onInstalled.addListener(() => {
   chrome.alarms.create('refresh-sets', { periodInMinutes: 30 });
-  refreshAll().catch(() => {});
+  seedDefaultSet().then(() => refreshAll().catch(() => {}));
 });
 
 chrome.runtime.onStartup.addListener(() => {
-  refreshAll().catch(() => {});
+  seedDefaultSet().then(() => refreshAll().catch(() => {}));
 });
 
 chrome.alarms.onAlarm.addListener((a) => {
