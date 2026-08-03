@@ -28,6 +28,9 @@ object Inject {
 
     private const val MARK = "vk7tv-button"
 
+    /** Метка на своих полях ввода: поиск в пикере, поля в настройках. */
+    const val OUR_UI = "vk7tv-ui"
+
     private var lastInput = WeakReference<EditText>(null)
 
     @Volatile
@@ -46,6 +49,11 @@ object Inject {
                         val v = param.thisObject as? EditText ?: return@safe
                         Boot.ensure(v.context)
                         if (!Config.enabled) return@safe
+                        // Поиск в пикере — тоже EditText. Без этой проверки он
+                        // становится «последним полем ввода», и вставка эмоута
+                        // улетает в строку поиска вместо поля ВК. В вебе такая
+                        // защита есть в picker.js, сюда её забыли перенести.
+                        if (v.contentDescription == OUR_UI) return@safe
                         lastInput = WeakReference(v)
                         // на момент attach разметка ещё не разложена — ждём кадр
                         v.post { L.safe("установка кнопки") { attach(v) } }

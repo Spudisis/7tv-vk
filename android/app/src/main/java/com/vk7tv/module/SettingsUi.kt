@@ -238,6 +238,7 @@ object SettingsUi {
         }
 
     private fun field(ctx: Context, hintText: String) = EditText(ctx).apply {
+        contentDescription = Inject.OUR_UI // см. Inject.OUR_UI
         hint = hintText
         setHintTextColor(Ui.MUTED)
         setTextColor(Ui.TEXT)

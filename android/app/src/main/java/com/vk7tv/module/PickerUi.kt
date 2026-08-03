@@ -165,6 +165,7 @@ object PickerUi {
     }
 
     private fun search(ctx: Context): EditText = EditText(ctx).apply {
+        contentDescription = Inject.OUR_UI // чтобы не стать «последним полем ввода»
         hint = "Поиск эмоута"
         setHintTextColor(Ui.MUTED)
         setTextColor(Ui.TEXT)
@@ -299,9 +300,11 @@ object PickerUi {
 
     private fun insert(input: EditText, name: String) {
         L.safe("вставка эмоута") {
-            val ed: Editable = input.text ?: return@safe
-            val s = input.selectionStart.coerceIn(0, ed.length)
-            val e = input.selectionEnd.coerceIn(s, ed.length)
+            // поле ВК могло пересоздаться, пока поповер открыт
+            val target = if (input.isAttachedToWindow) input else Inject.input() ?: input
+            val ed: Editable = target.text ?: return@safe
+            val s = target.selectionStart.coerceIn(0, ed.length)
+            val e = target.selectionEnd.coerceIn(s, ed.length)
             ed.replace(s, e, "$name ")
         }
     }

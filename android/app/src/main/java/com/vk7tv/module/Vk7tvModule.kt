@@ -121,6 +121,8 @@ object Boot {
             Thread({
                 seedDefaultSet()
                 L.safe("загрузка наборов") { Emotes.load(cache) }
+                // диалог мог быть уже открыт — перерисовываем то, что на экране
+                Replacer.rerenderAll()
                 Diag.note("наборов ${Config.sets.size}, эмоутов ${Emotes.size()}")
                 canary()
             }, "vk7tv-sets").apply { isDaemon = true }.start()
@@ -145,6 +147,7 @@ object Boot {
     fun reload(ctx: Context) {
         val cache = File(ctx.applicationContext.cacheDir, "vk7tv").apply { mkdirs() }
         L.safe("перезагрузка наборов") { Emotes.load(cache) }
+        Replacer.rerenderAll()
     }
 
     /**

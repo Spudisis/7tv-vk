@@ -22,6 +22,12 @@ object Replacer {
     // ждём картинку — перерисовываем вьюху один раз, а не на каждый эмоут
     private val pending = WeakHashMap<TextView, Boolean>()
 
+    // Вьюхи, через которые уже прошёл текст. Нужны, чтобы перерисовать то,
+    // что ВК успел нарисовать до загрузки наборов: иначе в открытом диалоге
+    // эмоуты не появятся, пока из него не выйдешь и не зайдёшь обратно.
+    // Слабые ключи — записи умирают вместе с самими вьюхами.
+    private val seenViews = WeakHashMap<TextView, Boolean>()
+
     @Volatile
     var seen = 0L
         private set
@@ -42,6 +48,7 @@ object Replacer {
         }
         if (Service.isServiceText(text)) return null
         if (Service.isServiceView(tv)) return null
+        synchronized(seenViews) { seenViews[tv] = true }
 
         val hits = scan(text) ?: return null
 
@@ -108,6 +115,32 @@ object Replacer {
         if (from < 0 || to > text.length || from > to) return false
         for (i in from until to) if (!text[i].isWhitespace()) return false
         return true
+    }
+
+    /**
+     * Перерисовать всё, что сейчас на экране, — после загрузки или смены наборов.
+     *
+     * Берём текущий текст вьюхи, а не запомненный: ВК переиспользует ячейки
+     * списка, и старый текст мог бы уехать в чужое сообщение.
+     */
+    fun rerenderAll() {
+        val views = synchronized(seenViews) { ArrayList(seenViews.keys) }
+        if (views.isEmpty()) return
+        main.post {
+            var n = 0
+            for (tv in views) {
+                if (!tv.isAttachedToWindow) continue
+                L.safe("перерисовка") {
+                    val cur = tv.text ?: return@safe
+                    val mark = (cur as? Spanned)
+                        ?.getSpans(0, cur.length, Vk7tvMark::class.java)
+                        ?.firstOrNull()
+                    tv.text = mark?.original ?: cur
+                    n++
+                }
+            }
+            L.v("перерисовано вьюх: $n")
+        }
     }
 
     private fun onImageWanted(tv: TextView) {
