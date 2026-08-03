@@ -27,11 +27,67 @@ async function fetchSet(idOrGlobal) {
   return { id: json.id, name: json.name || idOrGlobal, emotes: emoteMapFromSet(json) };
 }
 
-// Принимает ссылку вида https://7tv.app/emote-sets/<id> или голый ID
+// Ник стримера -> его Twitch ID -> активный набор 7TV.
+// Основной путь через api.ivr.fi (открытый резолвер Twitch-ников),
+// запасной — через поиск в GQL самого 7TV.
+async function fetchStreamerSet(login) {
+  try {
+    return await viaIvr(login);
+  } catch (e) {
+    return await viaGql(login);
+  }
+}
+
+async function viaIvr(login) {
+  const resp = await fetch('https://api.ivr.fi/v2/twitch/user?login=' + encodeURIComponent(login));
+  if (!resp.ok) throw new Error('ivr.fi: HTTP ' + resp.status);
+  const arr = await resp.json();
+  if (!Array.isArray(arr) || !arr.length) throw new Error(`Стример «${login}» не найден на Twitch`);
+  const uResp = await fetch('https://7tv.io/v3/users/twitch/' + arr[0].id, { cache: 'no-cache' });
+  if (!uResp.ok) throw new Error(`У «${login}» нет профиля 7TV`);
+  const es = (await uResp.json()).emote_set;
+  if (!es || !es.id) throw new Error(`У «${login}» нет активного набора 7TV`);
+  if (es.emotes && es.emotes.length) {
+    return { id: es.id, name: es.name || login, emotes: emoteMapFromSet(es) };
+  }
+  return fetchSet(es.id);
+}
+
+async function viaGql(login) {
+  const resp = await fetch('https://7tv.io/v3/gql', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      query: 'query($q:String!){users(query:$q){id username}}',
+      variables: { q: login },
+    }),
+  });
+  if (!resp.ok) throw new Error('7TV GQL: HTTP ' + resp.status);
+  const json = await resp.json();
+  const user = ((json.data || {}).users || []).find((u) => u.username === login);
+  if (!user) throw new Error(`Стример «${login}» не найден на 7TV`);
+  const uResp = await fetch('https://7tv.io/v3/users/' + user.id, { cache: 'no-cache' });
+  if (!uResp.ok) throw new Error('7TV API: HTTP ' + uResp.status);
+  const conn = ((await uResp.json()).connections || []).find(
+    (c) => c.platform === 'TWITCH' && c.emote_set_id
+  );
+  if (!conn) throw new Error(`У «${login}» нет активного набора 7TV`);
+  return fetchSet(conn.emote_set_id);
+}
+
+// Принимает ссылку вида https://7tv.app/emote-sets/<id>, голый ID
+// или ник стримера на Twitch (bratishkinoff, 5opka, …)
 async function addSet(input) {
-  const m = String(input).match(ULID_RE);
-  if (!m) throw new Error('Не нашёл ID набора в ссылке. Скопируй ссылку на набор со страницы 7tv.app.');
-  const set = await fetchSet(m[0].toUpperCase());
+  const str = String(input).trim();
+  const m = str.match(ULID_RE);
+  let set;
+  if (m) {
+    set = await fetchSet(m[0].toUpperCase());
+  } else if (/^[a-zA-Z0-9_]{1,25}$/.test(str)) {
+    set = await fetchStreamerSet(str.toLowerCase());
+  } else {
+    throw new Error('Вставь ссылку на набор с 7tv.app или ник стримера на Twitch.');
+  }
   const { sets } = await chrome.storage.sync.get({ sets: [] });
   const { setEmotes } = await chrome.storage.local.get({ setEmotes: {} });
   setEmotes[set.id] = set.emotes;
