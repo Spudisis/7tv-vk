@@ -17,7 +17,6 @@ class Vk7tvModule : IXposedHookLoadPackage {
         L.i("зацепились за ${lpp.packageName}")
 
         L.safe("инициализация") {
-            Config.init()
             hookSetText()
             Inject.hook()
         }
@@ -73,14 +72,38 @@ object Boot {
             if (started) return
             val app = ctx?.applicationContext ?: return
             started = true
+            Config.init(app)
             val cache = File(app.cacheDir, "vk7tv").apply { mkdirs() }
             EmoteCache.init(cache)
             Thread({
+                seedDefaultSet()
                 L.safe("загрузка наборов") { Emotes.load(cache) }
                 canary()
             }, "vk7tv-sets").apply { isDaemon = true }.start()
         }
     }
+
+    /**
+     * Первый запуск — подключаем набор стримера, как это делает расширение.
+     * Одноразово: удалил из списка — сам не вернётся.
+     */
+    private fun seedDefaultSet() {
+        if (Config.seeded || Config.sets.isNotEmpty()) return
+        val ok = L.safe("набор по умолчанию") {
+            Config.addSet(SevenTv.resolve(DEFAULT_STREAMER))
+            true
+        }
+        // не было сети — попробуем при следующем запуске
+        if (ok == true) Config.markSeeded()
+    }
+
+    /** Перечитать наборы после правки настроек. Только не на UI-потоке. */
+    fun reload(ctx: Context) {
+        val cache = File(ctx.applicationContext.cacheDir, "vk7tv").apply { mkdirs() }
+        L.safe("перезагрузка наборов") { Emotes.load(cache) }
+    }
+
+    private const val DEFAULT_STREAMER = "bratishkinoff"
 
     /**
      * Канарейка. Если наборы загрузились, текста через нас прошло много,

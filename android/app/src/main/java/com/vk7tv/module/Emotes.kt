@@ -2,8 +2,6 @@ package com.vk7tv.module
 
 import org.json.JSONObject
 import java.io.File
-import java.net.HttpURLConnection
-import java.net.URL
 
 class Emote(val name: String, val url: String, val zeroWidth: Boolean)
 
@@ -134,7 +132,7 @@ object Emotes {
 
         if (stale) {
             L.safe("загрузка набора $id") {
-                val body = httpGet(API + id)
+                val body = Net.get(API + id)
                 file.parentFile?.mkdirs()
                 file.writeText(body)
             }
@@ -156,23 +154,8 @@ object Emotes {
                 list.add(Emote(name, "https://cdn.7tv.app/emote/$eid/2x.webp", zw))
             }
             val owner = json.optJSONObject("owner")
-            Fetched(json.optString("name", id), slugify(owner?.optString("username") ?: ""), list)
+            Fetched(json.optString("name", id), SevenTv.slugify(owner?.optString("username") ?: ""), list)
         }
     }
 
-    private fun slugify(s: String): String =
-        s.trim().lowercase().replace(Regex("\\s+"), "-").replace(Regex("[^\\p{L}\\p{N}_-]"), "")
-
-    private fun httpGet(url: String): String {
-        val conn = URL(url).openConnection() as HttpURLConnection
-        conn.connectTimeout = 10_000
-        conn.readTimeout = 15_000
-        conn.setRequestProperty("User-Agent", "VK7TV-module")
-        try {
-            if (conn.responseCode != 200) throw RuntimeException("HTTP ${conn.responseCode} $url")
-            return conn.inputStream.bufferedReader().readText()
-        } finally {
-            conn.disconnect()
-        }
-    }
 }

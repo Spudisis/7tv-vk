@@ -1,19 +1,24 @@
 package com.vk7tv.module
 
-import de.robv.android.xposed.XSharedPreferences
+import android.content.Context
+import android.content.SharedPreferences
 import org.json.JSONArray
 import org.json.JSONObject
 
 class SetRef(val id: String, val slug: String, val name: String)
 
-// Конфиг лежит в SharedPreferences приложения-модуля, а читается из процесса
-// ВК — поэтому здесь только мелочь: id наборов, «свои» эмоуты, избранное.
-// Сами списки эмоутов (у набора стримера это ~1000 имён) модуль тянет из
-// 7tv.io уже внутри процесса ВК: гонять сотни килобайт через prefs незачем,
-// да и формат тогда совпадает с тем, что качает расширение.
+/**
+ * Конфиг живёт в SharedPreferences самого ВК.
+ *
+ * Сначала он лежал в приложении-модуле и читался через XSharedPreferences,
+ * но под LSPatch — это который без рута — так нельзя: модуль встроен прямо
+ * в чужой APK и до данных своего приложения не дотягивается. Поэтому всё
+ * хранится в процессе ВК. Побочная польза: хранилище стало доступно
+ * на запись, так что наборы и избранное правятся прямо из пикера,
+ * а отдельное приложение-настройка больше не нужно.
+ */
 object Config {
 
-    const val PKG = "com.vk7tv.module"
     const val PREFS = "vk7tv"
 
     const val KEY_ENABLED = "enabled"
@@ -22,6 +27,7 @@ object Config {
     const val KEY_CUSTOM = "customEmotes"
     const val KEY_FAVORITES = "favorites"
     const val KEY_DOCK = "dockButton"
+    const val KEY_SEEDED = "seeded"
 
     @Volatile
     var enabled = true
@@ -47,25 +53,17 @@ object Config {
     var favorites: List<String> = emptyList()
         private set
 
-    private var prefs: XSharedPreferences? = null
+    private var prefs: SharedPreferences? = null
 
-    fun init() {
-        val p = XSharedPreferences(PKG, PREFS)
-        p.makeWorldReadable()
+    fun init(ctx: Context) {
+        val p = ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
         prefs = p
         read(p)
     }
 
-    /** Настройки поменяли в приложении-модуле — подхватываем без перезапуска ВК. */
-    fun reloadIfChanged(): Boolean {
-        val p = prefs ?: return false
-        if (!p.hasFileChanged()) return false
-        p.reload()
-        read(p)
-        return true
-    }
+    // --- чтение ---
 
-    private fun read(p: XSharedPreferences) {
+    private fun read(p: SharedPreferences) {
         enabled = p.getBoolean(KEY_ENABLED, true)
         useGlobal = p.getBoolean(KEY_USE_GLOBAL, true)
         dockButton = p.getBoolean(KEY_DOCK, true)
@@ -74,6 +72,87 @@ object Config {
         favorites = parseList(p.getString(KEY_FAVORITES, "[]"))
         L.i("конфиг: наборов ${sets.size}, своих ${custom.size}, избранных ${favorites.size}")
     }
+
+    val seeded: Boolean
+        get() = prefs?.getBoolean(KEY_SEEDED, false) ?: true
+
+    fun markSeeded() {
+        prefs?.edit()?.putBoolean(KEY_SEEDED, true)?.apply()
+    }
+
+    // --- запись ---
+
+    fun setFlag(key: String, value: Boolean) {
+        prefs?.edit()?.putBoolean(key, value)?.apply()
+        when (key) {
+            KEY_ENABLED -> enabled = value
+            KEY_USE_GLOBAL -> useGlobal = value
+            KEY_DOCK -> dockButton = value
+        }
+    }
+
+    fun addSet(ref: SetRef) {
+        writeSets(sets.filter { it.id != ref.id } + ref)
+    }
+
+    fun removeSet(id: String) {
+        writeSets(sets.filter { it.id != id })
+    }
+
+    private fun writeSets(list: List<SetRef>) {
+        val arr = JSONArray()
+        for (s in list) {
+            arr.put(JSONObject().put("id", s.id).put("slug", s.slug).put("name", s.name))
+        }
+        prefs?.edit()?.putString(KEY_SETS, arr.toString())?.apply()
+        sets = list
+    }
+
+    fun isFavorite(name: String): Boolean = favorites.contains(name)
+
+    /** Возвращает новое состояние: true — эмоут теперь в избранном. */
+    fun toggleFavorite(name: String): Boolean {
+        val on = !favorites.contains(name)
+        val list = if (on) favorites + name else favorites.filter { it != name }
+        val arr = JSONArray()
+        for (n in list) arr.put(n)
+        prefs?.edit()?.putString(KEY_FAVORITES, arr.toString())?.apply()
+        favorites = list
+        return on
+    }
+
+    /**
+     * Тот же JSON, что отдаёт «Резервная копия настроек» в попапе расширения.
+     * Списки эмоутов оттуда не берём — их модуль качает с 7tv.io сам по id.
+     */
+    fun importBackup(raw: String): String {
+        val json = JSONObject(raw)
+        val e = prefs?.edit() ?: throw IllegalStateException("конфиг не открыт")
+        var setCount = 0
+        var favCount = 0
+        var customCount = 0
+
+        json.optJSONArray("sets")?.let {
+            e.putString(KEY_SETS, it.toString())
+            setCount = it.length()
+        }
+        json.optJSONObject("customEmotes")?.let {
+            e.putString(KEY_CUSTOM, it.toString())
+            customCount = it.length()
+        }
+        json.optJSONArray("favorites")?.let {
+            e.putString(KEY_FAVORITES, it.toString())
+            favCount = it.length()
+        }
+        if (json.has("useGlobal")) e.putBoolean(KEY_USE_GLOBAL, json.optBoolean("useGlobal", true))
+        e.putBoolean(KEY_SEEDED, true)
+        e.apply()
+
+        prefs?.let { read(it) }
+        return "Наборов $setCount, своих $customCount, избранных $favCount"
+    }
+
+    // --- разбор ---
 
     private fun parseSets(raw: String?): List<SetRef> {
         val out = ArrayList<SetRef>()

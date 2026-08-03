@@ -28,12 +28,18 @@ import android.widget.Toast
 /**
  * Пикер эмоутов — панель снизу, по духу тот же поповер, что в браузере:
  * поиск, полоса избранного, наборы, сетка. Тап по эмоуту вставляет его
- * полное имя (с постфиксом набора) в поле ввода на позицию курсора.
+ * полное имя (с постфиксом набора) в поле ввода на позицию курсора,
+ * долгий тап — в избранное и обратно.
+ *
+ * Звёздочки в углу ячейки, как в вебе, тут нет намеренно: на телефоне
+ * в неё не попасть пальцем, а долгий тап — привычный жест.
  *
  * Вся вёрстка кодом: у модуля свои ресурсы, а инфлейтить их в чужом процессе
  * — отдельная возня с XModuleResources, и ради десятка вьюх она не окупается.
  */
 object PickerUi {
+
+    private const val CELL_DP = 44
 
     private val main = Handler(Looper.getMainLooper())
     private var popup: PopupWindow? = null
@@ -54,20 +60,14 @@ object PickerUi {
             Toast.makeText(ctx, "VK7TV: наборы ещё грузятся", Toast.LENGTH_SHORT).show()
             return
         }
-        Config.reloadIfChanged()
 
         val all = Emotes.groups.flatMap { it.emotes }
-        val adapter = EmoteAdapter(ctx, all) { name ->
-            insert(input, name)
-        }
 
         val rootView = LinearLayout(ctx).apply {
             orientation = LinearLayout.VERTICAL
             background = GradientDrawable().apply {
                 setColor(Ui.BG)
-                cornerRadii = floatArrayOf(
-                    r(ctx), r(ctx), r(ctx), r(ctx), 0f, 0f, 0f, 0f,
-                )
+                cornerRadii = floatArrayOf(r(ctx), r(ctx), r(ctx), r(ctx), 0f, 0f, 0f, 0f)
                 setStroke(Inject.dp(ctx, 1), Ui.BORDER)
             }
         }
@@ -76,8 +76,21 @@ object PickerUi {
         val search = search(ctx)
         rootView.addView(search)
 
-        val favRow = favorites(ctx, input)
-        if (favRow != null) rootView.addView(favRow)
+        // полоса избранного живёт над сеткой и не уезжает при прокрутке
+        val favBox = LinearLayout(ctx).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(Inject.dp(ctx, 10), 0, Inject.dp(ctx, 10), Inject.dp(ctx, 6))
+        }
+        rootView.addView(favBox)
+
+        val onFav = { name: String ->
+            val on = Config.toggleFavorite(name)
+            fillFavorites(ctx, favBox, input)
+            toast(ctx, if (on) "$name — в избранном" else "$name убран из избранного")
+        }
+        fillFavorites(ctx, favBox, input)
+
+        val adapter = EmoteAdapter(ctx, all, { insert(input, it) }, onFav)
 
         var group = -1 // -1 = все наборы
         var query = ""
@@ -171,22 +184,26 @@ object PickerUi {
         layoutParams = lp
     }
 
-    /** Полоса избранного — всегда сверху, как в веб-пикере. */
-    private fun favorites(ctx: Context, input: EditText): View? {
-        val names = Config.favorites
-        if (names.isEmpty()) return null
-        val found = names.mapNotNull { Emotes.get(it) }
-        if (found.isEmpty()) return null
-
-        val box = LinearLayout(ctx).apply {
-            orientation = LinearLayout.VERTICAL
-            setPadding(Inject.dp(ctx, 10), 0, Inject.dp(ctx, 10), Inject.dp(ctx, 6))
+    private fun fillFavorites(ctx: Context, box: LinearLayout, input: EditText) {
+        box.removeAllViews()
+        // эмоуты отключённого набора просто не показываем
+        val found = Config.favorites.mapNotNull { Emotes.get(it) }
+        if (found.isEmpty()) {
+            box.visibility = View.GONE
+            return
         }
+        box.visibility = View.VISIBLE
         box.addView(label(ctx, "ИЗБРАННОЕ"))
         val row = LinearLayout(ctx).apply { orientation = LinearLayout.HORIZONTAL }
         val cell = Inject.dp(ctx, CELL_DP)
         for (e in found) {
-            row.addView(cellView(ctx, e, cell) { insert(input, e.name) })
+            row.addView(
+                cellView(ctx, e, cell, { insert(input, e.name) }) {
+                    Config.toggleFavorite(e.name)
+                    fillFavorites(ctx, box, input)
+                    toast(ctx, "${e.name} убран из избранного")
+                },
+            )
         }
         box.addView(
             HorizontalScrollView(ctx).apply {
@@ -194,7 +211,6 @@ object PickerUi {
                 addView(row)
             },
         )
-        return box
     }
 
     private fun chips(ctx: Context, onPick: (Int) -> Unit): View {
@@ -248,7 +264,13 @@ object PickerUi {
         setPadding(Inject.dp(ctx, 2), 0, 0, Inject.dp(ctx, 4))
     }
 
-    private fun cellView(ctx: Context, e: Emote, size: Int, onTap: () -> Unit): ImageView {
+    private fun cellView(
+        ctx: Context,
+        e: Emote,
+        size: Int,
+        onTap: () -> Unit,
+        onLong: () -> Unit,
+    ): ImageView {
         val iv = ImageView(ctx)
         iv.layoutParams = LinearLayout.LayoutParams(size, size)
         iv.scaleType = ImageView.ScaleType.FIT_CENTER
@@ -258,7 +280,7 @@ object PickerUi {
         bind(iv, e)
         iv.setOnClickListener { onTap() }
         iv.setOnLongClickListener {
-            Toast.makeText(ctx, e.name, Toast.LENGTH_SHORT).show()
+            L.safe("избранное") { onLong() }
             true
         }
         return iv
@@ -284,14 +306,16 @@ object PickerUi {
         }
     }
 
-    private fun r(ctx: Context) = Inject.dp(ctx, 12).toFloat()
+    private fun toast(ctx: Context, msg: String) =
+        Toast.makeText(ctx, msg, Toast.LENGTH_SHORT).show()
 
-    private const val CELL_DP = 44
+    private fun r(ctx: Context) = Inject.dp(ctx, 12).toFloat()
 
     private class EmoteAdapter(
         val ctx: Context,
         var items: List<Emote>,
         val onTap: (String) -> Unit,
+        val onFav: (String) -> Unit,
     ) : BaseAdapter() {
 
         override fun getCount() = items.size
@@ -311,7 +335,7 @@ object PickerUi {
             bind(iv, e)
             iv.setOnClickListener { onTap(e.name) }
             iv.setOnLongClickListener {
-                Toast.makeText(ctx, e.name, Toast.LENGTH_SHORT).show()
+                L.safe("избранное") { onFav(e.name) }
                 true
             }
             return iv

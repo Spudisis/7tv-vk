@@ -151,6 +151,12 @@ object Inject {
         btn.setOnClickListener {
             L.safe("открытие пикера") { PickerUi.toggle(btn, lastInput.get() ?: input) }
         }
+        // настроек отдельным приложением нет — конфиг лежит в хранилище ВК,
+        // поэтому и правится отсюда же
+        btn.setOnLongClickListener {
+            L.safe("открытие настроек") { SettingsUi.show(btn) }
+            true
+        }
         return btn
     }
 

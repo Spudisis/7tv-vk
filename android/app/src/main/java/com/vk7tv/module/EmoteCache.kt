@@ -5,8 +5,6 @@ import android.graphics.drawable.AnimatedImageDrawable
 import android.graphics.drawable.Drawable
 import android.util.LruCache
 import java.io.File
-import java.net.HttpURLConnection
-import java.net.URL
 import java.nio.ByteBuffer
 import java.util.Collections
 import java.util.concurrent.Executors
@@ -60,7 +58,7 @@ object EmoteCache {
         if (loading.add(key)) {
             io.execute {
                 try {
-                    val data = download(url)
+                    val data = Net.bytes(url)
                     File(dir, key).writeBytes(data)
                     bytes.put(key, data)
                     onReady()
@@ -84,19 +82,6 @@ object EmoteCache {
         // анимированные webp с 7TV система тянет сама, свой декодер не нужен
         (d as? AnimatedImageDrawable)?.repeatCount = AnimatedImageDrawable.REPEAT_INFINITE
         d
-    }
-
-    private fun download(url: String): ByteArray {
-        val conn = URL(url).openConnection() as HttpURLConnection
-        conn.connectTimeout = 10_000
-        conn.readTimeout = 15_000
-        conn.setRequestProperty("User-Agent", "VK7TV-module")
-        try {
-            if (conn.responseCode != 200) throw RuntimeException("HTTP ${conn.responseCode}")
-            return conn.inputStream.readBytes()
-        } finally {
-            conn.disconnect()
-        }
     }
 
     private fun keyOf(url: String): String =
