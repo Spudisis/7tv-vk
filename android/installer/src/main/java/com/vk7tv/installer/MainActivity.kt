@@ -207,16 +207,24 @@ class MainActivity : Activity() {
         io.execute {
             try {
                 val module = Releases.moduleApk(this, ::log)
+                val keystore = extractKeystore()
                 val work = File(cacheDir, "work").apply { deleteRecursively(); mkdirs() }
                 val originals = Vk.originals(this, c, work, ::log)
                 val out = File(cacheDir, "out")
-                patchedApks = Patcher.patch(originals, module, out, ::log)
+                patchedApks = Patcher.patch(originals, module, keystore, out, ::log)
                 runOnUiThread { proceedAfterPatch() }
             } catch (t: Throwable) {
                 log("! Ошибка: ${t.message}")
                 busy(false)
             }
         }
+    }
+
+    // Постоянный ключ подписи из assets → в файл (LSPatch хочет путь).
+    private fun extractKeystore(): File {
+        val dst = File(cacheDir, "vk7tv.p12")
+        assets.open("signing/vk7tv.p12").use { inp -> dst.outputStream().use { inp.copyTo(it) } }
+        return dst
     }
 
     private fun proceedAfterPatch() {
