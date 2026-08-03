@@ -119,8 +119,10 @@
     const matches = [];
     for (const [name, v] of st.emoteMap) {
       // имена с постфиксом набора (ok_bratishkinoff) не засоряют список,
-      // пока не начнёшь его набирать — с ними каждый эмоут был бы дважды
-      if (v.a && !word.includes('_')) continue;
+      // пока не начнёшь его набирать: с ними каждый эмоут был бы дважды.
+      // Но если голого имени нет — код есть в нескольких наборах, и работает
+      // только имя с постфиксом, — показываем сразу все варианты
+      if (v.a && !word.includes('_') && st.emoteMap.has(v.a)) continue;
       if (name.toLowerCase().startsWith(lower)) matches.push({ name, url: v.u });
     }
     if (!matches.length) return hide();

@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "VK7TV — эмоуты 7TV во ВКонтакте",
-  "version": "0.8.0",
+  "version": "0.8.1",
   "description": "Прослойка над 7TV: заменяет слова-коды на анимированные эмоуты из наборов 7TV в сообщениях и ленте ВКонтакте.",
   "permissions": ["storage", "alarms", "unlimitedStorage"],
   "host_permissions": ["<all_urls>"],

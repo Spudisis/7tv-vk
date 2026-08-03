@@ -63,26 +63,36 @@
           : DEFAULT_EMOTES;
       for (const [n, v] of Object.entries(g)) emoteMap.set(n, normEmote(v));
     }
+    // У эмоута из набора есть второе имя — с постфиксом набора:
+    // ok_bratishkinoff. Голое имя остаётся за глобальным набором и «своими»,
+    // а набору стримера достаётся, только если такой код есть ровно в одном
+    // подключённом наборе. Есть в нескольких — голое имя ничьё, пишем
+    // с постфиксом: иначе картинка зависела бы от того, какой набор
+    // подключён последним.
+    // a — голое имя эмоута, пометка «это алиас» для автозаполнения.
+    const fromSets = new Map(); // голое имя -> {em, count}
     for (const s of sync.sets) {
       const m = local.setEmotes[s.id];
       if (!m) continue;
       for (const [n, v] of Object.entries(m)) {
         const em = normEmote(v);
-        emoteMap.set(n, em);
-        // второе имя с постфиксом набора: ok_bratishkinoff. Голое имя тоже
-        // работает, но постфикс снимает коллизию, когда один код есть
-        // в нескольких наборах — и его вставляет пикер.
-        // a: 1 — пометка «это алиас», чтобы не дублировать в автозаполнении
-        if (s.slug) emoteMap.set(`${n}_${s.slug}`, { u: em.u, z: em.z, a: 1 });
+        if (s.slug) emoteMap.set(`${n}_${s.slug}`, { u: em.u, z: em.z, a: n });
+        const prev = fromSets.get(n);
+        if (prev) prev.count++;
+        else fromSets.set(n, { em, count: 1 });
       }
+    }
+    for (const [n, o] of fromSets) {
+      if (o.count === 1 && !emoteMap.has(n)) emoteMap.set(n, o.em);
     }
     for (const [n, v] of Object.entries(sync.customEmotes)) emoteMap.set(n, normEmote(v));
 
-    // префильтр строим по голым именам: имя с постфиксом содержит голое
-    // как подстроку, так что такой текст регексп всё равно поймает
-    const base = [];
-    for (const [n, v] of emoteMap) if (!v.a) base.push(n);
-    testRegex = base.length ? new RegExp(base.map(escapeRegex).join('|')) : null;
+    // Префильтр строим по голым именам: имя с постфиксом содержит голое
+    // как подстроку, поэтому такой текст регексп поймает и без него.
+    // Исключение — коллизии: там голого имени нет, и алиас нужен явно.
+    const probes = [];
+    for (const [n, v] of emoteMap) if (!v.a || !emoteMap.has(v.a)) probes.push(n);
+    testRegex = probes.length ? new RegExp(probes.map(escapeRegex).join('|')) : null;
 
     // общее состояние для autocomplete.js и picker.js (один isolated world)
     window.__vk7tv = { emoteMap, enabled, resolveEmote };
