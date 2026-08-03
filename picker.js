@@ -256,10 +256,32 @@
     }
   }
 
+  // --- ресайз поповера (нативный CSS resize за правый нижний угол) ---
+
+  function clampPicker() {
+    const r = picker.getBoundingClientRect();
+    picker.style.left = Math.max(8, Math.min(r.left, window.innerWidth - r.width - 8)) + 'px';
+    picker.style.top = Math.max(8, Math.min(r.top, window.innerHeight - r.height - 8)) + 'px';
+  }
+
+  let sizeTimer = null;
+  new ResizeObserver(() => {
+    if (!open) return;
+    clearTimeout(sizeTimer);
+    sizeTimer = setTimeout(() => {
+      const r = picker.getBoundingClientRect();
+      if (!r.width || !r.height) return;
+      chrome.storage.local.set({ pickerSize: { w: Math.round(r.width), h: Math.round(r.height) } });
+      clampPicker();
+    }, 250);
+  }).observe(picker);
+
   // --- реакция на настройки и ресайз ---
 
   let reloadTimer = null;
-  chrome.storage.onChanged.addListener(() => {
+  chrome.storage.onChanged.addListener((changes, area) => {
+    // позиция и размер — наши же записи, сетку из-за них не перерисовываем
+    if (area === 'local' && !changes.setEmotes && !changes.globalEmotes) return;
     clearTimeout(reloadTimer);
     reloadTimer = setTimeout(async () => {
       const show = await loadGroups();
@@ -277,7 +299,14 @@
 
   async function init() {
     buildUi();
-    const { widgetPos } = await chrome.storage.local.get({ widgetPos: null });
+    const { widgetPos, pickerSize } = await chrome.storage.local.get({
+      widgetPos: null,
+      pickerSize: null,
+    });
+    if (pickerSize) {
+      picker.style.width = pickerSize.w + 'px';
+      picker.style.height = pickerSize.h + 'px';
+    }
     if (widgetPos) {
       setWidgetPos(widgetPos.left, widgetPos.top);
     } else {
