@@ -67,7 +67,7 @@ object PickerUi {
             orientation = LinearLayout.VERTICAL
             background = GradientDrawable().apply {
                 setColor(Ui.BG)
-                cornerRadii = floatArrayOf(r(ctx), r(ctx), r(ctx), r(ctx), 0f, 0f, 0f, 0f)
+                cornerRadius = r(ctx)
                 setStroke(Inject.dp(ctx, 1), Ui.BORDER)
             }
         }
@@ -128,13 +128,36 @@ object PickerUi {
             LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f),
         )
 
-        val h = (ctx.resources.displayMetrics.heightPixels * 0.45f).toInt()
+        // Поповер встаёт НАД панелью ввода, а не поверх неё: иначе не видно,
+        // что вставилось в поле. Считаем расстояние от низа экрана до верха
+        // панели — с Gravity.BOTTOM смещение как раз поднимает окно.
+        val dm = ctx.resources.displayMetrics
+        val gap = Inject.dp(ctx, 6)
+        val top = panelTop(anchor, input)
+        val yOff = (dm.heightPixels - top + gap).coerceAtLeast(0)
+        val available = (top - gap * 2).coerceAtLeast(0)
+        val h = minOf((dm.heightPixels * 0.45f).toInt(), available)
+            .coerceAtLeast(Inject.dp(ctx, 180))
+
         val pw = PopupWindow(rootView, WindowManager.LayoutParams.MATCH_PARENT, h, true)
         pw.setBackgroundDrawable(ColorDrawable(Color.TRANSPARENT))
         pw.isOutsideTouchable = true
         pw.inputMethodMode = PopupWindow.INPUT_METHOD_NEEDED
-        pw.showAtLocation(anchor, Gravity.BOTTOM, 0, 0)
+        pw.showAtLocation(anchor, Gravity.BOTTOM, 0, yOff)
         popup = pw
+    }
+
+    /** Верхняя граница панели ввода: берём то, что выше — кнопку или само поле. */
+    private fun panelTop(anchor: View, input: EditText): Int {
+        val a = IntArray(2)
+        anchor.getLocationOnScreen(a)
+        var top = a[1]
+        if (input.isAttachedToWindow) {
+            val b = IntArray(2)
+            input.getLocationOnScreen(b)
+            if (b[1] in 1 until top) top = b[1]
+        }
+        return top.coerceAtLeast(0)
     }
 
     private fun header(ctx: Context): View {
