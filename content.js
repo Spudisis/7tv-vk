@@ -309,7 +309,7 @@
     // .vk7tv-text — наш же рендер: без него слово, оставшееся в нём текстом,
     // обрабатывалось бы заново и обрастало чипами до бесконечности
     if (parent.isContentEditable) return;
-    if (parent.closest('script,style,textarea,input,title,svg,noscript,template,.vk7tv-ac,.vk7tv-picker,.vk7tv-widget,.vk7tv-text')) return;
+    if (parent.closest('script,style,textarea,input,title,svg,noscript,template,.vk7tv-ac,.vk7tv-picker,.vk7tv-preview,.vk7tv-widget,.vk7tv-text')) return;
     // подпись ВК, а не текст сообщения — не трогаем ни её саму, ни скобки вокруг
     if (SERVICE_TEXT.test(text.trim())) return;
     if (isServiceText(parent, 3)) return;

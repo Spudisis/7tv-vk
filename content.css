@@ -1,9 +1,9 @@
 img.vk7tv-emote {
   display: inline-block;
-  height: 26px;
+  height: 31px; /* 26 * 1.2 */
   width: auto;
   vertical-align: middle;
-  margin: -3px 1px;
+  margin: -4px 1px;
   position: relative;
   transition: transform 0.12s ease;
 }

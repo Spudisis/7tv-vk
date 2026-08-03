@@ -229,10 +229,101 @@
   }
 
   // ячейка сетки: картинка + кнопка «в избранное» в правом верхнем углу
+  // Долгое нажатие показывает эмоут крупно: в сетке 32px не разобрать,
+  // что именно за картинка, особенно у похожих вариантов одного эмоута.
+  const PREVIEW_DELAY = 300;
+  const hiCache = new Map(); // cdn-url -> Promise<url версии 4x | null>
+  let previewBox = null;
+  let previewCell = null;
+  let previewTimer = 0;
+  let previewShown = false;
+
+  function previewEl() {
+    if (previewBox) return previewBox;
+    previewBox = document.createElement('div');
+    previewBox.className = 'vk7tv-preview';
+    previewBox.append(document.createElement('img'), document.createElement('span'));
+    document.body.appendChild(previewBox);
+    // Высота меняется, когда догрузится картинка. Позиция считается от неё,
+    // поэтому одного расчёта мало — окно наезжало на эмоут снизу.
+    new ResizeObserver(() => {
+      if (previewCell) placePreview(previewCell, previewBox);
+    }).observe(previewBox);
+    return previewBox;
+  }
+
+  // в сетке лежит вариант 2x — при увеличении он мылит, поэтому тянем 4x
+  function hiRes(cdn) {
+    if (!cdn) return null;
+    if (!hiCache.has(cdn)) {
+      const st = window.__vk7tv;
+      const big = cdn.replace(/\/\dx\.webp$/, '/4x.webp');
+      hiCache.set(
+        cdn,
+        st && st.resolveEmote ? st.resolveEmote(big).catch(() => null) : Promise.resolve(null)
+      );
+    }
+    return hiCache.get(cdn);
+  }
+
+  // Ставим окошко над ячейкой. Отдельной функцией, потому что позвать её
+  // надо дважды: сразу и после загрузки картинки — до неё высота окошка
+  // ещё не окончательная, и оно наезжало на эмоут снизу.
+  function placePreview(cell, box) {
+    const c = cell.getBoundingClientRect();
+    const b = box.getBoundingClientRect();
+    let left = c.left + c.width / 2 - b.width / 2;
+    left = Math.max(8, Math.min(left, window.innerWidth - b.width - 8));
+    let top = c.top - b.height - 8;
+    if (top < 8) top = c.bottom + 8; // сверху не влезло — показываем снизу
+    box.style.left = left + 'px';
+    box.style.top = top + 'px';
+  }
+
+  function showPreview(cell) {
+    const src = cell.querySelector('img');
+    if (!src) return;
+    const box = previewEl();
+    const img = box.querySelector('img');
+    const label = box.querySelector('span');
+    const name = cell.dataset.name || src.alt || '';
+    label.textContent = name;
+    box.style.display = 'flex';
+    previewShown = true;
+
+    previewCell = cell;
+    img.src = src.src;
+    placePreview(cell, box);
+
+    const p = hiRes(cell.dataset.cdn);
+    if (p) {
+      p.then((u) => {
+        if (u && previewShown && label.textContent === name) img.src = u;
+      });
+    }
+  }
+
+  function hidePreview() {
+    clearTimeout(previewTimer);
+    previewTimer = 0;
+    if (previewBox) previewBox.style.display = 'none';
+  }
+
+  // За pointerleave не цепляемся: браузер сыплет leave/enter, даже когда
+  // курсор стоит на месте, и превью не успевало показаться.
+  document.addEventListener('pointerup', hidePreview, true);
+  document.addEventListener('pointercancel', hidePreview, true);
+  // Прокрутку не слушаем: браузер шлёт scroll прямо на нажатие, подтягивая
+  // элемент в видимую часть, и превью из-за этого не открывалось.
+  // Отпускания кнопки достаточно — превью живёт ровно пока держишь.
+
   function makeCell(name, url) {
     const cell = document.createElement('span');
     cell.className = 'vk7tv-picker-cell';
     cell.dataset.name = name;
+    // оригинал с CDN нужен, чтобы достать версию 4x для превью;
+    // в url к этому моменту может лежать уже blob:
+    if (/^https:\/\/cdn\.7tv\.app\//.test(url)) cell.dataset.cdn = url;
 
     const img = document.createElement('img');
     img.src = url;
@@ -241,7 +332,20 @@
     img.loading = 'lazy';
     img.decoding = 'async';
     img.draggable = false;
-    img.addEventListener('click', () => insertEmote(name));
+    img.addEventListener('click', () => {
+      // зажали ради превью — вставлять не надо
+      if (previewShown) {
+        previewShown = false;
+        return;
+      }
+      insertEmote(name);
+    });
+    img.addEventListener('pointerdown', () => {
+      previewShown = false;
+      clearTimeout(previewTimer);
+      previewTimer = setTimeout(() => showPreview(cell), PREVIEW_DELAY);
+    });
+
     // CSP ВК режет cdn.7tv.app — перезагружаем через фоновый скрипт (blob:)
     img.addEventListener('error', () => {
       if (img.dataset.fb) return cell.remove();
@@ -416,6 +520,7 @@
 
   function setOpen(next) {
     open = next;
+    hidePreview();
     picker.style.display = open ? 'flex' : 'none';
     if (open) {
       positionPicker();
