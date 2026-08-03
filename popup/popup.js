@@ -178,6 +178,65 @@ $('#refreshSets').addEventListener('click', async () => {
   render();
 });
 
+// --- резервная копия настроек ---
+// Браузер стирает хранилище расширения при удалении, поэтому наборы
+// и свои эмоуты можно выгрузить в файл и вернуть после переустановки.
+// Эмоуты наборов в файл не кладём — они качаются из API по id набора.
+
+const BACKUP_DEFAULTS = { enabled: true, useGlobal: true, widget: true, sets: [], customEmotes: {} };
+
+$('#exportSettings').addEventListener('click', async () => {
+  const sync = await chrome.storage.sync.get(BACKUP_DEFAULTS);
+  const data = { app: 'vk7tv', version: chrome.runtime.getManifest().version, ...sync };
+  const url = URL.createObjectURL(new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' }));
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = 'vk7tv-backup.json';
+  document.body.appendChild(a); // Chrome не скачивает по клику вне документа
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 10000);
+  $('#backupStatus').classList.remove('error');
+  $('#backupStatus').textContent = `Сохранено: наборов ${sync.sets.length}, своих эмоутов ${Object.keys(sync.customEmotes).length}`;
+});
+
+$('#importSettings').addEventListener('click', () => $('#importFile').click());
+
+$('#importFile').addEventListener('change', async (e) => {
+  const file = e.target.files[0];
+  const status = $('#backupStatus');
+  status.classList.remove('error');
+  e.target.value = '';
+  if (!file) return;
+  try {
+    const data = JSON.parse(await file.text());
+    if (!data || data.app !== 'vk7tv' || !Array.isArray(data.sets)) {
+      throw new Error('Это не файл настроек VK7TV');
+    }
+    const cur = await chrome.storage.sync.get({ sets: [], customEmotes: {} });
+    const sets = data.sets.filter((s) => s && s.id);
+    const merged = cur.sets.filter((s) => !sets.some((x) => x.id === s.id)).concat(sets);
+    await chrome.storage.sync.set({
+      enabled: data.enabled !== false,
+      useGlobal: data.useGlobal !== false,
+      widget: data.widget !== false,
+      sets: merged,
+      customEmotes: { ...cur.customEmotes, ...(data.customEmotes || {}) },
+      // набор по умолчанию не должен вернуться поверх восстановленного списка
+      seeded: true,
+    });
+    status.textContent = `Восстановлено наборов: ${merged.length}. Качаю эмоуты…`;
+    render();
+    const resp = await sendMessage({ type: 'refresh-sets' });
+    if (resp && resp.error) throw new Error(resp.error);
+    status.textContent = 'Готово, эмоуты загружены';
+    render();
+  } catch (err) {
+    status.classList.add('error');
+    status.textContent = String((err && err.message) || err);
+  }
+});
+
 $('#addCustom').addEventListener('click', async () => {
   const name = $('#customName').value.trim();
   const url = $('#customUrl').value.trim();

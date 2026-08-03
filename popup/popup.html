@@ -36,6 +36,21 @@
   </section>
 
   <details>
+    <summary>Резервная копия настроек</summary>
+    <div class="status">
+      Удаление расширения стирает наборы и свои эмоуты — это делает браузер.
+      Обновляйся заменой папки и кнопкой «Обновить» на карточке расширения,
+      а перед удалением сохрани копию.
+    </div>
+    <div class="row">
+      <button class="ghost" id="exportSettings">Сохранить в файл</button>
+      <button class="ghost" id="importSettings">Загрузить из файла</button>
+      <input type="file" id="importFile" accept="application/json,.json" hidden>
+    </div>
+    <div class="status" id="backupStatus"></div>
+  </details>
+
+  <details>
     <summary>Свои эмоуты (имя + ссылка на гифку)</summary>
     <div class="row">
       <input type="text" id="customName" placeholder="имяЭмоута">
