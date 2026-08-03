@@ -268,21 +268,24 @@ async function fetchAsDataUrl(url) {
   // кладём промис, а не результат: две картинки подряд не пойдут в сеть дважды
   const p = (async () => {
     const cache = await caches.open(IMG_CACHE);
-    let resp = await cache.match(url);
-    if (!resp) {
-      const net = await fetch(url);
-      if (!net.ok) throw new Error('HTTP ' + net.status);
-      await cache.put(url, net.clone());
-      resp = net;
-    }
-    const mime = resp.headers.get('content-type') || 'image/webp';
-    const bytes = new Uint8Array(await resp.arrayBuffer());
+    // В кэше лежит уже готовый data:-URL, а не байты картинки. Так после
+    // засыпания воркера остаётся только прочитать строку: перекодировать
+    // сотню эмоутов в base64 на каждую перезагрузку страницы — заметно.
+    const hit = await cache.match(url);
+    if (hit) return hit.text();
+
+    const net = await fetch(url);
+    if (!net.ok) throw new Error('HTTP ' + net.status);
+    const mime = net.headers.get('content-type') || 'image/webp';
+    const bytes = new Uint8Array(await net.arrayBuffer());
     let bin = '';
     const CHUNK = 0x8000;
     for (let i = 0; i < bytes.length; i += CHUNK) {
       bin += String.fromCharCode.apply(null, bytes.subarray(i, i + CHUNK));
     }
-    return `data:${mime};base64,${btoa(bin)}`;
+    const dataUrl = `data:${mime};base64,${btoa(bin)}`;
+    await cache.put(url, new Response(dataUrl, { headers: { 'content-type': 'text/plain' } }));
+    return dataUrl;
   })();
   imgCache.set(url, p);
   p.catch(() => imgCache.delete(url)); // не запоминаем неудачу навсегда

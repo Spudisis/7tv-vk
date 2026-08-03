@@ -13,6 +13,7 @@ import android.text.TextWatcher
 import android.view.Gravity
 import android.view.View
 import android.view.ViewGroup
+import android.view.ViewTreeObserver
 import android.view.WindowManager
 import android.widget.AbsListView
 import android.widget.BaseAdapter
@@ -43,6 +44,10 @@ object PickerUi {
 
     private val main = Handler(Looper.getMainLooper())
     private var popup: PopupWindow? = null
+
+    // следим за разметкой, пока поповер открыт: клавиатура двигает панель ввода
+    private var watcher: ViewTreeObserver.OnGlobalLayoutListener? = null
+    private var watched: View? = null
 
     fun toggle(anchor: View, input: EditText) {
         val p = popup
@@ -157,6 +162,47 @@ object PickerUi {
         pw.inputMethodMode = PopupWindow.INPUT_METHOD_NEEDED
         pw.showAtLocation(anchor, Gravity.NO_GRAVITY, 0, y)
         popup = pw
+        follow(pw, anchor, input, gap, y)
+    }
+
+    /**
+     * Держим поповер приклеенным к панели ввода.
+     *
+     * Позицию нельзя посчитать один раз: поповер забирает фокус, клавиатура
+     * прячется, панель ввода уезжает вниз — и окно остаётся висеть посреди
+     * экрана. Поэтому пересчитываем на каждой перерисовке разметки.
+     */
+    private fun follow(pw: PopupWindow, anchor: View, input: EditText, gap: Int, startY: Int) {
+        detach()
+        var lastY = startY
+        val w = ViewTreeObserver.OnGlobalLayoutListener {
+            L.safe("позиция поповера") {
+                if (!pw.isShowing) return@safe
+                val t = panelTop(anchor, input)
+                if (t <= 0) return@safe
+                val y = (t - pw.height - gap).coerceAtLeast(0)
+                // без сравнения update снова вызвал бы разметку — и так по кругу
+                if (y == lastY) return@safe
+                lastY = y
+                pw.update(0, y, -1, -1)
+            }
+        }
+        anchor.viewTreeObserver.addOnGlobalLayoutListener(w)
+        watcher = w
+        watched = anchor
+        pw.setOnDismissListener {
+            detach()
+            popup = null
+        }
+    }
+
+    private fun detach() {
+        val w = watcher ?: return
+        L.safe("снятие слежения") {
+            watched?.viewTreeObserver?.removeOnGlobalLayoutListener(w)
+        }
+        watcher = null
+        watched = null
     }
 
     /**
