@@ -41,14 +41,26 @@ function activeEmotes({ sync, local }) {
         : DEFAULT_EMOTES;
     for (const [n, v] of Object.entries(g)) map.set(n, normEmote(v));
   }
-  // эмоуты набора показываем под полным именем — с постфиксом набора,
-  // ровно в таком виде их вставляет пикер на странице
+  // Так же, как content.js: у эмоута набора есть имя с постфиксом (имя_slug),
+  // а голое имя достаётся набору с первым по алфавиту слагом при коллизии —
+  // иначе список в попапе расходится с тем, что реально рендерится в чате.
+  const fromSets = new Map(); // голое имя -> [{slug, em}]
   for (const s of sync.sets) {
     const m = local.setEmotes[s.id];
     if (!m) continue;
     for (const [n, v] of Object.entries(m)) {
-      map.set(s.slug ? `${n}_${s.slug}` : n, normEmote(v));
+      const em = normEmote(v);
+      if (s.slug) map.set(`${n}_${s.slug}`, em);
+      const cand = { slug: s.slug || '', em };
+      const list = fromSets.get(n);
+      if (list) list.push(cand);
+      else fromSets.set(n, [cand]);
     }
+  }
+  for (const [n, list] of fromSets) {
+    if (map.has(n)) continue; // занято глобальным
+    list.sort((a, b) => a.slug.localeCompare(b.slug) || a.em.u.localeCompare(b.em.u));
+    map.set(n, list[0].em);
   }
   for (const [n, v] of Object.entries(sync.customEmotes)) map.set(n, normEmote(v));
   return map;
@@ -290,5 +302,7 @@ $('#addCustom').addEventListener('click', async () => {
 });
 
 $('#search').addEventListener('input', () => renderGrid(gridEmotes));
+
+$('#version').textContent = 'версия ' + chrome.runtime.getManifest().version;
 
 render();
