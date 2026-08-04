@@ -21,6 +21,8 @@ import android.graphics.drawable.RippleDrawable
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
 import android.provider.Settings
 import android.text.Editable
 import android.text.TextWatcher
@@ -55,7 +57,11 @@ import java.util.concurrent.Executors
  */
 class MainActivity : Activity() {
 
-    private val io = Executors.newSingleThreadExecutor()
+    // Пересоздаётся при «Прервать»: если тяжёлая операция (скачивание/патч)
+    // зависла, новый поток гарантирует, что следующая попытка не встанет за ней.
+    private var io = Executors.newSingleThreadExecutor()
+
+    private val ui = Handler(Looper.getMainLooper())
 
     // --- палитра (значения по умолчанию — светлые; тёмные подставит initPalette) ---
     private var PAGE = Color.parseColor("#F4F5F7")
@@ -109,6 +115,7 @@ class MainActivity : Activity() {
     private lateinit var stepView: TextView
     private lateinit var progressBar: ProgressBar
     private lateinit var percentView: TextView
+    private lateinit var abortButton: Button       // выход из зависшей стадии
     private lateinit var resultBanner: LinearLayout   // «Открыть ВК» / «Переустановить»
     private lateinit var candidates: LinearLayout
     private lateinit var showAllButton: Button
@@ -132,6 +139,16 @@ class MainActivity : Activity() {
     private var updateMode = false
     private var pendingModuleVersion: String? = null  // версия модуля, которую сейчас ставим
 
+    // Пока true — операция идёт и мы ждём её завершения. «Прервать» и новый старт
+    // сбрасывают флаг; поздние результаты брошенной операции (broadcast, возврат
+    // фонового потока) после этого игнорируются, чтобы флоу не ожил сам собой.
+    @Volatile private var flowActive = false
+    // Ждём ответа на системный диалог установки/удаления. На части прошивок,
+    // если закрыть его тапом мимо, терминального broadcast'а не будет — тогда
+    // ловим возврат в onResume и сами разблокируем экран.
+    @Volatile private var awaitingUserAction = false
+    private var resumed = false
+
     private val receiver = object : BroadcastReceiver() {
         override fun onReceive(ctx: Context, intent: Intent) {
             val op = intent.getStringExtra(Installer.EXTRA_OP) ?: return
@@ -140,7 +157,10 @@ class MainActivity : Activity() {
                     val confirm = @Suppress("DEPRECATION")
                     (intent.getParcelableExtra<Intent>(Intent.EXTRA_INTENT))
                     confirm?.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                    if (confirm != null) startActivity(confirm)
+                    if (confirm != null) {
+                        awaitingUserAction = true
+                        startActivity(confirm)
+                    }
                 }
                 PackageInstaller.STATUS_SUCCESS -> onOpDone(op, true, null)
                 else -> onOpDone(op, false, intent.getStringExtra(PackageInstaller.EXTRA_STATUS_MESSAGE))
@@ -173,9 +193,39 @@ class MainActivity : Activity() {
         window.decorView.systemUiVisibility = vis
     }
 
+    override fun onResume() {
+        super.onResume()
+        resumed = true
+        // Вернулись из системного диалога установки/удаления. Дадим шанс
+        // терминальному broadcast'у прийти; если через паузу мы всё ещё ждём
+        // ответа и снова на переднем плане — значит диалог закрыли, не подтвердив
+        // (тап мимо/«назад»), результата не будет. Разблокируем экран сами.
+        if (awaitingUserAction) {
+            ui.removeCallbacks(userActionCheck)
+            ui.postDelayed(userActionCheck, 1500)
+        }
+    }
+
+    override fun onPause() {
+        super.onPause()
+        resumed = false
+    }
+
+    private val userActionCheck = Runnable {
+        if (awaitingUserAction && resumed && !isFinishing) {
+            awaitingUserAction = false
+            flowActive = false
+            installAfterUninstall = false
+            step("Отменено — системный диалог закрыт, ничего не изменилось.", error = true)
+            busy(false)
+            render()
+        }
+    }
+
     override fun onDestroy() {
         super.onDestroy()
         runCatching { unregisterReceiver(receiver) }
+        ui.removeCallbacks(userActionCheck)
         io.shutdownNow()
     }
 
@@ -371,9 +421,17 @@ class MainActivity : Activity() {
             layoutParams = lp(MATCH_PARENT, WRAP_CONTENT, top = 10, bottom = 2)
         }
         percentView = text("", 12f, MUTED).apply { visibility = View.GONE }
+        // «Прервать» живёт внутри карточки прогресса, которую busy() НЕ гасит, —
+        // значит кнопка остаётся нажимаемой, даже когда весь остальной экран
+        // заблокирован. Это гарантированный выход из любой зависшей стадии.
+        abortButton = outline("Прервать").apply {
+            layoutParams = lp(MATCH_PARENT, WRAP_CONTENT, top = 12)
+            setOnClickListener { abortFlow() }
+        }
         progressCard.addView(stepView)
         progressCard.addView(progressBar)
         progressCard.addView(percentView)
+        progressCard.addView(abortButton)
         content.addView(progressCard)
 
         resultBanner = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
@@ -836,6 +894,7 @@ class MainActivity : Activity() {
             layoutParams = lp(MATCH_PARENT, WRAP_CONTENT, top = 10)
             setOnClickListener {
                 val pkg = targetPkg ?: return@setOnClickListener
+                flowActive = true
                 busy(true)
                 resultBanner.removeAllViews()
                 installAfterUninstall = true
@@ -873,6 +932,7 @@ class MainActivity : Activity() {
         targetPkg = c.pkg
         updateMode = c.patched
         pendingModuleVersion = null
+        flowActive = true
         resultBanner.removeAllViews()
         selectTab(0)
         busy(true)
@@ -895,6 +955,9 @@ class MainActivity : Activity() {
                 patchedApks = Patcher.patch(originals, module, keystore, out, ::log)
                 runOnUiThread { proceedAfterPatch() }
             } catch (t: Throwable) {
+                // операцию прервали — её падение/прерывание нас уже не касается
+                if (!flowActive) return@execute
+                flowActive = false
                 step("Ошибка: ${t.message}", error = true)
                 log(t.stackTraceToString())
                 busy(false)
@@ -914,6 +977,7 @@ class MainActivity : Activity() {
         runCatching { packageManager.getPackageArchiveInfo(apk.absolutePath, 0)?.versionName }.getOrNull()
 
     private fun proceedAfterPatch() {
+        if (!flowActive) return  // прервали, пока патчили — дальше не идём
         val pkg = targetPkg ?: return
         if (updateMode) {
             // Пропатченный ВК и новый патч подписаны одним ключом LSPatch —
@@ -931,6 +995,11 @@ class MainActivity : Activity() {
     }
 
     private fun onOpDone(op: String, ok: Boolean, msg: String?) {
+        // системный диалог ответил — фолбэк из onResume больше не нужен
+        awaitingUserAction = false
+        ui.removeCallbacks(userActionCheck)
+        // операцию отменили кнопкой «Прервать» — поздний результат игнорируем
+        if (!flowActive) return
         when (op) {
             Installer.OP_UNINSTALL -> {
                 if (ok && installAfterUninstall) {
@@ -938,11 +1007,13 @@ class MainActivity : Activity() {
                     step("Оригинал удалён, ставлю VK7TV…")
                     Installer.install(this, patchedApks)
                 } else {
+                    flowActive = false
                     step(if (ok) "Удалено." else "Удаление отменено.")
                     busy(false)
                 }
             }
             Installer.OP_INSTALL -> {
+                flowActive = false
                 if (ok) {
                     targetPkg?.let { pkg ->
                         pendingModuleVersion?.let { rememberModuleVersion(pkg, it) }
@@ -958,6 +1029,7 @@ class MainActivity : Activity() {
                 }
             }
             Installer.OP_SELF -> {
+                flowActive = false
                 step(
                     if (ok) "Установщик обновлён." else "Обновление установщика не удалось: ${msg ?: "отменено"}",
                     error = !ok
@@ -965,6 +1037,25 @@ class MainActivity : Activity() {
                 busy(false)
             }
         }
+    }
+
+    /**
+     * Выход из любой стадии по кнопке «Прервать». Саму тяжёлую операцию
+     * (скачивание/патч LSPatch) прервать нельзя, поэтому просто помечаем флоу
+     * брошенным — её поздний результат onOpDone/proceedAfterPatch проигнорируют —
+     * и пересоздаём рабочий поток, чтобы следующая попытка не встала за зависшей.
+     * Системный диалог установки, если он ещё открыт, отменит сам пользователь.
+     */
+    private fun abortFlow() {
+        flowActive = false
+        awaitingUserAction = false
+        installAfterUninstall = false
+        ui.removeCallbacks(userActionCheck)
+        io.shutdownNow()
+        io = Executors.newSingleThreadExecutor()
+        step("Прервано.", error = true)
+        busy(false)
+        render()
     }
 
     // ---- версия модуля: помним, что реально встроили ----
@@ -989,16 +1080,20 @@ class MainActivity : Activity() {
 
     private fun startSelfUpdate(upd: Releases.Found) {
         if (!ensureCanInstall()) return
+        flowActive = true
         busy(true)
         step("Качаю установщик v${upd.version}…")
         io.execute {
             try {
                 val apk = Http.download(upd.assetUrl, File(cacheDir, "installer.apk"), ::percent)
                 runOnUiThread {
+                    if (!flowActive) return@runOnUiThread
                     indeterminate()
                     Installer.install(this, listOf(apk), Installer.OP_SELF)
                 }
             } catch (t: Throwable) {
+                if (!flowActive) return@execute
+                flowActive = false
                 step("Не скачалось: ${t.message}", error = true)
                 busy(false)
             }
