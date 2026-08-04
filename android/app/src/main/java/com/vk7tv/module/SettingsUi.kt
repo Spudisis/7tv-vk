@@ -142,6 +142,36 @@ object SettingsUi {
         // Версия модуля — по ней видно, доехало ли обновление через установщик.
         root.addView(note(ctx, "VK7TV модуль ${BuildConfig.VERSION_NAME}"))
 
+        // Модуль ронял процесс в прошлый раз — показываем стек прямо тут,
+        // чтобы его можно было заскринить с телефона без кабеля и logcat.
+        Crash.last?.let { trace ->
+            root.addView(label(ctx, "ПОСЛЕДНИЙ ВЫЛЕТ"))
+            root.addView(
+                note(ctx, "Модуль уронил приложение. Пришли этот текст — по нему видно причину:"),
+            )
+            root.addView(
+                TextView(ctx).apply {
+                    text = trace.take(2000)
+                    textSize = 10f
+                    setTextColor(Ui.TEXT)
+                    typeface = Typeface.MONOSPACE
+                    setTextIsSelectable(true)
+                    background = GradientDrawable().apply {
+                        setColor(Ui.BG2)
+                        cornerRadius = dp(ctx, 8).toFloat()
+                        setStroke(dp(ctx, 1), Ui.BORDER)
+                    }
+                    setPadding(dp(ctx, 10), dp(ctx, 8), dp(ctx, 10), dp(ctx, 8))
+                    val lp = LinearLayout.LayoutParams(
+                        ViewGroup.LayoutParams.MATCH_PARENT,
+                        ViewGroup.LayoutParams.WRAP_CONTENT,
+                    )
+                    lp.topMargin = dp(ctx, 6)
+                    layoutParams = lp
+                },
+            )
+        }
+
         val scroll = ScrollView(ctx).apply {
             background = GradientDrawable().apply {
                 setColor(Ui.BG)

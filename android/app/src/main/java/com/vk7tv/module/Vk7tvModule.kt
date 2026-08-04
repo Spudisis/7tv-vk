@@ -19,6 +19,10 @@ class Vk7tvModule : IXposedHookLoadPackage {
         // Фильтровать второй раз означало бы ломать сторонние клиенты ВК
         // (Sova, Kate и прочие), у которых свои имена пакетов.
         if (lpp.packageName in SKIP) return
+        // Первым делом — ловушка вылетов: непойманное исключение в нашем коде
+        // роняет весь процесс ВК/Sova, и без этого стек уходит в системный
+        // logcat мимо журнала LSPosed, где его с телефона не достать.
+        Crash.install()
         L.i("зацепились за ${lpp.packageName}")
 
         // Каждый хук в своём try/catch. Раньше они стояли под одним, и падение
@@ -117,16 +121,26 @@ object Boot {
             Diag.attach(app)
             Diag.note("модуль загружен ${BuildConfig.VERSION_NAME} в ${app.packageName}")
             val cache = File(app.cacheDir, "vk7tv").apply { mkdirs() }
+            Crash.attach(cache)
             EmoteCache.init(cache)
             Suggest.init(cache)
+            // модуль в прошлый раз уронил процесс — покажем это, а стек положим
+            // строкой в настройки (тост поверх диагностики, показываем всегда)
+            Crash.lastAndClear()?.let {
+                Diag.alert("модуль вылетал в прошлый раз — подробности внизу настроек")
+            }
             Thread({
-                seedDefaultSet()
-                L.safe("загрузка наборов") { Emotes.load(cache) }
-                // диалог мог быть уже открыт — перерисовываем то, что на экране
-                Replacer.rerenderAll()
-                Inject.markReady()
-                Diag.note("наборов ${Config.sets.size}, эмоутов ${Emotes.size()}")
-                canary()
+                // весь поток под L.safe: непойманное исключение тут убило бы
+                // процесс ВК, а не просто оставило нас без эмоутов
+                L.safe("инициализация наборов") {
+                    seedDefaultSet()
+                    L.safe("загрузка наборов") { Emotes.load(cache) }
+                    // диалог мог быть уже открыт — перерисовываем то, что на экране
+                    Replacer.rerenderAll()
+                    Inject.markReady()
+                    Diag.note("наборов ${Config.sets.size}, эмоутов ${Emotes.size()}")
+                    canary()
+                }
             }, "vk7tv-sets").apply { isDaemon = true }.start()
         }
     }

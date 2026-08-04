@@ -36,6 +36,19 @@ object Diag {
         main.post { flush() }
     }
 
+    /**
+     * Показать всегда, даже когда диагностика выключена. Только для важного —
+     * например, что модуль в прошлый раз уронил процесс: об этом человек должен
+     * узнать, а не искать в журнале.
+     */
+    fun alert(msg: String) {
+        L.i(msg)
+        val c = ctx ?: return
+        main.post {
+            L.safe("тост") { Toast.makeText(c, "VK7TV: $msg", Toast.LENGTH_LONG).show() }
+        }
+    }
+
     private fun flush() {
         val c = ctx ?: return
         val list = synchronized(pending) {

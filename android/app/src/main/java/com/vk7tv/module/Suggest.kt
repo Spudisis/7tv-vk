@@ -102,13 +102,17 @@ object Suggest {
             probes++
         }
         io.execute {
-            val hit = L.safe("проверка $word") { probe(word) }
-            synchronized(cache) {
-                cache[word] = hit
-                inFlight.remove(word)
+            // весь раннабл под L.safe: вылет тут ушёл бы глобальному
+            // обработчику и уронил бы процесс ВК
+            L.safe("предложение $word") {
+                val hit = L.safe("проверка $word") { probe(word) }
+                synchronized(cache) {
+                    cache[word] = hit
+                    inFlight.remove(word)
+                }
+                // нашлось — перерисуем чат, чтобы слово подсветилось
+                if (hit != null) Replacer.rerenderAll()
             }
-            // нашлось — перерисуем чат, чтобы слово подсветилось
-            if (hit != null) Replacer.rerenderAll()
         }
     }
 
