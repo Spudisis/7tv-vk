@@ -128,22 +128,6 @@ async function storeSet(set) {
   return meta;
 }
 
-// Набор, который подключается сам при первой установке.
-// Одноразово (флаг seeded): если пользователь удалит его из списка,
-// заново не добавится.
-const DEFAULT_STREAMER = 'bratishkinoff';
-
-async function seedDefaultSet() {
-  const { seeded } = await chrome.storage.sync.get({ seeded: false });
-  if (seeded) return;
-  try {
-    await storeSet(await fetchStreamerSet(DEFAULT_STREAMER));
-    await chrome.storage.sync.set({ seeded: true });
-  } catch (e) {
-    // не было сети — попробуем при следующем запуске браузера
-  }
-}
-
 async function removeSet(id) {
   const { sets } = await chrome.storage.sync.get({ sets: [] });
   const { setEmotes } = await chrome.storage.local.get({ setEmotes: {} });
@@ -317,9 +301,9 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
 });
 
 chrome.runtime.onInstalled.addListener(() => {
-  seedDefaultSet().then(() => refreshAll().catch(() => {}));
+  refreshAll().catch(() => {});
 });
 
 chrome.runtime.onStartup.addListener(() => {
-  seedDefaultSet().then(() => refreshAll().catch(() => {}));
+  refreshAll().catch(() => {});
 });

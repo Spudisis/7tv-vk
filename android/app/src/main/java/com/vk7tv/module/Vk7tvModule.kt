@@ -133,7 +133,6 @@ object Boot {
                 // весь поток под L.safe: непойманное исключение тут убило бы
                 // процесс ВК, а не просто оставило нас без эмоутов
                 L.safe("инициализация наборов") {
-                    seedDefaultSet()
                     L.safe("загрузка наборов") { Emotes.load(data) }
                     // диалог мог быть уже открыт — перерисовываем то, что на экране
                     Replacer.rerenderAll()
@@ -176,20 +175,6 @@ object Boot {
     }
 
     /**
-     * Первый запуск — подключаем набор стримера, как это делает расширение.
-     * Одноразово: удалил из списка — сам не вернётся.
-     */
-    private fun seedDefaultSet() {
-        if (Config.seeded || Config.sets.isNotEmpty()) return
-        val ok = L.safe("набор по умолчанию") {
-            Config.addSet(SevenTv.resolve(DEFAULT_STREAMER))
-            true
-        }
-        // не было сети — попробуем при следующем запуске
-        if (ok == true) Config.markSeeded()
-    }
-
-    /**
      * Перечитать наборы. Только не на UI-потоке.
      * force — выкачать заново даже то, что уже лежит в кэше (кнопка в настройках).
      */
@@ -219,6 +204,4 @@ object Boot {
             }
         }, 30_000)
     }
-
-    private const val DEFAULT_STREAMER = "bratishkinoff"
 }
