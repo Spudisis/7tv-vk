@@ -263,16 +263,19 @@ class MainActivity : Activity() {
             setBackgroundColor(PAGE)
         }
 
-        // контент с боковыми отступами; нижний бар вкладок — во всю ширину
-        val body = LinearLayout(this).apply {
+        // Боковые отступы — на шапке и контенте страниц отдельно, а не на root:
+        // так нижняя панель вкладок остаётся во всю ширину. frame — прямой
+        // весовой ребёнок root (один уровень веса, чтобы высота гарантированно
+        // тянулась; двойная вложенность весов на части устройств схлопывалась).
+        val head = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setPadding(dp(16), dp(16), dp(16), 0)
-            layoutParams = LinearLayout.LayoutParams(MATCH_PARENT, 0, 1f)
+            setPadding(dp(16), dp(16), dp(16), dp(12))
         }
-        body.addView(text("VK7TV", 22f, INK, bold = true))
-        body.addView(text(
-            "Установщик для приложения ВК", 13f, MUTED
-        ).apply { layoutParams = lp(MATCH_PARENT, WRAP_CONTENT, top = 2, bottom = 12) })
+        head.addView(text("VK7TV", 22f, INK, bold = true))
+        head.addView(text("Установщик для приложения ВК", 13f, MUTED).apply {
+            layoutParams = lp(MATCH_PARENT, WRAP_CONTENT, top = 2)
+        })
+        root.addView(head)
 
         val frame = FrameLayout(this).apply {
             layoutParams = LinearLayout.LayoutParams(MATCH_PARENT, 0, 1f)
@@ -281,8 +284,7 @@ class MainActivity : Activity() {
         pages.forEach {
             frame.addView(it, FrameLayout.LayoutParams(MATCH_PARENT, MATCH_PARENT))
         }
-        body.addView(frame)
-        root.addView(body)
+        root.addView(frame)
 
         // нижняя навигация — кнопки-вкладки во всю ширину
         root.addView(buildTabBar())
@@ -350,7 +352,7 @@ class MainActivity : Activity() {
     private fun buildInstallPage(): View {
         val content = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setPadding(0, 0, 0, dp(24))
+            setPadding(dp(16), 0, dp(16), dp(24))
         }
 
         topBanner = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
@@ -419,7 +421,7 @@ class MainActivity : Activity() {
     private fun buildHelpPage(): View {
         val content = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setPadding(0, 0, 0, dp(24))
+            setPadding(dp(16), 0, dp(16), dp(24))
         }
         fun section(title: String, body: String) {
             val c = card()
@@ -475,6 +477,7 @@ class MainActivity : Activity() {
     private fun buildLogPage(): View {
         val col = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
+            setPadding(dp(16), 0, dp(16), dp(16))
         }
         col.addView(outline("Скопировать журнал").apply {
             layoutParams = lp(MATCH_PARENT, WRAP_CONTENT, bottom = 10)
