@@ -25,6 +25,11 @@ object Emotes {
 
     private val map = HashMap<String, Emote>()
 
+    // постфиксное имя набора -> голое имя эмоута (ok_bratishkinoff -> ok).
+    // По нему автоподсказки прячут дубль с постфиксом, пока у кода есть
+    // голое имя и человек ещё не начал набирать «_» — как в вебе.
+    private val aliasOf = HashMap<String, String>()
+
     // дешёвый префильтр: до подстроки и хеш-лукапа отсекаем слова,
     // которые эмоутом быть не могут. setText зовётся часто, экономим.
     private var minLen = Int.MAX_VALUE
@@ -44,6 +49,38 @@ object Emotes {
 
     fun size(): Int = map.size
 
+    /**
+     * Эмоуты, чьё имя начинается с [word], — для автоподсказок при вводе.
+     * Правила те же, что в вебе (autocomplete.js): постфиксные имена
+     * (ok_bratishkinoff) не засоряют список, пока у кода есть голое имя и
+     * человек не начал набирать «_». Порядок: точное совпадение регистра выше,
+     * потом короче, потом по алфавиту. Возвращает не больше [limit].
+     */
+    fun matchPrefix(word: String, limit: Int): List<Emote> {
+        if (word.isEmpty()) return emptyList()
+        val hasUnderscore = word.contains('_')
+        val out = ArrayList<Emote>()
+        synchronized(map) {
+            for ((name, e) in map) {
+                if (name.length < word.length) continue
+                if (!name.regionMatches(0, word, 0, word.length, ignoreCase = true)) continue
+                if (!hasUnderscore) {
+                    val bare = aliasOf[name]
+                    if (bare != null && map.containsKey(bare)) continue
+                }
+                out.add(e)
+            }
+        }
+        out.sortWith(
+            compareBy(
+                { if (it.name.startsWith(word)) 0 else 1 },
+                { it.name.length },
+                { it.name },
+            ),
+        )
+        return if (out.size > limit) ArrayList(out.subList(0, limit)) else out
+    }
+
     /** Может ли этот кусок текста вообще быть именем эмоута. */
     fun mayBe(text: CharSequence, start: Int, end: Int): Boolean {
         val len = end - start
@@ -62,6 +99,7 @@ object Emotes {
      */
     fun load(cacheDir: File, force: Boolean = false) {
         val fresh = LinkedHashMap<String, Emote>()
+        val freshAlias = HashMap<String, String>()
         val builtGroups = ArrayList<Group>()
 
         // Сеть — самое долгое место загрузки. Тянем все наборы разом, а не по
@@ -92,6 +130,7 @@ object Emotes {
                 if (slug.isNotEmpty()) {
                     val full = "${e.name}_$slug"
                     fresh[full] = Emote(full, e.url, e.zeroWidth)
+                    freshAlias[full] = e.name
                     forPicker.add(Emote(full, e.url, e.zeroWidth))
                 } else {
                     forPicker.add(e)
@@ -122,6 +161,8 @@ object Emotes {
         synchronized(map) {
             map.clear()
             map.putAll(fresh)
+            aliasOf.clear()
+            aliasOf.putAll(freshAlias)
             minLen = Int.MAX_VALUE
             maxLen = 0
             java.util.Arrays.fill(firstAscii, false)

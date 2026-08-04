@@ -60,6 +60,9 @@ object Inject {
                         // защита есть в picker.js, сюда её забыли перенести.
                         if (v.contentDescription == OUR_UI) return@safe
                         lastInput = WeakReference(v)
+                        // автоподсказки эмоутов при вводе — как в вебе и как
+                        // нативные подсказки стикеров ВК
+                        Autocomplete.watch(v)
                         // на момент attach разметка ещё не разложена — ждём кадр
                         v.post { L.safe("установка кнопки") { attach(v) } }
                     }
