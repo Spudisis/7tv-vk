@@ -6,6 +6,13 @@
 set -euo pipefail
 cd "$(dirname "$0")"
 
+# --store — дополнительно собрать «плоский» zip с manifest.json в корне:
+# именно такой ждёт Chrome Web Store. Обычный архив кладёт всё в папку
+# vk7tv/ (это нужно для ручной установки — ID расширения там считается
+# от пути к папке), а стору папка-обёртка не годится.
+STORE=0
+[ "${1:-}" = "--store" ] && STORE=1
+
 VERSION=$(python3 -c 'import json;print(json.load(open("manifest.json"))["version"])')
 OUT="dist/vk7tv-${VERSION}.zip"
 STAGE="dist/vk7tv"
@@ -63,3 +70,14 @@ done <<< "$REQUIRED"
 
 echo "Готово: $OUT"
 unzip -Z1 "$OUT" | sed 's/^/  /'
+
+# Плоский архив для Chrome Web Store: те же файлы, но в корне zip.
+if [ "$STORE" -eq 1 ]; then
+  STORE_OUT="dist/vk7tv-${VERSION}-store.zip"
+  rm -f "$STORE_OUT"
+  (cd "$STAGE" && zip -qXr "../vk7tv-${VERSION}-store.zip" .)
+  unzip -l "$STORE_OUT" manifest.json >/dev/null 2>&1 || {
+    echo "В store-архиве manifest.json не в корне" >&2; exit 1; }
+  echo "Для стора: $STORE_OUT"
+  unzip -Z1 "$STORE_OUT" | sed 's/^/  /'
+fi

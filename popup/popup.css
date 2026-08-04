@@ -236,6 +236,22 @@ footer {
   color: #7a8090;
 }
 
+.foot-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-top: 6px;
+}
+
+.foot-row a {
+  color: #4c8bf5;
+  text-decoration: none;
+}
+
+.foot-row a:hover {
+  text-decoration: underline;
+}
+
 #toast {
   position: fixed;
   left: 50%;
