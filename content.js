@@ -64,10 +64,11 @@
   const MAX_PROBES = 120; // потолок на вкладку: чат не должен спамить в API
 
   // слово целиком из букв/цифр/подчёркиваний, с разделителем внутри
-  // и не короче, чем «xx_yyy»
+  // и не короче, чем «xx_yyy». Хвостовые и подряд идущие «_» допускаем:
+  // ник стримера бывает и таким (peeb_iluci____ → ник iluci____), границу
+  // «эмоут|ник» разбирает splitCandidates в фоне, а API проверит.
   const SUGGEST_RE = /^[A-Za-z0-9][A-Za-z0-9_]{4,59}$/;
-  const looksLikeSetEmote = (w) =>
-    SUGGEST_RE.test(w) && w.includes('_') && !w.endsWith('_') && !w.includes('__');
+  const looksLikeSetEmote = (w) => SUGGEST_RE.test(w) && w.includes('_');
 
   function probeSuggest(word) {
     if (probes >= MAX_PROBES) return;

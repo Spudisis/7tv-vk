@@ -75,20 +75,15 @@ object Suggest {
     fun looksLike(text: CharSequence, start: Int, end: Int): Boolean {
         val len = end - start
         if (len < 5 || len > 60) return false
-        if (text[end - 1] == '_') return false
         val c0 = text[start]
         if (!(c0.isAsciiLetter() || c0.isAsciiDigit())) return false
+        // Хвостовые и подряд идущие «_» раньше отсекались как «не наш формат»,
+        // но ник стримера бывает и таким (peeb_iluci____ → ник iluci____).
+        // Границу «эмоут | ник» всё равно перебирает splits(), а API проверит.
         var underscores = 0
-        var prevUnderscore = false
         for (i in start until end) {
             val c = text[i]
-            if (c == '_') {
-                if (prevUnderscore) return false // «__» — не наш формат
-                underscores++
-                prevUnderscore = true
-                continue
-            }
-            prevUnderscore = false
+            if (c == '_') { underscores++; continue }
             if (!(c.isAsciiLetter() || c.isAsciiDigit())) return false
         }
         return underscores > 0
@@ -160,9 +155,9 @@ object Suggest {
 
     private fun validSlug(slug: String): Boolean {
         if (slug.length < 3 || slug.length > 25) return false
-        if (slug.endsWith("_")) return false
         val c0 = slug[0]
         if (!(c0.isAsciiLetter() || c0.isAsciiDigit())) return false
+        // хвостовой «_» в нике допустим — стример iluci____ реален
         for (c in slug) if (!(c.isAsciiLetter() || c.isAsciiDigit() || c == '_')) return false
         return true
     }

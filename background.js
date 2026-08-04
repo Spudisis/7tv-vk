@@ -210,7 +210,8 @@ function splitCandidates(word) {
   for (let i = word.indexOf('_'); i > 0 && out.length < MAX_SPLITS; i = word.indexOf('_', i + 1)) {
     const name = word.slice(0, i);
     const slug = word.slice(i + 1).toLowerCase();
-    if (/^[a-z0-9][a-z0-9_]{2,24}$/.test(slug) && !slug.endsWith('_')) out.push({ name, slug });
+    // хвостовой «_» в нике допустим (iluci____) — оставляем только проверку формата
+    if (/^[a-z0-9][a-z0-9_]{2,24}$/.test(slug)) out.push({ name, slug });
   }
   return out;
 }
