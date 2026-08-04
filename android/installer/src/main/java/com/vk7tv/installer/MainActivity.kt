@@ -71,6 +71,7 @@ class MainActivity : Activity() {
     private var WARN_BG = Color.parseColor("#FFF6E6")
     private var WARN_LINE = Color.parseColor("#F0C36D")
     private var TAB_BG = Color.parseColor("#E9EAEE")
+    private var LOG_BG = Color.parseColor("#FFFFFF")
 
     /** Тёмная палитра — по системной теме устройства. */
     private fun initPalette(night: Boolean) {
@@ -88,15 +89,19 @@ class MainActivity : Activity() {
         WARN_BG = Color.parseColor("#3A2F1A")
         WARN_LINE = Color.parseColor("#7A5C2E")
         TAB_BG = Color.parseColor("#202228")
+        LOG_BG = Color.parseColor("#23262E")
     }
 
     // --- вкладки ---
     private val tabTitles = listOf("Установка", "Справка", "Журнал")
-    private val tabIcons = listOf("📥", "📖", "📋")
+    // Минималистичные иконки (Material Symbols Light, Iconify) — тинтуются под тему.
+    private val tabIconRes = intArrayOf(
+        R.drawable.ic_tab_install, R.drawable.ic_tab_help, R.drawable.ic_tab_log
+    )
     private lateinit var tabs: List<Tab>
     private lateinit var pages: List<View>
 
-    private class Tab(val container: LinearLayout, val label: TextView)
+    private class Tab(val container: LinearLayout, val icon: ImageView, val label: TextView)
 
     // --- вкладка «Установка» ---
     private lateinit var topBanner: LinearLayout      // обновление установщика / просьба про источники
@@ -301,22 +306,20 @@ class MainActivity : Activity() {
             layoutParams = LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT)
         }
         tabs = tabTitles.mapIndexed { i, title ->
-            val icon = TextView(this).apply {
-                text = tabIcons[i]
-                gravity = Gravity.CENTER
-                sp(this, 17f)
+            val icon = ImageView(this).apply {
+                setImageResource(tabIconRes[i])
+                layoutParams = LinearLayout.LayoutParams(dp(18), dp(18)).apply { marginEnd = dp(6) }
             }
             val label = TextView(this).apply {
                 text = title
-                gravity = Gravity.CENTER
-                sp(this, 11f)
-                setPadding(0, dp(2), 0, 0)
+                sp(this, 12.5f)
+                setSingleLine()
             }
             val container = LinearLayout(this).apply {
-                orientation = LinearLayout.VERTICAL
+                orientation = LinearLayout.HORIZONTAL
                 gravity = Gravity.CENTER
-                minimumHeight = dp(52)
-                setPadding(dp(4), dp(8), dp(4), dp(8))
+                minimumHeight = dp(48)
+                setPadding(dp(4), dp(10), dp(4), dp(10))
                 isClickable = true
                 layoutParams = LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f).apply {
                     marginStart = dp(3); marginEnd = dp(3)
@@ -325,7 +328,7 @@ class MainActivity : Activity() {
                 addView(label)
                 setOnClickListener { selectTab(i) }
             }
-            Tab(container, label)
+            Tab(container, icon, label)
         }
         tabs.forEach { row.addView(it.container) }
         wrap.addView(row)
@@ -336,8 +339,10 @@ class MainActivity : Activity() {
         pages.forEachIndexed { i, v -> v.visibility = if (i == index) View.VISIBLE else View.GONE }
         tabs.forEachIndexed { i, t ->
             val active = i == index
+            val fg = if (active) Color.WHITE else INK
             t.container.background = ripple(bg(if (active) ACCENT else TAB_BG, 12), 0x22808080, 12)
-            t.label.setTextColor(if (active) Color.WHITE else INK)
+            t.icon.imageTintList = ColorStateList.valueOf(fg)
+            t.label.setTextColor(fg)
             t.label.setTypeface(null, if (active) Typeface.BOLD else Typeface.NORMAL)
         }
     }
@@ -484,7 +489,8 @@ class MainActivity : Activity() {
         }
         val logScroll = ScrollView(this).apply {
             layoutParams = LinearLayout.LayoutParams(MATCH_PARENT, 0, 1f)
-            background = bg(CARD, 12, LINE)
+            background = bg(LOG_BG, 12, LINE)
+            isFillViewport = true
             addView(logView)
         }
         col.addView(logScroll)
