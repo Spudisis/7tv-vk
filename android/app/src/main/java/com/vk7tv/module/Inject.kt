@@ -7,6 +7,7 @@ import android.view.Gravity
 import android.view.MotionEvent
 import android.view.View
 import android.view.ViewGroup
+import android.view.inputmethod.EditorInfo
 import android.widget.EditText
 import android.widget.FrameLayout
 import android.widget.ImageView
@@ -59,6 +60,15 @@ object Inject {
                         // улетает в строку поиска вместо поля ВК. В вебе такая
                         // защита есть в picker.js, сюда её забыли перенести.
                         if (v.contentDescription == OUR_UI) return@safe
+                        // Поле поиска (групп, чатов, стикеров) — не поле
+                        // сообщения. Кнопку туда не вешаем и «последним полем»
+                        // не считаем: иначе она достаётся первому попавшемуся
+                        // полю (открыл поиск групп — кнопка ушла туда), а до
+                        // композера сообщения так и не доезжает.
+                        if (isSearchField(v)) {
+                            L.v("поле пропущено как поиск")
+                            return@safe
+                        }
                         lastInput = WeakReference(v)
                         // автоподсказки эмоутов при вводе — как в вебе и как
                         // нативные подсказки стикеров ВК
@@ -70,6 +80,24 @@ object Inject {
             },
         )
         Diag.note("хук панели ввода установлен")
+    }
+
+    /**
+     * Похоже ли поле на строку поиска, а не на поле сообщения. Точных классов
+     * ВК не знаем (обфусцированы), поэтому опознаём по двум устойчивым
+     * признакам: действие клавиатуры «Поиск» и имя ресурса поля (id переживает
+     * обфускацию кода — той же уловкой пользуется Service.isServiceView).
+     */
+    private fun isSearchField(v: EditText): Boolean {
+        if ((v.imeOptions and EditorInfo.IME_MASK_ACTION) == EditorInfo.IME_ACTION_SEARCH) {
+            return true
+        }
+        val id = v.id
+        if (id != View.NO_ID) {
+            val name = L.safe("имя поля") { v.resources.getResourceEntryName(id) }?.lowercase()
+            if (name != null && ("search" in name || "query" in name)) return true
+        }
+        return false
     }
 
     private fun attach(input: EditText) {
