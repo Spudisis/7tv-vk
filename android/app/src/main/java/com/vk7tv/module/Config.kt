@@ -3,6 +3,7 @@ package com.vk7tv.module
 import android.content.Context
 import android.content.SharedPreferences
 import org.json.JSONArray
+import org.json.JSONException
 import org.json.JSONObject
 
 class SetRef(val id: String, val slug: String, val name: String)
@@ -170,7 +171,11 @@ object Config {
      * Списки эмоутов оттуда не берём — их модуль качает с 7tv.io сам по id.
      */
     fun importBackup(raw: String): String {
-        val json = JSONObject(raw)
+        val json = try {
+            JSONObject(raw)
+        } catch (t: JSONException) {
+            throw RuntimeException("Не похоже на резервную копию — скопируй весь текст из файла целиком")
+        }
         val e = prefs?.edit() ?: throw IllegalStateException("конфиг не открыт")
         var setCount = 0
         var favCount = 0

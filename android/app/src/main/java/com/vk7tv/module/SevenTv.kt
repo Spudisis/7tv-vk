@@ -27,7 +27,15 @@ object SevenTv {
     }
 
     fun bySetId(id: String, slugOverride: String?): SetRef {
-        val json = JSONObject(Net.get("https://7tv.io/v3/emote-sets/$id"))
+        val raw = try {
+            Net.get("https://7tv.io/v3/emote-sets/$id")
+        } catch (e: Net.HttpException) {
+            throw RuntimeException(
+                if (e.code == 404) "Набор 7TV с таким ID не найден — проверь ссылку"
+                else "7TV сейчас недоступен (код ${e.code}), попробуй позже",
+            )
+        }
+        val json = JSONObject(raw)
         val owner = json.optJSONObject("owner")
         val slug = slugOverride ?: slugify(owner?.optString("username") ?: "")
         return SetRef(json.optString("id", id), slug, json.optString("name", id))

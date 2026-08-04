@@ -36,8 +36,22 @@ function slugify(s) {
     .replace(/[^\p{L}\p{N}_-]/gu, '');
 }
 
+// Ошибка сети/API -> человекопонятный текст. «Failed to fetch» (DNS, обрыв,
+// блокировка провайдером) в РФ почти всегда значит, что до 7tv.io не достучаться
+// без VPN. Сырое «HTTP 500» пользователю тоже не показываем. Наши собственные
+// брошенные тексты («Стример не найден» и т.п.) отдаём как есть.
+function humanError(e) {
+  const msg = String((e && e.message) || e || '');
+  if (e instanceof TypeError || /Failed to fetch|NetworkError|network\s*error/i.test(msg)) {
+    return 'Не удаётся связаться с 7tv.io — похоже, без VPN он недоступен';
+  }
+  if (/\bHTTP\s+\d{3}\b/.test(msg)) return '7TV сейчас недоступен, попробуй позже';
+  return msg || 'Что-то пошло не так';
+}
+
 async function fetchSet(idOrGlobal) {
   const resp = await fetch(SET_API + idOrGlobal, { cache: 'no-cache' });
+  if (resp.status === 404) throw new Error('Набор 7TV с таким ID не найден — проверь ссылку');
   if (!resp.ok) throw new Error('7TV API: HTTP ' + resp.status);
   const json = await resp.json();
   return {
@@ -278,7 +292,7 @@ async function fetchAsDataUrl(url) {
 }
 
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
-  const reply = (p) => p.then(sendResponse).catch((e) => sendResponse({ error: String(e.message || e) }));
+  const reply = (p) => p.then(sendResponse).catch((e) => sendResponse({ error: humanError(e) }));
   if (msg.type === 'add-set') {
     reply(addSet(msg.input));
     return true;

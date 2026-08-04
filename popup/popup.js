@@ -198,7 +198,12 @@ $('#refreshSets').addEventListener('click', async () => {
   status.classList.remove('error');
   status.textContent = 'Обновляю…';
   // по кнопке — принудительно, иначе сеть не трогается и кэш остаётся как есть
-  await sendMessage({ type: 'refresh-sets', force: true });
+  const resp = await sendMessage({ type: 'refresh-sets', force: true });
+  if (resp && resp.error) {
+    status.classList.add('error');
+    status.textContent = resp.error;
+    return;
+  }
   status.textContent = 'Наборы обновлены';
   render();
 });
@@ -245,7 +250,12 @@ $('#importFile').addEventListener('change', async (e) => {
   e.target.value = '';
   if (!file) return;
   try {
-    const data = JSON.parse(await file.text());
+    let data;
+    try {
+      data = JSON.parse(await file.text());
+    } catch {
+      throw new Error('Файл повреждён или это не JSON — выбери файл, сохранённый кнопкой «Сохранить в файл»');
+    }
     if (!data || data.app !== 'vk7tv' || !Array.isArray(data.sets)) {
       throw new Error('Это не файл настроек VK7TV');
     }

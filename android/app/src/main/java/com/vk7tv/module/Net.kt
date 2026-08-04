@@ -7,6 +7,13 @@ import java.net.URL
 /** Сеть идёт из процесса ВК — у него уже есть INTERNET, своих прав не надо. */
 object Net {
 
+    /**
+     * Не-200 от сервера. Код доступен вызывающему: по нему можно дать понятный
+     * текст (404 набора — «не найден», прочее — «сервис недоступен»), а не
+     * показывать пользователю сырое «HTTP 500».
+     */
+    class HttpException(val code: Int, val url: String) : RuntimeException("HTTP $code $url")
+
     // Повторяем один раз на сетевой сбой (таймаут, обрыв соединения): на
     // мобильной связи одиночные блипы — обычное дело, и без повтора добавление
     // набора падало с «timeout». Не-200 (404 и прочее) НЕ повторяем — это
@@ -58,7 +65,7 @@ object Net {
     private fun ok(conn: HttpURLConnection, url: String) {
         if (conn.responseCode != 200) {
             L.safe("сброс ошибки") { conn.errorStream?.use { it.readBytes() } }
-            throw RuntimeException("HTTP ${conn.responseCode} $url")
+            throw HttpException(conn.responseCode, url)
         }
     }
 

@@ -46,6 +46,12 @@ internal object L {
             if (e is IOException) return "Не удаётся связаться с 7tv.io — похоже, без VPN он недоступен"
             e = e.cause
         }
-        return t.message ?: t.toString()
+        val msg = t.message
+        // подстраховка: если куда-то просочилось сырое «HTTP 500» (не наш
+        // человеческий текст) — не показываем код пользователю
+        if (msg != null && Regex("HTTP \\d{3}").containsMatchIn(msg)) {
+            return "7TV сейчас недоступен, попробуй позже"
+        }
+        return msg ?: t.toString()
     }
 }
