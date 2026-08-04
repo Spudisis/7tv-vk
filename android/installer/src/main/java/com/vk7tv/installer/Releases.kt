@@ -18,9 +18,21 @@ object Releases {
 
     class Found(val tag: String, val version: String, val assetUrl: String, val assetName: String)
 
-    /** Первый (самый свежий) релиз, чей тег подходит под [tagStartsWith], с .apk внутри. */
+    /**
+     * Релиз с максимальной версией среди тех, чей тег начинается с
+     * [tagStartsWith] и внутри есть .apk.
+     *
+     * Раньше брали ПЕРВЫЙ подходящий в ленте, полагаясь на то, что GitHub
+     * отдаёт релизы от новых к старым. Но сразу после публикации порядок
+     * ленты бывает нестабилен (кэш индексации на стороне GitHub): свежий
+     * релиз какое-то время стоит не наверху, и «первый» оказывался не самой
+     * новой версией — так, например, 0.5.10 не тянулся, пока в ленте выше
+     * висел 0.5.9. Поэтому перебираем все подходящие и берём наибольшую
+     * версию по semver, а не по позиции в ленте.
+     */
     private fun latest(tagStartsWith: String): Found? {
         val arr = JSONArray(Http.getString(API))
+        var best: Found? = null
         for (i in 0 until arr.length()) {
             val rel = arr.optJSONObject(i) ?: continue
             if (rel.optBoolean("draft") || rel.optBoolean("prerelease")) continue
@@ -33,10 +45,13 @@ object Releases {
                 if (!name.endsWith(".apk")) continue
                 val url = a.optString("browser_download_url")
                 if (url.isEmpty()) continue
-                return Found(tag, versionFromTag(tag), url, name)
+                val cand = Found(tag, versionFromTag(tag), url, name)
+                val cur = best
+                if (cur == null || semverGreater(cand.version, cur.version)) best = cand
+                break // из ассетов одного релиза берём первый .apk
             }
         }
-        return null
+        return best
     }
 
     // "android-v0.5.3" / "installer-v0.2.0" -> "0.5.3" / "0.2.0"
