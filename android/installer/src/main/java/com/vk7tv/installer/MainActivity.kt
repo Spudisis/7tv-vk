@@ -1,6 +1,7 @@
 package com.vk7tv.installer
 
 import android.app.Activity
+import android.app.Dialog
 import android.content.BroadcastReceiver
 import android.content.ClipData
 import android.content.ClipboardManager
@@ -9,8 +10,10 @@ import android.content.Intent
 import android.content.IntentFilter
 import android.content.pm.PackageInstaller
 import android.content.res.ColorStateList
+import android.content.res.Configuration
 import android.graphics.Color
 import android.graphics.Typeface
+import android.graphics.drawable.ColorDrawable
 import android.graphics.drawable.Drawable
 import android.graphics.drawable.GradientDrawable
 import android.graphics.drawable.RippleDrawable
@@ -18,6 +21,8 @@ import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.provider.Settings
+import android.text.Editable
+import android.text.TextWatcher
 import android.text.method.ScrollingMovementMethod
 import android.util.TypedValue
 import android.view.Gravity
@@ -26,6 +31,7 @@ import android.view.ViewGroup
 import android.view.ViewGroup.LayoutParams.MATCH_PARENT
 import android.view.ViewGroup.LayoutParams.WRAP_CONTENT
 import android.widget.Button
+import android.widget.EditText
 import android.widget.FrameLayout
 import android.widget.ImageView
 import android.widget.LinearLayout
@@ -50,20 +56,40 @@ class MainActivity : Activity() {
 
     private val io = Executors.newSingleThreadExecutor()
 
-    // --- палитра ---
-    private val PAGE = Color.parseColor("#F4F5F7")
-    private val CARD = Color.parseColor("#FFFFFF")
-    private val ACCENT = Color.parseColor("#6C5CE7")
-    private val INK = Color.parseColor("#1E1F24")
-    private val MUTED = Color.parseColor("#6B7280")
-    private val LINE = Color.parseColor("#E6E8EC")
-    private val DANGER = Color.parseColor("#D64545")
-    private val OK = Color.parseColor("#16A34A")
-    private val CHIP_BG = Color.parseColor("#EEF0F3")
-    private val OK_BG = Color.parseColor("#E7F7EE")
-    private val WARN_BG = Color.parseColor("#FFF6E6")
-    private val WARN_LINE = Color.parseColor("#F0C36D")
-    private val TAB_BG = Color.parseColor("#E9EAEE")
+    // --- палитра (значения по умолчанию — светлые; тёмные подставит initPalette) ---
+    private var PAGE = Color.parseColor("#F4F5F7")
+    private var CARD = Color.parseColor("#FFFFFF")
+    private var ACCENT = Color.parseColor("#6C5CE7")
+    private var INK = Color.parseColor("#1E1F24")
+    private var MUTED = Color.parseColor("#6B7280")
+    private var LINE = Color.parseColor("#E6E8EC")
+    private var DANGER = Color.parseColor("#D64545")
+    private var OK = Color.parseColor("#16A34A")
+    private var CHIP_BG = Color.parseColor("#EEF0F3")
+    private var OK_BG = Color.parseColor("#E7F7EE")
+    private var WARN_BG = Color.parseColor("#FFF6E6")
+    private var WARN_LINE = Color.parseColor("#F0C36D")
+    private var TAB_BG = Color.parseColor("#E9EAEE")
+    private var TAB_ACTIVE = Color.parseColor("#FFFFFF")
+
+    /** Тёмная палитра — по системной теме устройства. */
+    private fun initPalette(night: Boolean) {
+        if (!night) return
+        PAGE = Color.parseColor("#121317")
+        CARD = Color.parseColor("#1E1F24")
+        ACCENT = Color.parseColor("#8B7BFF")
+        INK = Color.parseColor("#ECEDEF")
+        MUTED = Color.parseColor("#9AA0A6")
+        LINE = Color.parseColor("#2E3036")
+        DANGER = Color.parseColor("#F26D6D")
+        OK = Color.parseColor("#4ADE80")
+        CHIP_BG = Color.parseColor("#2A2C33")
+        OK_BG = Color.parseColor("#12331F")
+        WARN_BG = Color.parseColor("#3A2F1A")
+        WARN_LINE = Color.parseColor("#7A5C2E")
+        TAB_BG = Color.parseColor("#202228")
+        TAB_ACTIVE = Color.parseColor("#33343B")
+    }
 
     // --- вкладки ---
     private val tabTitles = listOf("Установка", "Как это работает", "Журнал")
@@ -79,6 +105,11 @@ class MainActivity : Activity() {
     private lateinit var resultBanner: LinearLayout   // «Открыть ВК» / «Переустановить»
     private lateinit var candidates: LinearLayout
     private lateinit var showAllButton: Button
+    private lateinit var installScroll: ScrollView
+
+    // Приложения, выбранные вручную через поиск в «Показать все приложения» —
+    // могут не попадать в авто-список клиентов ВК, поэтому держим их отдельно.
+    private val extraPicked = LinkedHashMap<String, Vk.Client>()
 
     // --- вкладка «Журнал» ---
     private lateinit var logView: TextView
@@ -112,11 +143,27 @@ class MainActivity : Activity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        val night = (resources.configuration.uiMode and Configuration.UI_MODE_NIGHT_MASK) ==
+            Configuration.UI_MODE_NIGHT_YES
+        initPalette(night)
+        window.setBackgroundDrawable(ColorDrawable(PAGE))
         setContentView(buildUi())
+        applySystemBars(night)
         selectTab(0)
         registerStatusReceiver()
         checkUpdates()
         render()
+    }
+
+    // Статус-бар и навбар в цвет фона, иконки — светлые/тёмные под тему.
+    private fun applySystemBars(night: Boolean) {
+        window.statusBarColor = PAGE
+        window.navigationBarColor = PAGE
+        var vis = window.decorView.systemUiVisibility
+        val lightBars = View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR or View.SYSTEM_UI_FLAG_LIGHT_NAVIGATION_BAR
+        vis = if (night) vis and lightBars.inv() else vis or lightBars
+        @Suppress("DEPRECATION")
+        window.decorView.systemUiVisibility = vis
     }
 
     override fun onDestroy() {
@@ -254,7 +301,7 @@ class MainActivity : Activity() {
         pages.forEachIndexed { i, v -> v.visibility = if (i == index) View.VISIBLE else View.GONE }
         tabViews.forEachIndexed { i, t ->
             val active = i == index
-            t.background = if (active) bg(CARD, 10) else null
+            t.background = if (active) bg(TAB_ACTIVE, 10) else null
             t.setTextColor(if (active) ACCENT else MUTED)
             t.setTypeface(null, if (active) Typeface.BOLD else Typeface.NORMAL)
         }
@@ -321,11 +368,12 @@ class MainActivity : Activity() {
 
         showAllButton = outline("Показать все приложения").apply {
             layoutParams = lp(MATCH_PARENT, WRAP_CONTENT, top = 2)
-            setOnClickListener { showAll() }
+            setOnClickListener { openAppPicker() }
         }
         content.addView(showAllButton)
 
-        return ScrollView(this).apply { addView(content) }
+        installScroll = ScrollView(this).apply { addView(content) }
+        return installScroll
     }
 
     private fun buildHelpPage(): View {
@@ -412,30 +460,138 @@ class MainActivity : Activity() {
 
     private fun render() {
         candidates.removeAllViews()
-        showAllButton.visibility = View.VISIBLE
         val found = Vk.clients(this)
-        if (found.isEmpty()) {
+        val shown = LinkedHashSet<String>()
+        for (client in found) { addCandidateRow(client); shown.add(client.pkg) }
+        // выбранные вручную — только те, что не попали в авто-список
+        for (client in extraPicked.values) if (shown.add(client.pkg)) addCandidateRow(client)
+        if (shown.isEmpty()) {
             val c = card()
             c.addView(text(
-                "Клиент ВК не найден. Открой список ниже и выбери приложение ВК вручную.",
+                "Клиент ВК не найден автоматически. Нажми «Показать все приложения» — " +
+                    "там есть поиск, выбери свой клиент ВК вручную.",
                 13.5f, MUTED
             ))
             candidates.addView(c)
         }
-        for (client in found) addCandidateRow(client)
     }
 
-    private fun showAll() {
-        candidates.removeAllViews()
-        showAllButton.visibility = View.GONE
-        val note = card()
-        note.addView(text(
-            "Все приложения с иконкой в лаунчере. Выбирай только клиент ВК — патч " +
-                "имеет смысл лишь для него.",
-            13.5f, MUTED
-        ))
-        candidates.addView(note)
-        for (client in Vk.all(this)) addCandidateRow(client)
+    // ---- полный список приложений с поиском ----
+
+    /**
+     * Модалка со всеми приложениями: сверху липкое поле поиска, прокручивается
+     * только список. Тап по приложению добавляет его карточкой в основной список —
+     * там пользователь увидит последствие и осознанно нажмёт «Пропатчить».
+     */
+    private fun openAppPicker() {
+        val all = Vk.all(this)
+        val dialog = Dialog(this)
+
+        val panel = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setBackgroundColor(PAGE)
+            setPadding(dp(16), dp(16), dp(16), dp(16))
+        }
+
+        val header = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            layoutParams = lp(MATCH_PARENT, WRAP_CONTENT, bottom = 4)
+        }
+        header.addView(text("Все приложения", 18f, INK, bold = true).apply {
+            layoutParams = LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f)
+        })
+        header.addView(button("Закрыть", CARD, ACCENT).apply {
+            background = null
+            minHeight = 0
+            setPadding(dp(8), dp(6), 0, dp(6))
+            setOnClickListener { dialog.dismiss() }
+        })
+        panel.addView(header)
+        panel.addView(text(
+            "Выбери свой клиент ВК — патч имеет смысл только для него.", 12.5f, MUTED
+        ).apply { layoutParams = lp(MATCH_PARENT, WRAP_CONTENT, bottom = 10) })
+
+        val search = EditText(this).apply {
+            hint = "Поиск по названию или пакету"
+            setSingleLine()
+            sp(this, 15f)
+            setTextColor(INK)
+            setHintTextColor(MUTED)
+            background = bg(CARD, 12, LINE)
+            setPadding(dp(12), dp(11), dp(12), dp(11))
+            layoutParams = lp(MATCH_PARENT, WRAP_CONTENT, bottom = 10)
+        }
+        panel.addView(search)
+
+        val list = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        panel.addView(ScrollView(this).apply {
+            layoutParams = LinearLayout.LayoutParams(MATCH_PARENT, 0, 1f)
+            addView(list)
+        })
+
+        // строки создаём один раз, фильтр только прячет/показывает (иконки не
+        // перезагружаются на каждую букву)
+        val rows = all.map { it to pickerRow(it, dialog) }
+        rows.forEach { list.addView(it.second) }
+        val emptyState = text("Ничего не найдено", 14f, MUTED).apply {
+            visibility = View.GONE
+            setPadding(dp(2), dp(12), 0, 0)
+        }
+        list.addView(emptyState)
+
+        fun applyFilter(query: String) {
+            val q = query.trim().lowercase()
+            var any = false
+            for ((c, v) in rows) {
+                val show = q.isEmpty() ||
+                    c.label.lowercase().contains(q) || c.pkg.lowercase().contains(q)
+                v.visibility = if (show) View.VISIBLE else View.GONE
+                if (show) any = true
+            }
+            emptyState.visibility = if (any || rows.isEmpty()) View.GONE else View.VISIBLE
+        }
+        search.addTextChangedListener(object : TextWatcher {
+            override fun afterTextChanged(s: Editable?) = applyFilter(s?.toString() ?: "")
+            override fun beforeTextChanged(s: CharSequence?, a: Int, b: Int, c: Int) {}
+            override fun onTextChanged(s: CharSequence?, a: Int, b: Int, c: Int) {}
+        })
+
+        dialog.setContentView(panel)
+        dialog.window?.setBackgroundDrawable(ColorDrawable(PAGE))
+        dialog.window?.setLayout(MATCH_PARENT, MATCH_PARENT)
+        dialog.show()
+    }
+
+    private fun pickerRow(c: Vk.Client, dialog: Dialog): View {
+        val row = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            background = ripple(bg(CARD, 12, LINE), 0x22808080, 12)
+            setPadding(dp(10), dp(10), dp(10), dp(10))
+            layoutParams = lp(MATCH_PARENT, WRAP_CONTENT, bottom = 6)
+            isClickable = true
+            setOnClickListener { dialog.dismiss(); pickApp(c) }
+        }
+        row.addView(ImageView(this).apply {
+            layoutParams = LinearLayout.LayoutParams(dp(36), dp(36)).apply { marginEnd = dp(10) }
+            runCatching { setImageDrawable(packageManager.getApplicationIcon(c.pkg)) }
+        })
+        row.addView(LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            layoutParams = LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f)
+            addView(text(c.label, 15f, INK, bold = true))
+            addView(text(c.pkg, 11.5f, MUTED))
+        })
+        if (c.patched) row.addView(chip("пропатчен", OK, OK_BG))
+        return row
+    }
+
+    private fun pickApp(c: Vk.Client) {
+        extraPicked[c.pkg] = c
+        render()
+        selectTab(0)
+        installScroll.post { installScroll.smoothScrollTo(0, candidates.top) }
     }
 
     private fun addCandidateRow(c: Vk.Client) {
