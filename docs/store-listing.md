@@ -8,11 +8,18 @@
 
 ## Параметры
 
-- **Store icon:** `icons/icon-128.png` (логотип 7TV, 128×128). Обычно
+- **Store icon:** `docs/store/icon-128.png` (логотип 7TV, 128×128). Обычно
   подтягивается из манифеста; если попросят загрузить отдельно — этот файл.
 - **Category:** Social & Networking (альтернатива — Just for Fun).
 - **Language:** Русский (Russian).
-- **Скриншот:** 1280×800 или 640×400. Готовый: `dist/vk7tv-screenshot-1280x800.png`.
+- **Скриншоты (1280×800), готовые в `docs/store/`:**
+  - `screenshot-chat-1280x800.png` — эмоуты в реальной переписке (главный кадр;
+    имена и аватары размыты);
+  - `screenshot-widget-1280x800.png` — виджет-пикер на странице (QR-код входа
+    размыт).
+- **Промо-тайл (необязательно):** `docs/store/promo-440x280.png`.
+- **Website URL:** https://github.com/Spudisis/7tv-vk
+- **Support URL:** https://github.com/Spudisis/7tv-vk/issues
 - **Privacy policy URL:** https://github.com/Spudisis/7tv-vk/blob/main/PRIVACY.md
 
 ## Короткое описание (summary, до 132 символов)
