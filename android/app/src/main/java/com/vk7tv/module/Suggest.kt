@@ -53,9 +53,12 @@ object Suggest {
         dir = cacheDir
     }
 
-    /** Найденные предложения, по одному на набор. */
+    /** Найденные предложения, по одному на набор; скрытые не показываем. */
     fun hits(): List<Hit> = synchronized(cache) {
-        cache.values.filterNotNull().distinctBy { it.ref.slug }
+        val hidden = Config.dismissedSuggests
+        cache.values.filterNotNull()
+            .filter { it.ref.slug.lowercase() !in hidden }
+            .distinctBy { it.ref.slug }
     }
 
     fun ready(word: String): Boolean = synchronized(cache) { cache[word] != null }
@@ -66,6 +69,16 @@ object Suggest {
             val dead = cache.filterValues { it?.ref?.slug == slug }.keys.toList()
             for (k in dead) cache.remove(k)
         }
+    }
+
+    /**
+     * Пользователь скрыл набор из предложений: запоминаем навсегда (переживёт
+     * перезапуск), чистим кэш и перерисовываем чат, чтобы подсветка слова ушла.
+     */
+    fun dismiss(slug: String) {
+        Config.dismissSuggest(slug.lowercase())
+        forget(slug)
+        Replacer.rerenderAll()
     }
 
     /**
@@ -114,11 +127,15 @@ object Suggest {
     private fun probe(word: String): Hit? {
         val cacheDir = dir ?: return null
         val connected = Config.sets.map { it.slug }.toSet()
+        val dismissed = Config.dismissedSuggests
         for ((name, slug) in splits(word)) {
             // набор уже подключён — значит эмоута в нём просто нет; пробуем
             // следующий разделитель, вдруг граница проходит не здесь
             if (slug in connected) continue
+            // пользователь скрыл этот набор — не тратим на него запрос к API
+            if (slug in dismissed) continue
             val ref = probeSet(slug) ?: continue
+            if (ref.slug.lowercase() in dismissed) continue
             // Набор кладётся в тот же дисковый кэш, из которого потом читает
             // Emotes.load, — поэтому подключение по кнопке уже не качает ничего.
             val emotes = Emotes.emotesOf(cacheDir, ref.id) ?: continue

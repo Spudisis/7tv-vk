@@ -31,6 +31,7 @@ object Config {
     const val KEY_DIAG = "diag"
     const val KEY_SUGGEST = "suggest"
     const val KEY_EVERYWHERE = "everywhere"
+    const val KEY_DISMISSED = "dismissedSuggests"
 
     @Volatile
     var enabled = true
@@ -73,6 +74,12 @@ object Config {
     var favorites: List<String> = emptyList()
         private set
 
+    // наборы, которые пользователь скрыл из «можно подключить»: не предлагаем
+    // и не проверяем по API, пока он сам не подключит их из настроек
+    @Volatile
+    var dismissedSuggests: Set<String> = emptySet()
+        private set
+
     private var prefs: SharedPreferences? = null
 
     fun init(ctx: Context) {
@@ -93,6 +100,7 @@ object Config {
         sets = parseSets(p.getString(KEY_SETS, "[]"))
         custom = parseCustom(p.getString(KEY_CUSTOM, "{}"))
         favorites = parseList(p.getString(KEY_FAVORITES, "[]"))
+        dismissedSuggests = parseList(p.getString(KEY_DISMISSED, "[]")).toSet()
         L.i("конфиг: наборов ${sets.size}, своих ${custom.size}, избранных ${favorites.size}")
     }
 
@@ -132,6 +140,16 @@ object Config {
         }
         prefs?.edit()?.putString(KEY_SETS, arr.toString())?.apply()
         sets = list
+    }
+
+    /** Скрыть набор из предложений «можно подключить» насовсем. */
+    fun dismissSuggest(slug: String) {
+        if (slug.isEmpty() || dismissedSuggests.contains(slug)) return
+        val list = dismissedSuggests + slug
+        val arr = JSONArray()
+        for (s in list) arr.put(s)
+        prefs?.edit()?.putString(KEY_DISMISSED, arr.toString())?.apply()
+        dismissedSuggests = list
     }
 
     fun isFavorite(name: String): Boolean = favorites.contains(name)

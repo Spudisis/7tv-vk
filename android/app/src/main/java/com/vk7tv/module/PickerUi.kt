@@ -9,6 +9,7 @@ import android.graphics.drawable.GradientDrawable
 import android.os.Handler
 import android.os.Looper
 import android.text.Editable
+import android.text.TextUtils
 import android.text.TextWatcher
 import android.view.Gravity
 import android.view.View
@@ -355,25 +356,44 @@ object PickerUi {
         }
         box.visibility = View.VISIBLE
         box.addView(label(ctx, "МОЖНО ПОДКЛЮЧИТЬ"))
-        for (h in hits) box.addView(suggestRow(ctx, h))
+        // раньше карточки стояли столбиком и при десятке предложений съедали
+        // всю сетку эмоутов; теперь это горизонтальная лента фиксированной
+        // высоты — сколько бы наборов ни нашлось, сетка не сдвигается
+        val row = LinearLayout(ctx).apply { orientation = LinearLayout.HORIZONTAL }
+        for (h in hits) row.addView(suggestCard(ctx, box, h))
+        box.addView(
+            HorizontalScrollView(ctx).apply {
+                isHorizontalScrollBarEnabled = false
+                addView(row)
+            },
+        )
     }
 
-    private fun suggestRow(ctx: Context, h: Suggest.Hit): View {
-        val row = LinearLayout(ctx).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER_VERTICAL
-            setPadding(Inject.dp(ctx, 6), Inject.dp(ctx, 6), Inject.dp(ctx, 8), Inject.dp(ctx, 6))
+    /**
+     * Карточка предложения в ленте: превью, ник и число эмоутов, «подключить»
+     * по тапу и крестик — скрыть набор из предложений насовсем ([Suggest.dismiss]),
+     * не выключая саму функцию.
+     */
+    private fun suggestCard(ctx: Context, box: LinearLayout, h: Suggest.Hit): View {
+        val card = LinearLayout(ctx).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(Inject.dp(ctx, 8), Inject.dp(ctx, 6), Inject.dp(ctx, 8), Inject.dp(ctx, 6))
             background = GradientDrawable().apply {
                 setColor(Ui.BG2)
                 cornerRadius = Inject.dp(ctx, 8).toFloat()
                 setStroke(Inject.dp(ctx, 1), Ui.BORDER)
             }
             val lp = LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
+                Inject.dp(ctx, 150),
                 ViewGroup.LayoutParams.WRAP_CONTENT,
             )
-            lp.bottomMargin = Inject.dp(ctx, 4)
+            lp.rightMargin = Inject.dp(ctx, 8)
             layoutParams = lp
+        }
+
+        val top = LinearLayout(ctx).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
         }
 
         val iv = ImageView(ctx)
@@ -381,29 +401,68 @@ object PickerUi {
         iv.scaleType = ImageView.ScaleType.FIT_CENTER
         iv.contentDescription = h.name
         bind(iv, Emote(h.name, h.url, false))
-        row.addView(iv)
+        top.addView(iv)
 
-        row.addView(
+        val col = LinearLayout(ctx).apply { orientation = LinearLayout.VERTICAL }
+        col.addView(
             TextView(ctx).apply {
-                text = "_${h.ref.slug}\n${h.count} эмоутов"
+                text = "_${h.ref.slug}"
                 setTextColor(Ui.TEXT)
                 textSize = 12f
-                setPadding(Inject.dp(ctx, 8), 0, 0, 0)
+                isSingleLine = true
+                ellipsize = TextUtils.TruncateAt.END
             },
-            LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f),
+        )
+        col.addView(
+            TextView(ctx).apply {
+                text = "${h.count} эмоутов"
+                setTextColor(Ui.MUTED)
+                textSize = 10f
+            },
+        )
+        top.addView(
+            col,
+            LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply {
+                leftMargin = Inject.dp(ctx, 8)
+            },
         )
 
-        row.addView(
+        // крестик со своим обработчиком: тап по нему тратится на скрытие и не
+        // всплывает к карточке, поэтому набор не подключится по ошибке
+        top.addView(
+            TextView(ctx).apply {
+                text = "✕"
+                setTextColor(Ui.MUTED)
+                textSize = 13f
+                setPadding(Inject.dp(ctx, 6), Inject.dp(ctx, 2), Inject.dp(ctx, 2), Inject.dp(ctx, 2))
+                setOnClickListener {
+                    L.safe("скрытие предложения") {
+                        Suggest.dismiss(h.ref.slug)
+                        fillSuggests(ctx, box)
+                        toast(ctx, "Скрыл _${h.ref.slug}")
+                    }
+                }
+            },
+        )
+        card.addView(top)
+
+        card.addView(
             TextView(ctx).apply {
                 text = "подключить"
                 setTextColor(Ui.ACCENT)
                 textSize = 12f
                 typeface = Typeface.DEFAULT_BOLD
+                val lp = LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT,
+                    ViewGroup.LayoutParams.WRAP_CONTENT,
+                )
+                lp.topMargin = Inject.dp(ctx, 4)
+                layoutParams = lp
             },
         )
 
-        row.setOnClickListener { L.safe("подключение набора") { connect(ctx, h) } }
-        return row
+        card.setOnClickListener { L.safe("подключение набора") { connect(ctx, h) } }
+        return card
     }
 
     private fun connect(ctx: Context, h: Suggest.Hit) {
