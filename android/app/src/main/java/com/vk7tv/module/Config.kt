@@ -30,6 +30,7 @@ object Config {
     const val KEY_SEEDED = "seeded"
     const val KEY_DIAG = "diag"
     const val KEY_SUGGEST = "suggest"
+    const val KEY_MESSENGER_ONLY = "messengerOnly"
 
     @Volatile
     var enabled = true
@@ -52,6 +53,12 @@ object Config {
 
     @Volatile
     var suggest = true
+        private set
+
+    // выкл. по умолчанию — поведение как раньше (эмоуты везде). Включённая
+    // подменяет коды только в переписке, а ленту/комментарии не трогает.
+    @Volatile
+    var messengerOnly = false
         private set
 
     @Volatile
@@ -82,6 +89,7 @@ object Config {
         dockButton = p.getBoolean(KEY_DOCK, true)
         diag = p.getBoolean(KEY_DIAG, false)
         suggest = p.getBoolean(KEY_SUGGEST, true)
+        messengerOnly = p.getBoolean(KEY_MESSENGER_ONLY, false)
         sets = parseSets(p.getString(KEY_SETS, "[]"))
         custom = parseCustom(p.getString(KEY_CUSTOM, "{}"))
         favorites = parseList(p.getString(KEY_FAVORITES, "[]"))
@@ -105,6 +113,7 @@ object Config {
             KEY_DOCK -> dockButton = value
             KEY_DIAG -> diag = value
             KEY_SUGGEST -> suggest = value
+            KEY_MESSENGER_ONLY -> messengerOnly = value
         }
     }
 
@@ -162,6 +171,9 @@ object Config {
             favCount = it.length()
         }
         if (json.has("useGlobal")) e.putBoolean(KEY_USE_GLOBAL, json.optBoolean("useGlobal", true))
+        if (json.has("messengerOnly")) {
+            e.putBoolean(KEY_MESSENGER_ONLY, json.optBoolean("messengerOnly", false))
+        }
         e.putBoolean(KEY_SEEDED, true)
         e.apply()
 

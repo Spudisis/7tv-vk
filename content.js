@@ -8,6 +8,7 @@
 
   let enabled = true;
   let suggestOn = true;
+  let messengerOnly = false; // подменять коды только в переписке
   let emoteMap = new Map(); // имя -> URL картинки
   let testRegex = null; // быстрый префильтр текстовых узлов
   let stateSig = ''; // подпись набора эмоутов и настроек
@@ -96,6 +97,7 @@
       enabled: true,
       useGlobal: true,
       suggest: true,
+      messengerOnly: false,
       sets: [],
       customEmotes: {},
     });
@@ -103,6 +105,7 @@
 
     enabled = sync.enabled;
     suggestOn = sync.suggest;
+    messengerOnly = sync.messengerOnly;
     emoteMap = new Map();
     if (sync.useGlobal) {
       const g =
@@ -151,6 +154,7 @@
     const sig = [
       enabled,
       suggestOn,
+      messengerOnly,
       sync.useGlobal,
       emoteMap.size,
       sync.sets.map((s) => `${s.id}:${s.count}`).join(','),
@@ -281,6 +285,38 @@
     return false;
   }
 
+  // --- «эмоуты только в мессенджере» ---
+  // Раздел /im — это и список диалогов, и открытый чат: там подменяем всё.
+  // Вне его (лента, стена, комментарии, профили) — не трогаем ничего, кроме
+  // всплывающих окошек чата, которые ВК показывает поверх других страниц:
+  // их опознаём по классам-контейнерам с узнаваемыми кусками (im, msg, chat…).
+  const MSG_TOKENS = new Set([
+    'im', 'msg', 'msgs', 'message', 'messages', 'messaging',
+    'dialog', 'dialogs', 'chat', 'chats', 'convo', 'conversation',
+    'conversations', 'peer', 'bubble', 'history',
+  ]);
+
+  function inImSection() {
+    const p = location.pathname;
+    return p === '/im' || p.startsWith('/im/');
+  }
+
+  function inMessenger(el) {
+    if (inImSection()) return true; // весь раздел мессенджера целиком
+    for (let n = el, depth = 0; n && n !== document.body && depth < 20; n = n.parentElement, depth++) {
+      if (!n.getAttribute) continue;
+      const raw =
+        (n.getAttribute('class') || '') + ' ' +
+        (n.getAttribute('data-testid') || '') + ' ' + (n.id || '');
+      if (!raw.trim()) continue;
+      // «im-page» → im page, «MessagesConvo» → messages convo; режем по
+      // границам, чтобы «time»/«image» не читались как «im»
+      const tokens = raw.replace(/([a-z0-9])([A-Z])/g, '$1 $2').toLowerCase().split(/[^a-z0-9]+/);
+      for (const t of tokens) if (MSG_TOKENS.has(t)) return true;
+    }
+    return false;
+  }
+
   function isServiceLabel(el) {
     for (let n = el, depth = 0; n && n !== document.body && depth < 6; n = n.parentElement, depth++) {
       if (n.tagName === 'TIME' || n.hasAttribute('datetime')) return true;
@@ -314,6 +350,8 @@
     if (SERVICE_TEXT.test(text.trim())) return;
     if (isServiceText(parent, 3)) return;
     if (isServiceLabel(parent)) return;
+    // включён режим «только мессенджер» — вне переписки текст не трогаем
+    if (messengerOnly && !inMessenger(parent)) return;
 
     // эмоут — это отдельное «слово», разделённое пробелами (как в 7TV);
     // zero-width эмоут после обычного накладывается поверх него,
@@ -432,7 +470,8 @@
   // Избранное и позиция виджета меняются часто (в том числе из соседней
   // вкладки) — из-за них страницу перебирать незачем.
   const RENDER_KEYS = new Set([
-    'enabled', 'useGlobal', 'suggest', 'sets', 'customEmotes', 'setEmotes', 'globalEmotes',
+    'enabled', 'useGlobal', 'suggest', 'messengerOnly',
+    'sets', 'customEmotes', 'setEmotes', 'globalEmotes',
   ]);
 
   chrome.storage.onChanged.addListener((changes) => {

@@ -54,6 +54,18 @@ object SettingsUi {
             toast(ctx, "Применится после перезапуска ВК")
         })
 
+        root.addView(switch(ctx, "Эмоуты только в мессенджере", Config.messengerOnly) {
+            Config.setFlag(Config.KEY_MESSENGER_ONLY, it)
+            Replacer.rerenderAll()
+        })
+        root.addView(
+            note(
+                ctx,
+                "Включи — коды превращаются в эмоуты только в переписке (список " +
+                    "чатов и сам диалог). Лента, комментарии, названия групп " +
+                    "останутся текстом.",
+            ),
+        )
         root.addView(switch(ctx, "Предлагать наборы стримеров", Config.suggest) {
             Config.setFlag(Config.KEY_SUGGEST, it)
         })

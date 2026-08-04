@@ -52,6 +52,19 @@ object Replacer {
         if (Service.isServiceView(tv)) return null
         synchronized(seenViews) { seenViews[tv] = true }
 
+        // «Эмоуты только в мессенджере»: вне переписки текст не трогаем. Вьюху
+        // всё равно записали в seenViews выше — переключишь настройку, и
+        // rerenderAll перерисует и её. Проверка кэшируется по вьюхе, так что
+        // на частый setText она почти ничего не стоит.
+        if (Config.messengerOnly && !Scope.inMessenger(tv)) {
+            // под диагностикой: если тут всё же был эмоут — покажем цепочку id
+            // родителей, по ней подгоняется список токенов Scope под клиента
+            if (Config.diag && scan(text).hits != null) {
+                L.v("эмоут вне мессенджера пропущен: ${Scope.describe(tv)}")
+            }
+            return null
+        }
+
         val found = scan(text)
         val hits = found.hits
         if (hits == null && found.marks == null) return null
