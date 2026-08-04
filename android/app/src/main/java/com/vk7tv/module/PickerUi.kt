@@ -55,6 +55,14 @@ object PickerUi {
     private var savedGroup = -1
     private var savedScroll = 0
 
+    // ссылки на живой пикер — чтобы дорисовать новый таб, не закрывая панель,
+    // когда набор подключили прямо из неё (кнопка «подключить»). Держим корень
+    // и поле ввода для повторной сборки, сетку и текущий поиск — для onDismiss.
+    private var content: LinearLayout? = null
+    private var currentInput: EditText? = null
+    private var gridRef: GridView? = null
+    private var queryRef: String = ""
+
     fun toggle(anchor: View, input: EditText) {
         val p = popup
         if (p != null && p.isShowing) {
@@ -72,8 +80,6 @@ object PickerUi {
             return
         }
 
-        val all = Emotes.groups.flatMap { it.emotes }
-
         val rootView = LinearLayout(ctx).apply {
             orientation = LinearLayout.VERTICAL
             background = GradientDrawable().apply {
@@ -82,6 +88,56 @@ object PickerUi {
                 setStroke(Inject.dp(ctx, 1), Ui.BORDER)
             }
         }
+        content = rootView
+        currentInput = input
+        populate(ctx, rootView, input)
+
+        // Поповер встаёт НАД панелью ввода, а не поверх неё: иначе не видно,
+        // что вставилось в поле.
+        //
+        // Позиционируем абсолютными координатами (NO_GRAVITY), а не отступом
+        // от низа: положение панели мы меряем через getLocationOnScreen, то есть
+        // в координатах экрана, а Gravity.BOTTOM отсчитывается от окна
+        // приложения. Там, где системные панели устроены иначе (Sova RE),
+        // эти системы расходятся, и поповер наезжал на поле ввода.
+        val dm = ctx.resources.displayMetrics
+        val gap = Inject.dp(ctx, 6)
+        val top = panelTop(anchor, input)
+        val room = (top - gap - Inject.dp(ctx, 24)).coerceAtLeast(Inject.dp(ctx, 180))
+        val h = minOf((dm.heightPixels * 0.45f).toInt(), room)
+        val y = (top - h - gap).coerceAtLeast(0)
+
+        val pw = PopupWindow(rootView, WindowManager.LayoutParams.MATCH_PARENT, h, true)
+        pw.setBackgroundDrawable(ColorDrawable(Color.TRANSPARENT))
+        pw.isOutsideTouchable = true
+        pw.inputMethodMode = PopupWindow.INPUT_METHOD_NEEDED
+        pw.showAtLocation(anchor, Gravity.NO_GRAVITY, 0, y)
+        popup = pw
+        follow(pw, anchor, input, gap, y)
+        // запоминаем, где закрыли (перекрывает слушатель из follow, поэтому
+        // сами снимаем слежение и гасим popup). В поиске не сохраняем: индекс
+        // отфильтрованного списка на полном наборе указывал бы не туда.
+        pw.setOnDismissListener {
+            L.safe("сохранение прокрутки") {
+                if (queryRef.isEmpty()) gridRef?.let { savedScroll = it.firstVisiblePosition }
+            }
+            detach()
+            popup = null
+            content = null
+            currentInput = null
+            gridRef = null
+        }
+    }
+
+    /**
+     * Наполнение поповера: заголовок, поиск, подсказки, избранное, чипы, сетка.
+     * Вынесено из [show], чтобы пересобрать содержимое прямо в открытой панели,
+     * когда список наборов поменялся ([onSetsChanged]) — иначе новый таб
+     * появлялся бы только после закрытия и повторного открытия пикера.
+     */
+    private fun populate(ctx: Context, rootView: LinearLayout, input: EditText) {
+        rootView.removeAllViews()
+        val all = Emotes.groups.flatMap { it.emotes }
 
         rootView.addView(header(ctx))
         val search = search(ctx)
@@ -115,6 +171,7 @@ object PickerUi {
         // откатываемся на «Все»
         var group = if (savedGroup in Emotes.groups.indices) savedGroup else -1
         var query = ""
+        queryRef = ""
 
         val grid = GridView(ctx).apply {
             numColumns = GridView.AUTO_FIT
@@ -126,6 +183,7 @@ object PickerUi {
             clipToPadding = false
             this.adapter = adapter
         }
+        gridRef = grid
 
         fun refresh(restore: Boolean) {
             val base = if (group < 0) all else Emotes.groups.getOrNull(group)?.emotes ?: all
@@ -149,6 +207,7 @@ object PickerUi {
         search.addTextChangedListener(object : TextWatcher {
             override fun afterTextChanged(s: Editable?) {
                 query = s?.toString()?.trim() ?: ""
+                queryRef = query
                 refresh(restore = false)
             }
 
@@ -161,38 +220,21 @@ object PickerUi {
             LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f),
         )
         refresh(restore = true)
+    }
 
-        // Поповер встаёт НАД панелью ввода, а не поверх неё: иначе не видно,
-        // что вставилось в поле.
-        //
-        // Позиционируем абсолютными координатами (NO_GRAVITY), а не отступом
-        // от низа: положение панели мы меряем через getLocationOnScreen, то есть
-        // в координатах экрана, а Gravity.BOTTOM отсчитывается от окна
-        // приложения. Там, где системные панели устроены иначе (Sova RE),
-        // эти системы расходятся, и поповер наезжал на поле ввода.
-        val dm = ctx.resources.displayMetrics
-        val gap = Inject.dp(ctx, 6)
-        val top = panelTop(anchor, input)
-        val room = (top - gap - Inject.dp(ctx, 24)).coerceAtLeast(Inject.dp(ctx, 180))
-        val h = minOf((dm.heightPixels * 0.45f).toInt(), room)
-        val y = (top - h - gap).coerceAtLeast(0)
-
-        val pw = PopupWindow(rootView, WindowManager.LayoutParams.MATCH_PARENT, h, true)
-        pw.setBackgroundDrawable(ColorDrawable(Color.TRANSPARENT))
-        pw.isOutsideTouchable = true
-        pw.inputMethodMode = PopupWindow.INPUT_METHOD_NEEDED
-        pw.showAtLocation(anchor, Gravity.NO_GRAVITY, 0, y)
-        popup = pw
-        follow(pw, anchor, input, gap, y)
-        // запоминаем, где закрыли (перекрывает слушатель из follow, поэтому
-        // сами снимаем слежение и гасим popup). В поиске не сохраняем: индекс
-        // отфильтрованного списка на полном наборе указывал бы не туда.
-        pw.setOnDismissListener {
-            L.safe("сохранение прокрутки") {
-                if (query.isEmpty()) savedScroll = grid.firstVisiblePosition
+    /**
+     * Список наборов поменялся (подключили/обновили набор) — дорисовываем табы
+     * в уже открытом пикере, не закрывая его. Зовётся из [Boot.reload], который
+     * работает не на UI-потоке, поэтому переносим на главный.
+     */
+    fun onSetsChanged() {
+        main.post {
+            L.safe("живое обновление пикера") {
+                val root = content ?: return@safe
+                val input = currentInput ?: return@safe
+                if (popup?.isShowing != true) return@safe
+                populate(root.context, root, input)
             }
-            detach()
-            popup = null
         }
     }
 
@@ -313,10 +355,10 @@ object PickerUi {
         }
         box.visibility = View.VISIBLE
         box.addView(label(ctx, "МОЖНО ПОДКЛЮЧИТЬ"))
-        for (h in hits) box.addView(suggestRow(ctx, box, h))
+        for (h in hits) box.addView(suggestRow(ctx, h))
     }
 
-    private fun suggestRow(ctx: Context, box: LinearLayout, h: Suggest.Hit): View {
+    private fun suggestRow(ctx: Context, h: Suggest.Hit): View {
         val row = LinearLayout(ctx).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
@@ -360,25 +402,24 @@ object PickerUi {
             },
         )
 
-        row.setOnClickListener { L.safe("подключение набора") { connect(ctx, box, h) } }
+        row.setOnClickListener { L.safe("подключение набора") { connect(ctx, h) } }
         return row
     }
 
-    private fun connect(ctx: Context, box: LinearLayout, h: Suggest.Hit) {
+    private fun connect(ctx: Context, h: Suggest.Hit) {
         toast(ctx, "Подключаю ${h.ref.name}…")
         Thread({
             val msg = try {
                 Config.addSet(h.ref)
                 Suggest.forget(h.ref.slug)
+                // Boot.reload дёрнет onSetsChanged — открытый пикер сам пересоберётся
+                // с новым табом, а строка подсказок обновится тем же проходом
                 Boot.reload(ctx)
                 "Набор ${h.ref.name} подключён"
             } catch (t: Throwable) {
                 L.human(t)
             }
-            main.post {
-                toast(ctx, msg)
-                L.safe("обновление предложений") { fillSuggests(ctx, box) }
-            }
+            main.post { toast(ctx, msg) }
         }, "vk7tv-connect").apply { isDaemon = true }.start()
     }
 
