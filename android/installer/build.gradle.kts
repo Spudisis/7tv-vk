@@ -13,8 +13,8 @@ android {
         // не запустится, незачем пускать установщик на устройства без модуля.
         minSdk = 28
         targetSdk = 34
-        versionCode = 14
-        versionName = "0.3.11"
+        versionCode = 15
+        versionName = "0.3.12"
     }
 
     buildFeatures {
@@ -102,14 +102,17 @@ val bundleModule by tasks.registering(Copy::class) {
 // маппится в zip-путь assets/, поэтому ведущий assets/ из записей jar снимаем —
 // иначе получилось бы assets/assets/lspatch/so/…
 val extractLspatchNative by tasks.registering(Copy::class) {
+    // ВСЕ четыре ABI обязательны. LSPatch при патче добавляет liblspatch.so
+    // под каждый ABI, который есть в оригинале ВК, читая его из наших ассетов
+    // по assets/lspatch/so/<abi>/. У «универсальных» APK ВК (ими и патчат)
+    // внутри есть lib/x86 и lib/x86_64 — без x86-библиотеки патч падает на
+    // «Патчу приложение ВК…». Экономия ~1 МБ того не стоит.
     from(zipTree("libs/lspatch.jar")) {
-        // Только ARM: реальные телефоны — arm64 (и armeabi-v7a для 32-битных
-        // приложений). x86/x86_64 нужны лишь эмуляторам, а это ~1 МБ лишнего
-        // веса в скачивании установщика. Патчить на x86-устройстве всё равно
-        // почти некому.
-        include("assets/lspatch/so/arm64-v8a/**")
-        include("assets/lspatch/so/armeabi-v7a/**")
+        include("assets/lspatch/so/**")
     }
+    // до этого каталог мог остаться с прошлой сборки — чистим, чтобы фильтр
+    // «все ABI» не путался со старым усечённым набором
+    doFirst { delete(layout.buildDirectory.dir("lspatchNative")) }
     eachFile { path = path.removePrefix("assets/") }
     includeEmptyDirs = false
     into(layout.buildDirectory.dir("lspatchNative"))
