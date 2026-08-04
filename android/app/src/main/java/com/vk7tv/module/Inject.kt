@@ -34,6 +34,12 @@ object Inject {
     /** Метка на своих полях ввода: поиск в пикере, поля в настройках. */
     const val OUR_UI = "vk7tv-ui"
 
+    // Ряд иконок ВК досыпает в панель не сразу — на первом кадре его ещё нет.
+    // Пробуем поймать его несколько раз через кадр, прежде чем сдаться и
+    // повесить плавающую кнопку. ~1.2 с суммарно — незаметно, но хватает.
+    private const val DOCK_TRIES = 8
+    private const val DOCK_RETRY_MS = 150L
+
     private var lastInput = WeakReference<EditText>(null)
 
     @Volatile
@@ -100,7 +106,7 @@ object Inject {
         return false
     }
 
-    private fun attach(input: EditText) {
+    private fun attach(input: EditText, tries: Int = 0) {
         val root = input.rootView as? ViewGroup ?: return
         if (find(root) != null) return // уже стоит
 
@@ -110,7 +116,17 @@ object Inject {
                 dock(row, input)
                 return
             }
-            L.i("ряд иконок не опознан — вешаю плавающую кнопку")
+            // Ряда ещё нет — не спешим с плавающей: раньше первый же промах
+            // (панель не успела разложиться) навсегда ронял кнопку в виджет,
+            // хотя док включён. Даём разметке доложиться и пробуем снова.
+            if (tries < DOCK_TRIES && input.isAttachedToWindow) {
+                input.postDelayed(
+                    { L.safe("док кнопки") { attach(input, tries + 1) } },
+                    DOCK_RETRY_MS,
+                )
+                return
+            }
+            L.i("ряд иконок не опознан за $tries попыток — вешаю плавающую кнопку")
         }
         floating(input)
     }
