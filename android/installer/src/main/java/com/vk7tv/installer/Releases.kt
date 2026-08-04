@@ -19,6 +19,22 @@ object Releases {
     class Found(val tag: String, val version: String, val assetUrl: String, val assetName: String)
 
     /**
+     * Снимок актуальных релизов одним запросом к API: и обновление установщика,
+     * и последний модуль. Так проверка «есть ли что новое» не качает ни одного
+     * APK — только лёгкий JSON. Номер версии модуля показываем на карточке,
+     * а сам APK тянем уже по кнопке.
+     */
+    class Snapshot(val installerUpdate: Found?, val module: Found?)
+
+    fun snapshot(currentInstaller: String): Snapshot {
+        val arr = JSONArray(Http.getString(API))
+        val inst = latestIn(arr, "installer")
+        val mod = latestIn(arr, "android")
+        val instUpd = if (inst != null && semverGreater(inst.version, currentInstaller)) inst else null
+        return Snapshot(instUpd, mod)
+    }
+
+    /**
      * Релиз с максимальной версией среди тех, чей тег начинается с
      * [tagStartsWith] и внутри есть .apk.
      *
@@ -30,8 +46,10 @@ object Releases {
      * висел 0.5.9. Поэтому перебираем все подходящие и берём наибольшую
      * версию по semver, а не по позиции в ленте.
      */
-    private fun latest(tagStartsWith: String): Found? {
-        val arr = JSONArray(Http.getString(API))
+    private fun latest(tagStartsWith: String): Found? =
+        latestIn(JSONArray(Http.getString(API)), tagStartsWith)
+
+    private fun latestIn(arr: JSONArray, tagStartsWith: String): Found? {
         var best: Found? = null
         for (i in 0 until arr.length()) {
             val rel = arr.optJSONObject(i) ?: continue
@@ -61,16 +79,20 @@ object Releases {
     /**
      * APK модуля для патча. Пытаемся скачать последний с GitHub; если сети нет —
      * возвращаем версию, вшитую в установщик при сборке (assets/module/module.apk).
+     * Прогресс скачивания уходит в [onProgress] (для прогресс-бара), а текстовые
+     * пояснения — в [log] (для журнала).
      */
-    fun moduleApk(ctx: Context, log: (String) -> Unit): File {
+    fun moduleApk(
+        ctx: Context,
+        log: (String) -> Unit,
+        onProgress: (Long, Long) -> Unit = { _, _ -> },
+    ): File {
         val out = File(ctx.cacheDir, "module.apk")
         try {
             val f = latest("android")
             if (f != null) {
                 log("Модуль с GitHub: ${f.assetName}")
-                Http.download(f.assetUrl, out) { done, total ->
-                    if (total > 0) log("  ${done * 100 / total}%")
-                }
+                Http.download(f.assetUrl, out, onProgress)
                 return out
             }
             log("Свежий модуль не найден на GitHub, беру вшитый")
@@ -83,14 +105,8 @@ object Releases {
         return out
     }
 
-    /** Новее ли установщик на GitHub, чем текущий. null — если проверить не вышло. */
-    fun installerUpdate(current: String): Found? =
-        try {
-            val f = latest("installer")
-            if (f != null && semverGreater(f.version, current)) f else null
-        } catch (t: Throwable) {
-            null
-        }
+    /** Новее ли [candidate] чем [current] по semver. Для сравнения версий модуля. */
+    fun isNewer(candidate: String, current: String): Boolean = semverGreater(candidate, current)
 
     private fun semverGreater(a: String, b: String): Boolean {
         val pa = a.split('.').map { it.toIntOrNull() ?: 0 }
