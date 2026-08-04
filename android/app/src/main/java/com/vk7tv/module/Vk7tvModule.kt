@@ -120,10 +120,10 @@ object Boot {
             Config.init(app)
             Diag.attach(app)
             Diag.note("модуль загружен ${BuildConfig.VERSION_NAME} в ${app.packageName}")
-            val cache = File(app.cacheDir, "vk7tv").apply { mkdirs() }
-            Crash.attach(cache)
-            EmoteCache.init(cache)
-            Suggest.init(cache)
+            val data = dataDir(app)
+            Crash.attach(data)
+            EmoteCache.init(data)
+            Suggest.init(data)
             // модуль в прошлый раз уронил процесс — покажем это, а стек положим
             // строкой в настройки (тост поверх диагностики, показываем всегда)
             Crash.lastAndClear()?.let {
@@ -134,7 +134,7 @@ object Boot {
                 // процесс ВК, а не просто оставило нас без эмоутов
                 L.safe("инициализация наборов") {
                     seedDefaultSet()
-                    L.safe("загрузка наборов") { Emotes.load(cache) }
+                    L.safe("загрузка наборов") { Emotes.load(data) }
                     // диалог мог быть уже открыт — перерисовываем то, что на экране
                     Replacer.rerenderAll()
                     Inject.markReady()
@@ -143,6 +143,36 @@ object Boot {
                 }
             }, "vk7tv-sets").apply { isDaemon = true }.start()
         }
+    }
+
+    /**
+     * Постоянное хранилище модуля: списки наборов и картинки эмоутов.
+     *
+     * Раньше лежало в cacheDir — но это «мусорная» папка: её чистит система при
+     * нехватке места и сам ВК кнопкой «очистить кэш» (мы в его процессе — это
+     * его кэш). Из-за этого скачанные наборы пропадали: уехал на мобильный
+     * интернет, ВК почистился — и пусто, а без сети/VPN заново не тянутся.
+     * filesDir так не трогают — пак переживает и очистку, и отсутствие сети.
+     *
+     * Чтобы папка не пухла до гигабайтов, размер кэша картинок ограничен сверху
+     * с вытеснением давно не использованных — потолок держит EmoteCache.
+     */
+    private fun dataDir(app: Context): File {
+        val dir = File(app.filesDir, "vk7tv").apply { mkdirs() }
+        // разовый переезд из старого кэша, чтобы у тех, кто уже скачал наборы,
+        // они не исчезли после обновления. Обе папки на разделе /data, так что
+        // rename дешёвый; не прошёл — просто скачаем заново.
+        L.safe("переезд наборов из кэша") {
+            val old = File(app.cacheDir, "vk7tv")
+            if (old.isDirectory) {
+                for (name in arrayOf("sets", "img")) {
+                    val from = File(old, name)
+                    val to = File(dir, name)
+                    if (from.isDirectory && !to.exists()) from.renameTo(to)
+                }
+            }
+        }
+        return dir
     }
 
     /**
@@ -164,10 +194,14 @@ object Boot {
      * force — выкачать заново даже то, что уже лежит в кэше (кнопка в настройках).
      */
     fun reload(ctx: Context, force: Boolean = false) {
-        val cache = File(ctx.applicationContext.cacheDir, "vk7tv").apply { mkdirs() }
-        L.safe("перезагрузка наборов") { Emotes.load(cache, force) }
+        val data = dataDir(ctx.applicationContext)
+        L.safe("перезагрузка наборов") { Emotes.load(data, force) }
         Replacer.rerenderAll()
         Inject.markReady()
+        // добавил/обновил набор — заранее тянем его картинки в постоянный кэш,
+        // чтобы пак был виден офлайн: один раз с VPN, дальше без сети. Уже
+        // скачанные пропускаются, так что это дёшево.
+        L.safe("предзагрузка картинок") { EmoteCache.preload(Emotes.allUrls()) }
     }
 
     /**

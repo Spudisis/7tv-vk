@@ -129,6 +129,29 @@ object SettingsUi {
             ),
         )
 
+        root.addView(label(ctx, "КЭШ КАРТИНОК"))
+        val cacheNote = note(ctx, "Скачано: считаем…")
+        root.addView(cacheNote)
+        root.addView(
+            note(
+                ctx,
+                "Картинки хранятся локально, чтобы паки открывались офлайн. Размер " +
+                    "ограничен (потолок 300 МБ), давние вытесняются сами. Можно " +
+                    "очистить вручную — наборы не пропадут, картинки до-качаются при показе.",
+            ),
+        )
+        root.addView(
+            button(ctx, "Очистить кэш картинок") {
+                busy(ctx, "Чистим кэш…") {
+                    val freed = EmoteCache.clear()
+                    val left = EmoteCache.usageBytes()
+                    main.post { L.safe("размер кэша") { cacheNote.text = usageText(left) } }
+                    "Освобождено ${freed / (1024 * 1024)} МБ"
+                }
+            },
+        )
+        refreshCacheSize(cacheNote)
+
         // 7tv.io и cdn.7tv.app в РФ часто режет провайдер — без этой строчки
         // пустой пикер выглядит как поломка модуля, а не как блокировка.
         root.addView(
@@ -337,6 +360,17 @@ object SettingsUi {
         textSize = 11f
         setTextColor(Ui.MUTED)
         setPadding(0, dp(ctx, 4), 0, dp(ctx, 4))
+    }
+
+    private fun usageText(bytes: Long) =
+        "Скачано: ${bytes / (1024 * 1024)} МБ из 300"
+
+    /** Размер кэша считаем в фоне: на большом наборе перебор файлов не мгновенный. */
+    private fun refreshCacheSize(view: TextView) {
+        Thread({
+            val bytes = EmoteCache.usageBytes()
+            main.post { L.safe("размер кэша") { view.text = usageText(bytes) } }
+        }, "vk7tv-cache-size").apply { isDaemon = true }.start()
     }
 
     private fun toast(ctx: Context, msg: String) =

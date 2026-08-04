@@ -26,6 +26,25 @@ object EmoteCache {
         Thread(r, "vk7tv-img").apply { isDaemon = true; priority = Thread.MIN_PRIORITY }
     }
 
+    // Массовую предзагрузку пака ведём отдельным маленьким пулом, чтобы сотни
+    // качающихся картинок набора не забивали очередь перед теми, что прямо
+    // сейчас нужны пикеру и чату.
+    private val preloadIo = Executors.newFixedThreadPool(2) { r ->
+        Thread(r, "vk7tv-preload").apply { isDaemon = true; priority = Thread.MIN_PRIORITY }
+    }
+
+    // Картинки лежат в постоянной папке (filesDir) — переживают офлайн и очистку
+    // кэша ВК. Чтобы папка не разрослась до гигабайтов, держим свой потолок: как
+    // вышли за DISK_CAP — вытесняем давно не тронутые файлы (LRU по времени
+    // файла) до DISK_TRIM_TO.
+    private const val DISK_CAP = 300L * 1024 * 1024
+    private const val DISK_TRIM_TO = 240L * 1024 * 1024
+
+    private val diskLock = Any()
+
+    @Volatile
+    private var diskBytes = -1L // -1 = ещё не посчитано
+
     private lateinit var dir: File
 
     private val bytes = object : LruCache<String, ByteArray>(24 * 1024 * 1024) {
@@ -56,6 +75,9 @@ object EmoteCache {
 
         val onDisk = File(dir, key)
         if (onDisk.isFile) {
+            // LRU дискового кэша: освежаем время файла, чтобы часто нужные
+            // картинки не вытеснялись первыми при подрезке
+            L.safe("освежить $key") { onDisk.setLastModified(System.currentTimeMillis()) }
             return L.safe("чтение $key") {
                 val data = onDisk.readBytes()
                 bytes.put(key, data)
@@ -76,6 +98,7 @@ object EmoteCache {
                     val data = Net.bytes(url)
                     File(dir, key).writeBytes(data)
                     bytes.put(key, data)
+                    accountAndTrim(data.size)
                     wake(key)
                 } catch (t: Throwable) {
                     failed.add(key)
@@ -87,6 +110,91 @@ object EmoteCache {
             }
         }
         return null
+    }
+
+    /**
+     * Заранее скачать картинки набора, чтобы пак был виден офлайн: один раз с
+     * VPN — дальше без сети. Уже лежащие пропускаем; в память не кладём, чтобы
+     * предзагрузка не вытесняла горячие картинки из LruCache.
+     */
+    fun preload(urls: Collection<String>) {
+        for (url in urls) {
+            val key = keyOf(url)
+            if (bytes.get(key) != null || File(dir, key).isFile) continue
+            preloadIo.execute {
+                L.safe("предзагрузка") {
+                    val f = File(dir, key)
+                    if (f.isFile) return@safe
+                    val data = Net.bytes(url)
+                    f.writeBytes(data)
+                    accountAndTrim(data.size)
+                    wake(key) // вдруг эту картинку уже кто-то ждёт на экране
+                }
+            }
+        }
+    }
+
+    /** Учли новый файл; вышли за потолок — подрезали давние. */
+    private fun accountAndTrim(added: Int) {
+        ensureAccounted()
+        synchronized(diskLock) { diskBytes += added }
+        trimDisk()
+    }
+
+    /** Разовый подсчёт занятого на диске — лениво, вне UI-потока. */
+    private fun ensureAccounted() {
+        if (diskBytes >= 0) return
+        synchronized(diskLock) {
+            if (diskBytes >= 0) return
+            var sum = 0L
+            dir.listFiles()?.forEach { sum += it.length() }
+            diskBytes = sum
+        }
+    }
+
+    /** Вытесняем самые давние файлы, пока не уложимся в DISK_TRIM_TO. */
+    private fun trimDisk() {
+        if (diskBytes <= DISK_CAP) return
+        synchronized(diskLock) {
+            if (diskBytes <= DISK_CAP) return
+            val files = dir.listFiles() ?: return
+            files.sortBy { it.lastModified() } // давние — первыми
+            var i = 0
+            while (diskBytes > DISK_TRIM_TO && i < files.size) {
+                val f = files[i]; i++
+                val len = f.length()
+                if (L.safe("удаление картинки") { f.delete() } == true) diskBytes -= len
+            }
+            L.i("кэш картинок подрезан до ${diskBytes / (1024 * 1024)} МБ")
+        }
+    }
+
+    /** Сколько сейчас занято кэшем картинок на диске, байт. Считать вне UI. */
+    fun usageBytes(): Long {
+        var sum = 0L
+        L.safe("размер кэша") { dir.listFiles()?.forEach { sum += it.length() } }
+        return sum
+    }
+
+    /**
+     * Стереть все скачанные картинки (кнопка «очистить» в настройках).
+     * Наборы не трогаем — картинки до-качаются при показе. Возвращает,
+     * сколько байт освободили.
+     */
+    fun clear(): Long {
+        synchronized(diskLock) {
+            var freed = 0L
+            L.safe("очистка кэша") {
+                dir.listFiles()?.forEach { f ->
+                    val len = f.length()
+                    if (f.delete()) freed += len
+                }
+            }
+            diskBytes = 0
+            bytes.evictAll()
+            failed.clear()
+            return freed
+        }
     }
 
     /** Картинка готова — будим всех, кто её ждал, и очищаем очередь. */

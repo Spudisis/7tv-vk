@@ -49,6 +49,9 @@ object Emotes {
 
     fun size(): Int = map.size
 
+    /** Все URL картинок текущих наборов — для предзагрузки в офлайн-кэш. */
+    fun allUrls(): List<String> = synchronized(map) { map.values.map { it.url }.distinct() }
+
     /**
      * Эмоуты, чьё имя начинается с [word], — для автоподсказок при вводе.
      * Правила те же, что в вебе (autocomplete.js): постфиксные имена
