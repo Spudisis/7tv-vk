@@ -165,7 +165,7 @@
   function buildUi() {
     widget = document.createElement('div');
     widget.className = 'vk7tv-widget';
-    widget.textContent = '7TV';
+    widget.textContent = '7VK';
     widget.title = 'VK7TV: эмоуты (можно перетаскивать)';
 
     picker = document.createElement('div');

@@ -214,7 +214,7 @@ object Inject {
         }
 
         val label = TextView(ctx).apply {
-            text = "7TV"
+            text = "7VK"
             textSize = 9f
             setTextColor(Ui.TEXT)
             gravity = Gravity.CENTER

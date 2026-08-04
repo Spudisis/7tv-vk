@@ -260,7 +260,7 @@ object PickerUi {
         }
         row.addView(
             TextView(ctx).apply {
-                text = "7TV"
+                text = "7VK"
                 setTextColor(Ui.TEXT)
                 typeface = Typeface.DEFAULT_BOLD
                 textSize = 14f
