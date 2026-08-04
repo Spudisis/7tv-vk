@@ -88,19 +88,17 @@ object Suggest {
     fun looksLike(text: CharSequence, start: Int, end: Int): Boolean {
         val len = end - start
         if (len < 5 || len > 60) return false
-        val c0 = text[start]
-        // Имя эмоута может и начинаться с дефиса, и содержать его (-F_simelly →
-        // эмоут «-F», ник simelly). Ник стримера дефисов не знает, но его
-        // отфильтрует validSlug — здесь пускаем дефис в слово целиком.
-        if (!(c0.isAsciiLetter() || c0.isAsciiDigit() || c0 == '-')) return false
+        // Имя эмоута может начинаться с пунктуации и содержать её; конкретную
+        // границу «эмоут | ник» перебирает splits(), а сам ник от пунктуации
+        // защищает validSlug — здесь пускаем весь набор символов имени.
+        if (!text[start].isEmoteNameChar()) return false
         // Хвостовые и подряд идущие «_» раньше отсекались как «не наш формат»,
         // но ник стримера бывает и таким (peeb_iluci____ → ник iluci____).
-        // Границу «эмоут | ник» всё равно перебирает splits(), а API проверит.
         var underscores = 0
         for (i in start until end) {
             val c = text[i]
             if (c == '_') { underscores++; continue }
-            if (!(c.isAsciiLetter() || c.isAsciiDigit() || c == '-')) return false
+            if (!c.isEmoteNameChar()) return false
         }
         return underscores > 0
     }
@@ -184,4 +182,12 @@ object Suggest {
 
     private fun Char.isAsciiLetter() = this in 'a'..'z' || this in 'A'..'Z'
     private fun Char.isAsciiDigit() = this in '0'..'9'
+
+    // Символы, из которых 7TV собирает имя эмоута: буквы, цифры, «_» и
+    // немного пунктуации (-F, ellen?, (7TV), D:). Точку/запятую/слэш/собаку
+    // не берём намеренно — это обычный текст или ссылка, а не эмоут, и на них
+    // не стоит тратить лимит запросов к API.
+    private const val NAME_PUNCT = "-()!?:"
+    private fun Char.isEmoteNameChar() =
+        isAsciiLetter() || isAsciiDigit() || this == '_' || this in NAME_PUNCT
 }
