@@ -16,7 +16,13 @@ object Releases {
     const val REPO = "Spudisis/7tv-vk"
     private const val API = "https://api.github.com/repos/$REPO/releases?per_page=40"
 
-    class Found(val tag: String, val version: String, val assetUrl: String, val assetName: String)
+    class Found(
+        val tag: String,
+        val version: String,
+        val assetUrl: String,
+        val assetName: String,
+        val notes: String = "",  // текст релиза (changelog) — показываем, не скачивая APK
+    )
 
     /**
      * Снимок актуальных релизов одним запросом к API: и обновление установщика,
@@ -63,7 +69,7 @@ object Releases {
                 if (!name.endsWith(".apk")) continue
                 val url = a.optString("browser_download_url")
                 if (url.isEmpty()) continue
-                val cand = Found(tag, versionFromTag(tag), url, name)
+                val cand = Found(tag, versionFromTag(tag), url, name, rel.optString("body"))
                 val cur = best
                 if (cur == null || semverGreater(cand.version, cur.version)) best = cand
                 break // из ассетов одного релиза берём первый .apk

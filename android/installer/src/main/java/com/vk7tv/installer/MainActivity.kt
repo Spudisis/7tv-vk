@@ -253,17 +253,15 @@ class MainActivity : Activity() {
     private fun buildUi(): View {
         val root = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setPadding(dp(16), dp(16), dp(16), 0)
+            setPadding(dp(16), dp(16), dp(16), dp(12))
             setBackgroundColor(PAGE)
         }
 
         // шапка
         root.addView(text("VK7TV", 22f, INK, bold = true))
         root.addView(text(
-            "Установщик для приложения ВК · v${BuildConfig.VERSION_NAME}", 13f, MUTED
+            "Установщик для приложения ВК", 13f, MUTED
         ).apply { layoutParams = lp(MATCH_PARENT, WRAP_CONTENT, top = 2, bottom = 12) })
-
-        root.addView(buildTabBar())
 
         val frame = FrameLayout(this).apply {
             layoutParams = LinearLayout.LayoutParams(MATCH_PARENT, 0, 1f)
@@ -273,6 +271,9 @@ class MainActivity : Activity() {
             frame.addView(it, FrameLayout.LayoutParams(MATCH_PARENT, MATCH_PARENT))
         }
         root.addView(frame)
+
+        // навигация внизу — группа кнопок-вкладок
+        root.addView(buildTabBar())
         return root
     }
 
@@ -281,7 +282,7 @@ class MainActivity : Activity() {
             orientation = LinearLayout.HORIZONTAL
             background = bg(TAB_BG, 12)
             setPadding(dp(4), dp(4), dp(4), dp(4))
-            layoutParams = lp(MATCH_PARENT, WRAP_CONTENT, bottom = 12)
+            layoutParams = lp(MATCH_PARENT, WRAP_CONTENT, top = 10)
         }
         tabViews = tabTitles.mapIndexed { i, title ->
             TextView(this).apply {
@@ -453,6 +454,10 @@ class MainActivity : Activity() {
             addView(logView)
         }
         col.addView(logScroll)
+        col.addView(text("VK7TV Патчер · v${BuildConfig.VERSION_NAME}", 11.5f, MUTED).apply {
+            gravity = Gravity.CENTER
+            layoutParams = lp(MATCH_PARENT, WRAP_CONTENT, top = 10)
+        })
         return col
     }
 
@@ -645,6 +650,24 @@ class MainActivity : Activity() {
             layoutParams = lp(MATCH_PARENT, WRAP_CONTENT, top = 10)
         })
 
+        // чейнджлог доступного обновления — из текста релиза, без скачивания APK
+        if (updateAvailable) {
+            val notes = availableModule?.notes?.let(::cleanNotes).orEmpty()
+            if (notes.isNotEmpty()) {
+                val box = LinearLayout(this).apply {
+                    orientation = LinearLayout.VERTICAL
+                    background = bg(CHIP_BG, 10)
+                    setPadding(dp(12), dp(10), dp(12), dp(10))
+                    layoutParams = lp(MATCH_PARENT, WRAP_CONTENT, top = 10)
+                }
+                box.addView(text("Что нового в v$avail", 12.5f, INK, bold = true))
+                box.addView(text(notes, 12.5f, MUTED).apply {
+                    layoutParams = lp(MATCH_PARENT, WRAP_CONTENT, top = 4)
+                })
+                cardView.addView(box)
+            }
+        }
+
         val actionLabel = when {
             !c.patched -> "Пропатчить"
             updateAvailable -> "Обновить до v$avail"
@@ -690,6 +713,13 @@ class MainActivity : Activity() {
         val mb = bytes / 1048576.0
         return if (mb >= 1) "%.1f МБ".format(mb) else "%.0f КБ".format(bytes / 1024.0)
     }
+
+    // Лёгкая чистка markdown из текста релиза для показа в приложении.
+    private fun cleanNotes(raw: String): String =
+        raw.trim().replace("**", "").lines().joinToString("\n") { line ->
+            val t = line.trimEnd()
+            if (t.startsWith("- ")) "•  ${t.substring(2)}" else t
+        }
 
     private fun copyLog() {
         val cm = getSystemService(CLIPBOARD_SERVICE) as ClipboardManager
