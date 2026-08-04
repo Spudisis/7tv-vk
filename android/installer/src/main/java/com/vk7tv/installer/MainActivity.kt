@@ -63,6 +63,11 @@ class MainActivity : Activity() {
 
     private val ui = Handler(Looper.getMainLooper())
 
+    // Долгая пауза перед авто-разблокировкой: фоновой установке (Xiaomi и др.)
+    // надо успеть прислать SUCCESS раньше, иначе покажем ложную «отмену».
+    // Нетерпеливым и без того доступна кнопка «Прервать».
+    private val USER_ACTION_GRACE_MS = 60_000L
+
     // --- палитра (значения по умолчанию — светлые; тёмные подставит initPalette) ---
     private var PAGE = Color.parseColor("#F4F5F7")
     private var CARD = Color.parseColor("#FFFFFF")
@@ -196,13 +201,18 @@ class MainActivity : Activity() {
     override fun onResume() {
         super.onResume()
         resumed = true
-        // Вернулись из системного диалога установки/удаления. Дадим шанс
-        // терминальному broadcast'у прийти; если через паузу мы всё ещё ждём
-        // ответа и снова на переднем плане — значит диалог закрыли, не подтвердив
-        // (тап мимо/«назад»), результата не будет. Разблокируем экран сами.
+        // Вернулись из системного диалога установки/удаления. Если его закрыли,
+        // не подтвердив (тап мимо/«назад»), терминального broadcast'а на части
+        // прошивок не будет — разблокируем экран сами. Но ждём ДОЛГО: часть
+        // прошивок (Xiaomi/HyperOS и др.) возвращают в приложение сразу, а сам
+        // пакет ставят в фоне и присылают SUCCESS через несколько секунд.
+        // Короткий таймер срабатывал раньше него, показывал ложное «Отменено» и
+        // ронял flowActive — из-за чего настоящий успех отбрасывался и версия
+        // модуля не записывалась. На всякий случай успех теперь honor'ится и
+        // после таймера (см. onOpDone), так что точность задержки некритична.
         if (awaitingUserAction) {
             ui.removeCallbacks(userActionCheck)
-            ui.postDelayed(userActionCheck, 1500)
+            ui.postDelayed(userActionCheck, USER_ACTION_GRACE_MS)
         }
     }
 
@@ -998,23 +1008,27 @@ class MainActivity : Activity() {
         // системный диалог ответил — фолбэк из onResume больше не нужен
         awaitingUserAction = false
         ui.removeCallbacks(userActionCheck)
-        // операцию отменили кнопкой «Прервать» — поздний результат игнорируем
-        if (!flowActive) return
+        // Успех honor'им ВСЕГДА, даже если flowActive уже сброшен (сработал
+        // таймаут onResume на медленной фоновой установке или нажали «Прервать»,
+        // а пакет всё же встал): приложение реально обновилось. Ошибки же и
+        // продолжение цепочки — только у живого флоу, иначе воскресили бы
+        // отменённую операцию или показали чужую «неудачу».
         when (op) {
             Installer.OP_UNINSTALL -> {
-                if (ok && installAfterUninstall) {
+                if (ok && installAfterUninstall && flowActive) {
                     installAfterUninstall = false
                     step("Оригинал удалён, ставлю VK7TV…")
                     Installer.install(this, patchedApks)
-                } else {
+                } else if (flowActive) {
                     flowActive = false
                     step(if (ok) "Удалено." else "Удаление отменено.")
                     busy(false)
                 }
             }
             Installer.OP_INSTALL -> {
-                flowActive = false
                 if (ok) {
+                    flowActive = false
+                    installAfterUninstall = false
                     targetPkg?.let { pkg ->
                         pendingModuleVersion?.let { rememberModuleVersion(pkg, it) }
                     }
@@ -1022,19 +1036,23 @@ class MainActivity : Activity() {
                     busy(false)
                     offerOpen()
                     render()
-                } else {
+                } else if (flowActive) {
+                    flowActive = false
                     step("Установка не удалась: ${msg ?: "отменено"}", error = true)
                     if (updateMode) offerReinstall()
                     busy(false)
                 }
             }
             Installer.OP_SELF -> {
-                flowActive = false
-                step(
-                    if (ok) "Установщик обновлён." else "Обновление установщика не удалось: ${msg ?: "отменено"}",
-                    error = !ok
-                )
-                busy(false)
+                if (ok) {
+                    flowActive = false
+                    step("Установщик обновлён.")
+                    busy(false)
+                } else if (flowActive) {
+                    flowActive = false
+                    step("Обновление установщика не удалось: ${msg ?: "отменено"}", error = true)
+                    busy(false)
+                }
             }
         }
     }
