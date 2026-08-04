@@ -89,7 +89,10 @@ object Suggest {
         val len = end - start
         if (len < 5 || len > 60) return false
         val c0 = text[start]
-        if (!(c0.isAsciiLetter() || c0.isAsciiDigit())) return false
+        // Имя эмоута может и начинаться с дефиса, и содержать его (-F_simelly →
+        // эмоут «-F», ник simelly). Ник стримера дефисов не знает, но его
+        // отфильтрует validSlug — здесь пускаем дефис в слово целиком.
+        if (!(c0.isAsciiLetter() || c0.isAsciiDigit() || c0 == '-')) return false
         // Хвостовые и подряд идущие «_» раньше отсекались как «не наш формат»,
         // но ник стримера бывает и таким (peeb_iluci____ → ник iluci____).
         // Границу «эмоут | ник» всё равно перебирает splits(), а API проверит.
@@ -97,7 +100,7 @@ object Suggest {
         for (i in start until end) {
             val c = text[i]
             if (c == '_') { underscores++; continue }
-            if (!(c.isAsciiLetter() || c.isAsciiDigit())) return false
+            if (!(c.isAsciiLetter() || c.isAsciiDigit() || c == '-')) return false
         }
         return underscores > 0
     }
