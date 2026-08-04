@@ -30,7 +30,7 @@ object Config {
     const val KEY_SEEDED = "seeded"
     const val KEY_DIAG = "diag"
     const val KEY_SUGGEST = "suggest"
-    const val KEY_MESSENGER_ONLY = "messengerOnly"
+    const val KEY_EVERYWHERE = "everywhere"
 
     @Volatile
     var enabled = true
@@ -55,10 +55,10 @@ object Config {
     var suggest = true
         private set
 
-    // выкл. по умолчанию — поведение как раньше (эмоуты везде). Включённая
-    // подменяет коды только в переписке, а ленту/комментарии не трогает.
+    // выкл. по умолчанию — коды подменяются ТОЛЬКО в переписке. Включённая
+    // снимает ограничение: эмоуты появляются везде (лента, комментарии и т.д.).
     @Volatile
-    var messengerOnly = false
+    var everywhere = false
         private set
 
     @Volatile
@@ -89,7 +89,7 @@ object Config {
         dockButton = p.getBoolean(KEY_DOCK, true)
         diag = p.getBoolean(KEY_DIAG, false)
         suggest = p.getBoolean(KEY_SUGGEST, true)
-        messengerOnly = p.getBoolean(KEY_MESSENGER_ONLY, false)
+        everywhere = p.getBoolean(KEY_EVERYWHERE, false)
         sets = parseSets(p.getString(KEY_SETS, "[]"))
         custom = parseCustom(p.getString(KEY_CUSTOM, "{}"))
         favorites = parseList(p.getString(KEY_FAVORITES, "[]"))
@@ -113,7 +113,7 @@ object Config {
             KEY_DOCK -> dockButton = value
             KEY_DIAG -> diag = value
             KEY_SUGGEST -> suggest = value
-            KEY_MESSENGER_ONLY -> messengerOnly = value
+            KEY_EVERYWHERE -> everywhere = value
         }
     }
 
@@ -171,8 +171,11 @@ object Config {
             favCount = it.length()
         }
         if (json.has("useGlobal")) e.putBoolean(KEY_USE_GLOBAL, json.optBoolean("useGlobal", true))
-        if (json.has("messengerOnly")) {
-            e.putBoolean(KEY_MESSENGER_ONLY, json.optBoolean("messengerOnly", false))
+        if (json.has("everywhere")) {
+            e.putBoolean(KEY_EVERYWHERE, json.optBoolean("everywhere", false))
+        } else if (json.has("messengerOnly")) {
+            // старый бэкап: messengerOnly=true → только переписка → everywhere=false
+            e.putBoolean(KEY_EVERYWHERE, !json.optBoolean("messengerOnly", false))
         }
         e.putBoolean(KEY_SEEDED, true)
         e.apply()

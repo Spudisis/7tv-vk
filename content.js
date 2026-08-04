@@ -8,7 +8,7 @@
 
   let enabled = true;
   let suggestOn = true;
-  let messengerOnly = false; // подменять коды только в переписке
+  let everywhere = false; // по умолчанию только в переписке; тогл включает везде
   let emoteMap = new Map(); // имя -> URL картинки
   let testRegex = null; // быстрый префильтр текстовых узлов
   let stateSig = ''; // подпись набора эмоутов и настроек
@@ -97,7 +97,7 @@
       enabled: true,
       useGlobal: true,
       suggest: true,
-      messengerOnly: false,
+      everywhere: false,
       sets: [],
       customEmotes: {},
     });
@@ -105,7 +105,7 @@
 
     enabled = sync.enabled;
     suggestOn = sync.suggest;
-    messengerOnly = sync.messengerOnly;
+    everywhere = sync.everywhere;
     emoteMap = new Map();
     if (sync.useGlobal) {
       const g =
@@ -161,7 +161,7 @@
     const sig = [
       enabled,
       suggestOn,
-      messengerOnly,
+      everywhere,
       sync.useGlobal,
       emoteMap.size,
       sync.sets.map((s) => `${s.id}:${s.count}`).join(','),
@@ -292,7 +292,9 @@
     return false;
   }
 
-  // --- «эмоуты только в мессенджере» ---
+  // --- ограничение области: по умолчанию только переписка ---
+  // По умолчанию подменяем коды только в мессенджере; галка «Показывать
+  // эмоуты везде» снимает это ограничение. Определяем, переписка ли это.
   // Раздел /im — это и список диалогов, и открытый чат: там подменяем всё.
   // Вне его (лента, стена, комментарии, профили) — не трогаем ничего, кроме
   // всплывающих окошек чата, которые ВК показывает поверх других страниц:
@@ -358,7 +360,7 @@
     if (isServiceText(parent, 3)) return;
     if (isServiceLabel(parent)) return;
     // включён режим «только мессенджер» — вне переписки текст не трогаем
-    if (messengerOnly && !inMessenger(parent)) return;
+    if (!everywhere && !inMessenger(parent)) return;
 
     // эмоут — это отдельное «слово», разделённое пробелами (как в 7TV);
     // zero-width эмоут после обычного накладывается поверх него,
@@ -477,7 +479,7 @@
   // Избранное и позиция виджета меняются часто (в том числе из соседней
   // вкладки) — из-за них страницу перебирать незачем.
   const RENDER_KEYS = new Set([
-    'enabled', 'useGlobal', 'suggest', 'messengerOnly',
+    'enabled', 'useGlobal', 'suggest', 'everywhere',
     'sets', 'customEmotes', 'setEmotes', 'globalEmotes',
   ]);
 
