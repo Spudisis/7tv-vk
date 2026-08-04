@@ -49,6 +49,12 @@ object PickerUi {
     private var watcher: ViewTreeObserver.OnGlobalLayoutListener? = null
     private var watched: View? = null
 
+    // состояние пикера между открытиями: выбранный набор и прокрутка не
+    // сбрасываются, чтобы после отправки эмоута и закрытия не листать заново
+    // до нужного стримера
+    private var savedGroup = -1
+    private var savedScroll = 0
+
     fun toggle(anchor: View, input: EditText) {
         val p = popup
         if (p != null && p.isShowing) {
@@ -105,26 +111,10 @@ object PickerUi {
 
         val adapter = EmoteAdapter(ctx, all, { insert(input, it) }, onFav)
 
-        var group = -1 // -1 = все наборы
+        // восстанавливаем набор, на котором закрыли; исчез (набор убрали) —
+        // откатываемся на «Все»
+        var group = if (savedGroup in Emotes.groups.indices) savedGroup else -1
         var query = ""
-        fun refresh() {
-            val base = if (group < 0) all else Emotes.groups.getOrNull(group)?.emotes ?: all
-            adapter.items = if (query.isEmpty()) base
-            else base.filter { it.name.contains(query, ignoreCase = true) }
-            adapter.notifyDataSetChanged()
-        }
-
-        rootView.addView(chips(ctx) { i -> group = i; refresh() })
-
-        search.addTextChangedListener(object : TextWatcher {
-            override fun afterTextChanged(s: Editable?) {
-                query = s?.toString()?.trim() ?: ""
-                refresh()
-            }
-
-            override fun beforeTextChanged(s: CharSequence?, a: Int, b: Int, c: Int) = Unit
-            override fun onTextChanged(s: CharSequence?, a: Int, b: Int, c: Int) = Unit
-        })
 
         val grid = GridView(ctx).apply {
             numColumns = GridView.AUTO_FIT
@@ -136,10 +126,41 @@ object PickerUi {
             clipToPadding = false
             this.adapter = adapter
         }
+
+        fun refresh(restore: Boolean) {
+            val base = if (group < 0) all else Emotes.groups.getOrNull(group)?.emotes ?: all
+            adapter.items = if (query.isEmpty()) base
+            else base.filter { it.name.contains(query, ignoreCase = true) }
+            adapter.notifyDataSetChanged()
+            savedGroup = group
+            if (restore) {
+                // открытие пикера — вернуться туда, где закрыли
+                val pos = savedScroll.coerceIn(0, (adapter.count - 1).coerceAtLeast(0))
+                grid.post { L.safe("прокрутка пикера") { grid.setSelection(pos) } }
+            } else {
+                // сменил набор или начал поиск — показываем сверху
+                savedScroll = 0
+                grid.setSelection(0)
+            }
+        }
+
+        rootView.addView(chips(ctx, group) { i -> group = i; refresh(restore = false) })
+
+        search.addTextChangedListener(object : TextWatcher {
+            override fun afterTextChanged(s: Editable?) {
+                query = s?.toString()?.trim() ?: ""
+                refresh(restore = false)
+            }
+
+            override fun beforeTextChanged(s: CharSequence?, a: Int, b: Int, c: Int) = Unit
+            override fun onTextChanged(s: CharSequence?, a: Int, b: Int, c: Int) = Unit
+        })
+
         rootView.addView(
             grid,
             LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f),
         )
+        refresh(restore = true)
 
         // Поповер встаёт НАД панелью ввода, а не поверх неё: иначе не видно,
         // что вставилось в поле.
@@ -163,6 +184,16 @@ object PickerUi {
         pw.showAtLocation(anchor, Gravity.NO_GRAVITY, 0, y)
         popup = pw
         follow(pw, anchor, input, gap, y)
+        // запоминаем, где закрыли (перекрывает слушатель из follow, поэтому
+        // сами снимаем слежение и гасим popup). В поиске не сохраняем: индекс
+        // отфильтрованного списка на полном наборе указывал бы не туда.
+        pw.setOnDismissListener {
+            L.safe("сохранение прокрутки") {
+                if (query.isEmpty()) savedScroll = grid.firstVisiblePosition
+            }
+            detach()
+            popup = null
+        }
     }
 
     /**
@@ -380,23 +411,29 @@ object PickerUi {
         )
     }
 
-    private fun chips(ctx: Context, onPick: (Int) -> Unit): View {
+    private fun chips(ctx: Context, selected: Int, onPick: (Int) -> Unit): View {
         val row = LinearLayout(ctx).apply {
             orientation = LinearLayout.HORIZONTAL
             setPadding(Inject.dp(ctx, 10), 0, Inject.dp(ctx, 10), Inject.dp(ctx, 8))
         }
+        val scroll = HorizontalScrollView(ctx).apply {
+            isHorizontalScrollBarEnabled = false
+            addView(row)
+        }
         val chips = ArrayList<TextView>()
+        fun paint(t: TextView, on: Boolean) {
+            t.setTextColor(if (on) Ui.TEXT else Ui.MUTED)
+            (t.background as GradientDrawable).setColor(if (on) Ui.HOVER else Ui.BG2)
+        }
         fun chip(title: String, index: Int) {
+            val on = index == selected
             val t = TextView(ctx).apply {
                 text = title
                 textSize = 11f
-                setTextColor(if (index < 0) Ui.TEXT else Ui.MUTED)
                 setPadding(Inject.dp(ctx, 10), Inject.dp(ctx, 5), Inject.dp(ctx, 10), Inject.dp(ctx, 5))
-                background = GradientDrawable().apply {
-                    setColor(if (index < 0) Ui.HOVER else Ui.BG2)
-                    cornerRadius = Inject.dp(ctx, 12).toFloat()
-                }
+                background = GradientDrawable().apply { cornerRadius = Inject.dp(ctx, 12).toFloat() }
             }
+            paint(t, on)
             val lp = LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.WRAP_CONTENT,
                 ViewGroup.LayoutParams.WRAP_CONTENT,
@@ -404,23 +441,23 @@ object PickerUi {
             lp.rightMargin = Inject.dp(ctx, 6)
             t.layoutParams = lp
             t.setOnClickListener {
-                for (c in chips) {
-                    c.setTextColor(Ui.MUTED)
-                    (c.background as GradientDrawable).setColor(Ui.BG2)
-                }
-                t.setTextColor(Ui.TEXT)
-                (t.background as GradientDrawable).setColor(Ui.HOVER)
+                for (c in chips) paint(c, false)
+                paint(t, true)
                 onPick(index)
             }
             chips.add(t)
             row.addView(t)
+            // восстановленный набор мог быть далеко справа — подматываем к нему,
+            // иначе выделенный чип оказался бы за краем экрана
+            if (on) scroll.post {
+                L.safe("прокрутка чипов") {
+                    scroll.scrollTo((t.left - Inject.dp(ctx, 12)).coerceAtLeast(0), 0)
+                }
+            }
         }
         chip("Все", -1)
         Emotes.groups.forEachIndexed { i, g -> chip(g.title, i) }
-        return HorizontalScrollView(ctx).apply {
-            isHorizontalScrollBarEnabled = false
-            addView(row)
-        }
+        return scroll
     }
 
     private fun label(ctx: Context, text: String) = TextView(ctx).apply {
