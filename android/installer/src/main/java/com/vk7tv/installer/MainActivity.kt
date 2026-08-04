@@ -12,6 +12,7 @@ import android.content.pm.PackageInstaller
 import android.content.res.ColorStateList
 import android.content.res.Configuration
 import android.graphics.Color
+import android.graphics.Paint
 import android.graphics.Typeface
 import android.graphics.drawable.ColorDrawable
 import android.graphics.drawable.Drawable
@@ -70,7 +71,6 @@ class MainActivity : Activity() {
     private var WARN_BG = Color.parseColor("#FFF6E6")
     private var WARN_LINE = Color.parseColor("#F0C36D")
     private var TAB_BG = Color.parseColor("#E9EAEE")
-    private var TAB_ACTIVE = Color.parseColor("#FFFFFF")
 
     /** Тёмная палитра — по системной теме устройства. */
     private fun initPalette(night: Boolean) {
@@ -88,13 +88,15 @@ class MainActivity : Activity() {
         WARN_BG = Color.parseColor("#3A2F1A")
         WARN_LINE = Color.parseColor("#7A5C2E")
         TAB_BG = Color.parseColor("#202228")
-        TAB_ACTIVE = Color.parseColor("#33343B")
     }
 
     // --- вкладки ---
-    private val tabTitles = listOf("Установка", "Как это работает", "Журнал")
-    private lateinit var tabViews: List<TextView>
+    private val tabTitles = listOf("Установка", "Справка", "Журнал")
+    private val tabIcons = listOf("📥", "📖", "📋")
+    private lateinit var tabs: List<Tab>
     private lateinit var pages: List<View>
+
+    private class Tab(val container: LinearLayout, val label: TextView)
 
     // --- вкладка «Установка» ---
     private lateinit var topBanner: LinearLayout      // обновление установщика / просьба про источники
@@ -158,7 +160,7 @@ class MainActivity : Activity() {
     // Статус-бар и навбар в цвет фона, иконки — светлые/тёмные под тему.
     private fun applySystemBars(night: Boolean) {
         window.statusBarColor = PAGE
-        window.navigationBarColor = PAGE
+        window.navigationBarColor = CARD  // в цвет нижней панели вкладок
         var vis = window.decorView.systemUiVisibility
         val lightBars = View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR or View.SYSTEM_UI_FLAG_LIGHT_NAVIGATION_BAR
         vis = if (night) vis and lightBars.inv() else vis or lightBars
@@ -253,13 +255,17 @@ class MainActivity : Activity() {
     private fun buildUi(): View {
         val root = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setPadding(dp(16), dp(16), dp(16), dp(12))
             setBackgroundColor(PAGE)
         }
 
-        // шапка
-        root.addView(text("VK7TV", 22f, INK, bold = true))
-        root.addView(text(
+        // контент с боковыми отступами; нижний бар вкладок — во всю ширину
+        val body = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(16), dp(16), dp(16), 0)
+            layoutParams = LinearLayout.LayoutParams(MATCH_PARENT, 0, 1f)
+        }
+        body.addView(text("VK7TV", 22f, INK, bold = true))
+        body.addView(text(
             "Установщик для приложения ВК", 13f, MUTED
         ).apply { layoutParams = lp(MATCH_PARENT, WRAP_CONTENT, top = 2, bottom = 12) })
 
@@ -270,41 +276,69 @@ class MainActivity : Activity() {
         pages.forEach {
             frame.addView(it, FrameLayout.LayoutParams(MATCH_PARENT, MATCH_PARENT))
         }
-        root.addView(frame)
+        body.addView(frame)
+        root.addView(body)
 
-        // навигация внизу — группа кнопок-вкладок
+        // нижняя навигация — кнопки-вкладки во всю ширину
         root.addView(buildTabBar())
         return root
     }
 
     private fun buildTabBar(): View {
-        val bar = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            background = bg(TAB_BG, 12)
-            setPadding(dp(4), dp(4), dp(4), dp(4))
-            layoutParams = lp(MATCH_PARENT, WRAP_CONTENT, top = 10)
+        // Отдельная поверхность внизу во всю ширину экрана, с отбивкой-линией.
+        val wrap = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setBackgroundColor(CARD)
+            layoutParams = LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT)
         }
-        tabViews = tabTitles.mapIndexed { i, title ->
-            TextView(this).apply {
+        wrap.addView(View(this).apply {
+            setBackgroundColor(LINE)
+            layoutParams = LinearLayout.LayoutParams(MATCH_PARENT, dp(1))
+        })
+        val row = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            setPadding(dp(8), dp(6), dp(8), dp(6))
+            layoutParams = LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT)
+        }
+        tabs = tabTitles.mapIndexed { i, title ->
+            val icon = TextView(this).apply {
+                text = tabIcons[i]
+                gravity = Gravity.CENTER
+                sp(this, 17f)
+            }
+            val label = TextView(this).apply {
                 text = title
                 gravity = Gravity.CENTER
-                sp(this, 13f)
-                setPadding(dp(6), dp(9), dp(6), dp(9))
-                layoutParams = LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f)
+                sp(this, 11f)
+                setPadding(0, dp(2), 0, 0)
+            }
+            val container = LinearLayout(this).apply {
+                orientation = LinearLayout.VERTICAL
+                gravity = Gravity.CENTER
+                minimumHeight = dp(52)
+                setPadding(dp(4), dp(8), dp(4), dp(8))
+                isClickable = true
+                layoutParams = LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f).apply {
+                    marginStart = dp(3); marginEnd = dp(3)
+                }
+                addView(icon)
+                addView(label)
                 setOnClickListener { selectTab(i) }
             }
+            Tab(container, label)
         }
-        tabViews.forEach { bar.addView(it) }
-        return bar
+        tabs.forEach { row.addView(it.container) }
+        wrap.addView(row)
+        return wrap
     }
 
     private fun selectTab(index: Int) {
         pages.forEachIndexed { i, v -> v.visibility = if (i == index) View.VISIBLE else View.GONE }
-        tabViews.forEachIndexed { i, t ->
+        tabs.forEachIndexed { i, t ->
             val active = i == index
-            t.background = if (active) bg(TAB_ACTIVE, 10) else null
-            t.setTextColor(if (active) ACCENT else MUTED)
-            t.setTypeface(null, if (active) Typeface.BOLD else Typeface.NORMAL)
+            t.container.background = ripple(bg(if (active) ACCENT else TAB_BG, 12), 0x22808080, 12)
+            t.label.setTextColor(if (active) Color.WHITE else INK)
+            t.label.setTypeface(null, if (active) Typeface.BOLD else Typeface.NORMAL)
         }
     }
 
@@ -351,7 +385,7 @@ class MainActivity : Activity() {
                 "войти заново. Обновления вход сохраняют.",
             13.5f, MUTED
         ))
-        intro.addView(button("Подробнее — «Как это работает»", CARD, ACCENT).apply {
+        intro.addView(button("Подробнее — вкладка «Справка»", CARD, ACCENT).apply {
             setPadding(0, dp(10), 0, 0)
             gravity = Gravity.START or Gravity.CENTER_VERTICAL
             background = null
@@ -454,11 +488,25 @@ class MainActivity : Activity() {
             addView(logView)
         }
         col.addView(logScroll)
-        col.addView(text("VK7TV Патчер · v${BuildConfig.VERSION_NAME}", 11.5f, MUTED).apply {
-            gravity = Gravity.CENTER
+        val footer = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
             layoutParams = lp(MATCH_PARENT, WRAP_CONTENT, top = 10)
+        }
+        footer.addView(text("GitHub проекта", 12f, ACCENT).apply {
+            paintFlags = paintFlags or Paint.UNDERLINE_TEXT_FLAG
+            setOnClickListener { openUrl("https://github.com/${Releases.REPO}") }
         })
+        footer.addView(View(this).apply {
+            layoutParams = LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f)
+        })
+        footer.addView(text("VK7TV Патчер · v${BuildConfig.VERSION_NAME}", 11.5f, MUTED))
+        col.addView(footer)
         return col
+    }
+
+    private fun openUrl(url: String) {
+        runCatching { startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url))) }
     }
 
     // ---- карточки клиентов ----
