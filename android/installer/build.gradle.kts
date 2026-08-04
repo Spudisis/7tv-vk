@@ -13,8 +13,8 @@ android {
         // не запустится, незачем пускать установщик на устройства без модуля.
         minSdk = 28
         targetSdk = 34
-        versionCode = 13
-        versionName = "0.3.10"
+        versionCode = 14
+        versionName = "0.3.11"
     }
 
     buildFeatures {
@@ -25,6 +25,14 @@ android {
     // а не в lib/ APK. Читается через getResourceAsStream, поэтому распаковывать
     // и не сжимать его не нужно — но и мешать упаковке ресурсов нельзя.
     packaging {
+        // classes.dex установщика — это весь конвейер LSPatch (apkzlib, guava,
+        // bouncycastle…), больше 10 МБ. По умолчанию AGP кладёт dex в APK без
+        // сжатия ради быстрой установки и mmap; но у человека со слабым
+        // интернетом узкое место — сам скачиваемый размер, а не установка.
+        // Сжатый dex вдвое меньше, качается надёжнее — компромисс в нашу пользу.
+        dex {
+            useLegacyPackaging = true
+        }
         resources {
             // apkzlib и его зависимости тащат за собой служебные файлы, которые
             // при слиянии ресурсов конфликтуют между собой. Нам они не нужны.
@@ -95,7 +103,12 @@ val bundleModule by tasks.registering(Copy::class) {
 // иначе получилось бы assets/assets/lspatch/so/…
 val extractLspatchNative by tasks.registering(Copy::class) {
     from(zipTree("libs/lspatch.jar")) {
-        include("assets/lspatch/so/**")
+        // Только ARM: реальные телефоны — arm64 (и armeabi-v7a для 32-битных
+        // приложений). x86/x86_64 нужны лишь эмуляторам, а это ~1 МБ лишнего
+        // веса в скачивании установщика. Патчить на x86-устройстве всё равно
+        // почти некому.
+        include("assets/lspatch/so/arm64-v8a/**")
+        include("assets/lspatch/so/armeabi-v7a/**")
     }
     eachFile { path = path.removePrefix("assets/") }
     includeEmptyDirs = false
