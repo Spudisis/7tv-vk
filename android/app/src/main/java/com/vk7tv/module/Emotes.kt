@@ -121,9 +121,16 @@ object Emotes {
             }
         }
 
-        // голое имя набору достаётся только при отсутствии коллизий
-        val bare = HashMap<String, Emote>()
-        val bareCount = HashMap<String, Int>()
+        // Голое имя (без постфикса) собираем по всем наборам вместе с их
+        // постфиксом-слагом. Раньше при коллизии — код есть в нескольких
+        // наборах — оно оставалось ничьим, работал только вариант с постфиксом.
+        // Теперь голое имя достаётся набору, чей слаг первый по алфавиту: «67»
+        // покажет «67» из этого набора, а конкретный «67_stream» доступен явно.
+        // По алфавиту, а не случайно, — тогда у всех с одинаковыми наборами
+        // картинка под «67» совпадает (слаг у всех один, в отличие от
+        // переименованного названия). Глобальный и «свои» голое имя держат
+        // за собой — их не перебиваем.
+        val bareCandidates = HashMap<String, MutableList<Pair<String, Emote>>>()
 
         for (ref in Config.sets) {
             val s = fetched[ref.id] ?: continue
@@ -138,17 +145,19 @@ object Emotes {
                 } else {
                     forPicker.add(e)
                 }
-                bareCount[e.name] = (bareCount[e.name] ?: 0) + 1
-                bare[e.name] = e
+                bareCandidates.getOrPut(e.name) { ArrayList() }.add(slug to e)
             }
             builtGroups.add(Group(ref.name.ifEmpty { s.name }, forPicker))
         }
 
-        for ((name, count) in bareCount) {
-            if (count == 1 && !fresh.containsKey(name)) {
-                val e = bare[name] ?: continue
-                fresh[name] = e
-            }
+        for ((name, list) in bareCandidates) {
+            if (fresh.containsKey(name)) continue // занято глобальным или своими
+            // первый по алфавиту слаг; url — тай-брейк, чтобы выбор был
+            // однозначным, даже если слаги вдруг совпали
+            val pick = list.minWithOrNull(
+                compareBy({ it.first }, { it.second.url }),
+            ) ?: continue
+            fresh[name] = pick.second
         }
 
         if (Config.custom.isNotEmpty()) {

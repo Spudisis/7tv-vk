@@ -116,31 +116,38 @@
     }
     // У эмоута из набора есть второе имя — с постфиксом набора:
     // ok_bratishkinoff. Голое имя остаётся за глобальным набором и «своими»,
-    // а набору стримера достаётся, только если такой код есть ровно в одном
-    // подключённом наборе. Есть в нескольких — голое имя ничьё, пишем
-    // с постфиксом: иначе картинка зависела бы от того, какой набор
-    // подключён последним.
+    // а набору стримера достаётся: если код есть в одном наборе — ему, а при
+    // коллизии (код в нескольких наборах) — набору, чей слаг первый по
+    // алфавиту. «67» покажет «67» из этого набора, а конкретный «67_stream»
+    // доступен явно. По алфавиту, а не случайно, — тогда у всех с одинаковыми
+    // наборами картинка под «67» совпадает (слаг у всех один, в отличие
+    // от переименованного названия).
     // a — голое имя эмоута, пометка «это алиас» для автозаполнения.
-    const fromSets = new Map(); // голое имя -> {em, count}
+    const fromSets = new Map(); // голое имя -> [{slug, em}] из наборов с этим кодом
     for (const s of sync.sets) {
       const m = local.setEmotes[s.id];
       if (!m) continue;
       for (const [n, v] of Object.entries(m)) {
         const em = normEmote(v);
         if (s.slug) emoteMap.set(`${n}_${s.slug}`, { u: em.u, z: em.z, a: n });
-        const prev = fromSets.get(n);
-        if (prev) prev.count++;
-        else fromSets.set(n, { em, count: 1 });
+        const cand = { slug: s.slug || '', em };
+        const list = fromSets.get(n);
+        if (list) list.push(cand);
+        else fromSets.set(n, [cand]);
       }
     }
-    for (const [n, o] of fromSets) {
-      if (o.count === 1 && !emoteMap.has(n)) emoteMap.set(n, o.em);
+    for (const [n, list] of fromSets) {
+      if (emoteMap.has(n)) continue; // занято глобальным или своими
+      // первый по алфавиту слаг; url — тай-брейк на случай равных слагов
+      list.sort((a, b) => a.slug.localeCompare(b.slug) || a.em.u.localeCompare(b.em.u));
+      emoteMap.set(n, list[0].em);
     }
     for (const [n, v] of Object.entries(sync.customEmotes)) emoteMap.set(n, normEmote(v));
 
     // Префильтр строим по голым именам: имя с постфиксом содержит голое
-    // как подстроку, поэтому такой текст регексп поймает и без него.
-    // Исключение — коллизии: там голого имени нет, и алиас нужен явно.
+    // как подстроку, поэтому такой текст регексп поймает и без него. Голое
+    // имя теперь есть у любого кода из наборов, так что постфиксные имена
+    // в префильтр можно не класть.
     const probes = [];
     for (const [n, v] of emoteMap) if (!v.a || !emoteMap.has(v.a)) probes.push(n);
     testRegex = probes.length ? new RegExp(probes.map(escapeRegex).join('|')) : null;
