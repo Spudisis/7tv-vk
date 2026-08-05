@@ -369,7 +369,9 @@ object PickerUi {
         val gear = Inject.dp(ctx, 18)
         row.addView(
             ImageView(ctx).apply {
-                setImageDrawable(GearDrawable(Ui.MUTED))
+                // цвет ссылки, когда вышла новая версия: тост про неё
+                // показывается один раз, а знак «зайди в настройки» остаётся
+                setImageDrawable(GearDrawable(if (Updates.available != null) Ui.ACCENT else Ui.MUTED))
                 contentDescription = "Настройки VK7TV"
                 // область нажатия больше самой иконки: 18dp пальцем не поймать
                 setPadding(Inject.dp(ctx, 8), Inject.dp(ctx, 6), Inject.dp(ctx, 8), Inject.dp(ctx, 6))

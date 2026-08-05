@@ -166,6 +166,8 @@ object Boot {
                     Replacer.rerenderAll()
                     Inject.markReady()
                     Diag.note("наборов ${Config.sets.size}, эмоутов ${Emotes.size()}")
+                    // не чаще раза в сутки и молча при неудаче
+                    L.safe("проверка обновлений") { Updates.checkSoon() }
                     canary()
                 }
             }, "vk7tv-sets").apply { isDaemon = true }.start()

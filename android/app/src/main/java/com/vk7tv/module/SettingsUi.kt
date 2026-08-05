@@ -1,10 +1,12 @@
 package com.vk7tv.module
 
 import android.content.Context
+import android.content.Intent
 import android.graphics.Color
 import android.graphics.Typeface
 import android.graphics.drawable.ColorDrawable
 import android.graphics.drawable.GradientDrawable
+import android.net.Uri
 import android.os.Handler
 import android.os.Looper
 import android.text.InputType
@@ -61,6 +63,21 @@ object SettingsUi {
                     popup = null
                 },
             )
+        }
+
+        // Обновление: сам модуль обновиться не может — он вшит в APK клиента,
+        // перекладывает его установщик. Поэтому показываем версию и уводим туда.
+        Updates.available?.let { fresh ->
+            root.addView(label(ctx, "ЕСТЬ ОБНОВЛЕНИЕ"))
+            root.addView(
+                note(
+                    ctx,
+                    "Вышла версия $fresh, у тебя ${BuildConfig.VERSION_NAME}. Обновляет " +
+                        "установщик: открой его и нажми «Обновить модуль» на карточке " +
+                        "клиента. Данные и вход в аккаунт остаются.",
+                ),
+            )
+            root.addView(button(ctx, "Открыть установщик") { openInstaller(ctx) })
         }
 
         root.addView(switch(ctx, "Эмоуты включены", Config.enabled) {
@@ -508,6 +525,32 @@ object SettingsUi {
             val bytes = EmoteCache.usageBytes()
             main.post { L.safe("размер кэша") { view.text = usageText(bytes) } }
         }, "vk7tv-cache-size").apply { isDaemon = true }.start()
+    }
+
+    /**
+     * Открыть установщик. Пробуем оба канала — обычный и пробный, они стоят
+     * как разные приложения. Не нашли ни одного — открываем страницу релиза
+     * в браузере: там лежит APK.
+     */
+    private fun openInstaller(ctx: Context) {
+        for (pkg in arrayOf("com.vk7tv.installer", "com.vk7tv.installer.dev")) {
+            val intent = L.safe("поиск установщика") {
+                ctx.packageManager.getLaunchIntentForPackage(pkg)
+            }
+            if (intent != null) {
+                intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                val ok = L.safe("запуск установщика") { ctx.startActivity(intent); true }
+                if (ok == true) return
+            }
+        }
+        val url = Updates.page ?: "https://github.com/Spudisis/7tv-vk/releases"
+        val opened = L.safe("открытие страницы релиза") {
+            ctx.startActivity(
+                Intent(Intent.ACTION_VIEW, Uri.parse(url)).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
+            )
+            true
+        }
+        if (opened != true) toast(ctx, "Не удалось открыть — зайди на страницу релизов вручную")
     }
 
     private fun toast(ctx: Context, msg: String) =
