@@ -4,7 +4,6 @@ import android.graphics.Rect
 import android.text.Layout
 import android.text.Spanned
 import android.view.MotionEvent
-import android.view.View
 import android.view.ViewConfiguration
 import android.widget.EditText
 import android.widget.TextView
@@ -28,9 +27,16 @@ import java.lang.ref.WeakReference
  * в состоянии «нажата».
  *
  * Что при этом не ломается: прокрутка списка (родитель перехватит жест и
- * пришлёт нам ACTION_CANCEL), долгое нажатие по сообщению (переигрываем руками
- * ближайшему родителю), любые касания мимо слова (возвращаем false, и ВК
- * даже не узнает, что мы здесь были).
+ * пришлёт нам ACTION_CANCEL) и любые касания мимо слова — там мы возвращаем
+ * false, и ВК даже не узнает, что мы здесь были.
+ *
+ * Что меняется: на самом слове больше нет меню сообщения ВК. Сначала мы его
+ * переигрывали — заводили свой таймер и звали performLongClick у ближайшего
+ * родителя. Оказалось хуже, чем без него: слово в строке маленькое, палец на
+ * нём задерживается, и обычный тап регулярно переваливал за 500 мс — вместо
+ * поповера открывалось «поставить реакцию / переслать / удалить». Пусть лучше
+ * нажатие на слово всегда делает ровно одно и то же; меню сообщения остаётся
+ * на всей остальной площади пузыря.
  */
 object Taps {
 
@@ -48,9 +54,6 @@ object Taps {
     private var downY = 0f
     private var slop = 0
     private var moved = false
-    private var longPressed = false
-    private var pending: Runnable? = null
-    private var pendingIn = WeakReference<TextView>(null)
 
     /** В сообщениях появилось слово из чужого набора — начинаем слушать тапы. */
     fun arm() {
@@ -94,22 +97,19 @@ object Taps {
             downY = e.y
             slop = ViewConfiguration.get(tv.context).scaledTouchSlop
             moved = false
-            longPressed = false
-            armLongPress(tv, e.x, e.y)
             return true
         }
         if (word == null || owner.get() !== tv) return false
         when (e.actionMasked) {
             MotionEvent.ACTION_MOVE ->
+                // палец поехал — это прокрутка, а не тап
                 if (!moved && (Math.abs(e.x - downX) > slop || Math.abs(e.y - downY) > slop)) {
-                    // палец поехал — это прокрутка, а не тап
                     moved = true
-                    cancelLongPress()
                 }
             MotionEvent.ACTION_UP -> {
                 val w = word
                 val at = box
-                val tap = !moved && !longPressed
+                val tap = !moved
                 release()
                 if (tap && w != null) SuggestUi.show(tv, w, at)
             }
@@ -180,49 +180,10 @@ object Taps {
         )
     }
 
-    /**
-     * Долгое нажатие по сообщению должно открывать меню ВК как обычно. Жест мы
-     * забрали, поэтому таймер заводим свой и зовём долгий тап у ближайшего
-     * родителя, который его умеет, — координаты переводим по дороге, чтобы
-     * меню вышло там, где палец.
-     */
-    private fun armLongPress(tv: TextView, x: Float, y: Float) {
-        val r = Runnable {
-            L.safe("долгий тап по слову") {
-                longPressed = true
-                var v: View? = tv
-                var dx = x
-                var dy = y
-                while (v != null) {
-                    if (v.isLongClickable) {
-                        v.performLongClick(dx, dy)
-                        return@safe
-                    }
-                    val p = v.parent as? View ?: break
-                    dx += v.left - p.scrollX
-                    dy += v.top - p.scrollY
-                    v = p
-                }
-            }
-        }
-        pending = r
-        pendingIn = WeakReference(tv)
-        tv.postDelayed(r, ViewConfiguration.getLongPressTimeout().toLong())
-    }
-
-    private fun cancelLongPress() {
-        val r = pending ?: return
-        pendingIn.get()?.removeCallbacks(r)
-        pending = null
-        pendingIn = WeakReference(null)
-    }
-
     private fun release() {
-        cancelLongPress()
         owner = WeakReference(null)
         word = null
         box = null
         moved = false
-        longPressed = false
     }
 }

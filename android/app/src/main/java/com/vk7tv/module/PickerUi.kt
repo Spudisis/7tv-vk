@@ -220,33 +220,38 @@ object PickerUi {
         val chipBox = LinearLayout(ctx).apply { orientation = LinearLayout.VERTICAL }
         rootView.addView(chipBox)
 
-        fun buildChips() {
+        var chipScroll: HorizontalScrollView? = null
+
+        fun buildChips(keepX: Int) {
             chipBox.removeAllViews()
-            chipBox.addView(
-                chips(
-                    ctx,
-                    group,
-                    onPick = { i -> group = i; refresh(restore = false) },
-                    onReorder = { ids ->
-                        // выбранную вкладку держим за саму группу, а не за
-                        // индекс: после перестановки индекс указывает на чужую
-                        val was = Emotes.groups.getOrNull(group)
-                        Config.reorderSets(ids)
-                        Emotes.reorderGroups(ids)
-                        group = if (was == null) -1 else Emotes.groups.indexOf(was)
-                        all = Emotes.groups.flatMap { it.emotes }
-                        // на вкладке набора список тот же — держим прокрутку;
-                        // на «Всех» порядок только что поменялся, и старый
-                        // номер указывал бы на другой эмоут
-                        savedScroll = if (group < 0) 0 else grid.firstVisiblePosition
-                        buildChips()
-                        refresh(restore = true)
-                        toast(ctx, "Порядок наборов сохранён")
-                    },
-                ),
+            val row = chips(
+                ctx,
+                group,
+                keepX,
+                onPick = { i -> group = i; refresh(restore = false) },
+                onReorder = { ids ->
+                    // выбранную вкладку держим за саму группу, а не за
+                    // индекс: после перестановки индекс указывает на чужую
+                    val was = Emotes.groups.getOrNull(group)
+                    Config.reorderSets(ids)
+                    Emotes.reorderGroups(ids)
+                    group = if (was == null) -1 else Emotes.groups.indexOf(was)
+                    all = Emotes.groups.flatMap { it.emotes }
+                    // Ряд вкладок пересобирается на новом порядке, поэтому
+                    // руками переносим на него обе прокрутки — и ленты вкладок,
+                    // и сетки. Иначе перетаскивание выглядит так, будто пикер
+                    // заодно прыгнул в начало.
+                    savedScroll = grid.firstVisiblePosition
+                    buildChips(chipScroll?.scrollX ?: 0)
+                    refresh(restore = true)
+                    toast(ctx, "Порядок наборов сохранён")
+                },
             )
+            chipScroll = row
+            chipBox.addView(row)
         }
-        buildChips()
+        // -1 — «сам подмотайся к выбранной вкладке»: пикер только открылся
+        buildChips(-1)
 
         search.addTextChangedListener(object : TextWatcher {
             override fun afterTextChanged(s: Editable?) {
@@ -581,13 +586,18 @@ object PickerUi {
      * Вкладку набора можно зажать и перетащить — порядок наборов меняется
      * и запоминается ([onReorder]). Остальные вкладки не двигаются: своего
      * набора за ними нет, и место у них постоянное.
+     *
+     * [startX] — куда прокрутить ленту: 0 и больше значит «ровно сюда» (ряд
+     * пересобрали после перетаскивания, и он должен остаться на месте),
+     * отрицательное — «подмотайся к выбранной вкладке сам».
      */
     private fun chips(
         ctx: Context,
         selected: Int,
+        startX: Int,
         onPick: (Int) -> Unit,
         onReorder: (List<String>) -> Unit,
-    ): View {
+    ): HorizontalScrollView {
         val gap = Inject.dp(ctx, 6)
         // Считаем слева направо: и подмотка к выбранной вкладке, и вся
         // геометрия перетаскивания опираются на left/rightMargin. На арабской
@@ -634,8 +644,10 @@ object PickerUi {
             chips.add(t)
             row.addView(t)
             // восстановленный набор мог быть далеко справа — подматываем к нему,
-            // иначе выделенный чип оказался бы за краем экрана
-            if (on) scroll.post {
+            // иначе выделенный чип оказался бы за краем экрана. Но только при
+            // открытии пикера: после перетаскивания лента должна остаться
+            // ровно там, где на неё смотрели.
+            if (on && startX < 0) scroll.post {
                 L.safe("прокрутка чипов") {
                     scroll.scrollTo((t.left - Inject.dp(ctx, 12)).coerceAtLeast(0), 0)
                 }
@@ -655,6 +667,10 @@ object PickerUi {
                 onReorder(order.map { packIds[it] })
             }
             for (t in packs) drag.attach(t)
+        }
+        // ряд пересобрали после перетаскивания — возвращаем ленту на место
+        if (startX >= 0) scroll.post {
+            L.safe("прокрутка чипов") { scroll.scrollTo(startX, 0) }
         }
         return scroll
     }
