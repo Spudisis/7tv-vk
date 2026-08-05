@@ -58,6 +58,11 @@ object Replacer {
         if (Service.isServiceView(tv)) return null
         synchronized(seenViews) { seenViews[tv] = true }
 
+        // Счётчик (непрочитанные, бейдж вкладки, «N участника») — часть той же
+        // области: без галки «Показывать везде» картинка вместо числа ломает
+        // разметку, с галкой человек этого и просит.
+        if (!Config.everywhere && Service.isCounterView(tv)) return null
+
         // По умолчанию подменяем только в переписке; галка «Показывать везде»
         // снимает ограничение. Вне переписки текст не трогаем. Вьюху всё равно
         // записали в seenViews выше — переключишь настройку, и rerenderAll
