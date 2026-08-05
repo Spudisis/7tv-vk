@@ -129,6 +129,9 @@ object Config {
         useGlobal = p.getBoolean(KEY_USE_GLOBAL, true)
         dockButton = p.getBoolean(KEY_DOCK, true)
         diag = p.getBoolean(KEY_DIAG, false)
+        // Подробные строки в журнале ходят вместе с диагностикой. Раньше
+        // L.verbose не включался ниоткуда, и все L.v молчали всегда.
+        L.verbose = diag
         suggest = p.getBoolean(KEY_SUGGEST, true)
         suggestPreview = p.getBoolean(KEY_SUGGEST_PREVIEW, true)
         everywhere = p.getBoolean(KEY_EVERYWHERE, false)
@@ -155,7 +158,10 @@ object Config {
             KEY_ENABLED -> enabled = value
             KEY_USE_GLOBAL -> useGlobal = value
             KEY_DOCK -> dockButton = value
-            KEY_DIAG -> diag = value
+            KEY_DIAG -> {
+                diag = value
+                L.verbose = value
+            }
             KEY_SUGGEST -> suggest = value
             KEY_SUGGEST_PREVIEW -> suggestPreview = value
             KEY_EVERYWHERE -> everywhere = value

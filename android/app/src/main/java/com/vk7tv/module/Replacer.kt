@@ -55,13 +55,19 @@ object Replacer {
             return null
         }
         if (Service.isServiceText(text)) return null
-        if (Service.isServiceView(tv)) return null
+        if (Service.isServiceView(tv)) {
+            noteSkip(tv, text, "служебная подпись")
+            return null
+        }
         synchronized(seenViews) { seenViews[tv] = true }
 
         // Счётчик (непрочитанные, бейдж вкладки, «N участника») — часть той же
         // области: без галки «Показывать везде» картинка вместо числа ломает
         // разметку, с галкой человек этого и просит.
-        if (!Config.everywhere && Service.isCounterView(tv, text)) return null
+        if (!Config.everywhere && Service.isCounterView(tv, text)) {
+            noteSkip(tv, text, "счётчик")
+            return null
+        }
 
         // По умолчанию подменяем только в переписке; галка «Показывать везде»
         // снимает ограничение. Вне переписки текст не трогаем. Вьюху всё равно
@@ -69,11 +75,7 @@ object Replacer {
         // перерисует и её. Проверка кэшируется по вьюхе — на частый setText
         // почти бесплатна.
         if (!Config.everywhere && !Scope.inMessenger(tv)) {
-            // под диагностикой: если тут всё же был эмоут — покажем цепочку id
-            // родителей, по ней подгоняется список токенов Scope под клиента
-            if (Config.diag && scan(text).hits != null) {
-                L.v("эмоут вне мессенджера пропущен: ${Scope.describe(tv)}")
-            }
+            noteSkip(tv, text, "вне переписки")
             return null
         }
 
@@ -232,6 +234,19 @@ object Replacer {
                 }
             }
             L.v("перерисовано вьюх: $n")
+        }
+    }
+
+    /**
+     * Под диагностикой: текст с эмоутом остался текстом — пишем причину и
+     * цепочку id. Разбор текста тут не бесплатный, поэтому только с включённой
+     * диагностикой и только когда эмоут в тексте правда был.
+     */
+    private fun noteSkip(tv: TextView, text: CharSequence, why: String) {
+        if (!Config.diag) return
+        L.safe("журнал пропуска") {
+            if (scan(text).hits == null) return@safe
+            Scope.noteSkipped(tv, why)
         }
     }
 

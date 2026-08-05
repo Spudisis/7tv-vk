@@ -21,9 +21,13 @@ object Service {
         RegexOption.IGNORE_CASE,
     )
 
+    // Голого «seen» тут нет намеренно: у ВК так называются и «был в сети», и
+    // счётчик непрочитанных (unseen, not_seen) — а счётчик теперь слушается
+    // галки «Показывать везде» и запрещать его навсегда нельзя. «Был в сети»
+    // ловится по online/offline/time.
     private val TOKENS = setOf(
         "time", "times", "timestamp", "timestamps", "date", "dates", "datetime",
-        "clock", "ago", "online", "offline", "seen", "lastseen",
+        "clock", "ago", "online", "offline", "lastseen",
         "edited", "edit", "changed",
     )
 

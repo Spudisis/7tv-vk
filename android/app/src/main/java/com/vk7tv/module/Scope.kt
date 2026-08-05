@@ -104,12 +104,21 @@ object Scope {
      * id клиента, если эмоуты лезут не туда, — и в [BLOCK] дописывается
      * недостающий кусок. Каждая цепочка пишется один раз.
      */
-    fun noteReplaced(tv: TextView) {
+    fun noteReplaced(tv: TextView) = note(tv, "подмена")
+
+    /**
+     * Под диагностикой: почему текст с эмоутом остался текстом. Вторая
+     * половина картины — без неё видно только то, что подменилось, а вопрос
+     * обычно обратный.
+     */
+    fun noteSkipped(tv: TextView, why: String) = note(tv, "пропуск ($why)")
+
+    private fun note(tv: TextView, what: String) {
         if (!Config.diag) return
-        L.safe("журнал подмены") {
-            val chain = describe(tv)
-            val fresh = synchronized(logged) { logged.size < MAX_LOGGED && logged.add(chain) }
-            if (fresh) L.i("подмена в: $chain")
+        L.safe("журнал области") {
+            val line = "$what: ${describe(tv)}"
+            val fresh = synchronized(logged) { logged.size < MAX_LOGGED && logged.add(line) }
+            if (fresh) L.i(line)
         }
     }
 
