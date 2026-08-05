@@ -320,6 +320,16 @@
     'caption', 'snippet',
   ]);
 
+  // Счётчик внутри строки диалога: <div class="UnreadCounter">40</div>.
+  // Сам он под правило выше не подходит, но строка диалога, в которой он
+  // лежит, — подходит (ConvoListItem__body: convo + body), и при подъёме
+  // разрешение доставалось и счётчику. В наборах есть эмоуты с числовыми
+  // именами, и «40» непрочитанных превращалось в картинку. Поэтому счётчик
+  // перебивает разрешение: он ближе к тексту, чем строка диалога.
+  const COUNTER_TOKENS = new Set([
+    'counter', 'counters', 'count', 'counts', 'badge', 'badges', 'unread', 'unseen',
+  ]);
+
   // «im-mess--text» → im mess text, «MessagePreview» → message preview;
   // режем по границам, чтобы «time»/«image» не читались как «im»
   function tokensOf(el) {
@@ -343,10 +353,21 @@
     return msg && content;
   }
 
+  function isCounter(el) {
+    const tokens = tokensOf(el);
+    if (!tokens) return false;
+    for (const t of tokens) if (COUNTER_TOKENS.has(t)) return true;
+    return false;
+  }
+
   // Текст сообщения ВК разбивает на куски (ссылки, упоминания, переносы),
   // поэтому идём вверх: сам контейнер бывает и через несколько уровней.
+  // Кто встретился первым, тот и решает: превью в непрочитанном диалоге
+  // подменяем (MessagePreview ближе, чем строка с «unread» в классе),
+  // а число в счётчике — нет.
   function inMessenger(el) {
     for (let n = el, depth = 0; n && n !== document.body && depth < 12; n = n.parentElement, depth++) {
+      if (isCounter(n)) return false;
       if (isMessageText(n)) return true;
     }
     return false;
@@ -361,7 +382,8 @@
       const attrs = [n.getAttribute('class'), n.getAttribute('data-testid'), n.id]
         .filter(Boolean)
         .join(' | ');
-      out.push(`${depth}: ${n.tagName}${attrs ? ' ' + attrs : ''}${isMessageText(n) ? '  ← сообщение' : ''}`);
+      const mark = isCounter(n) ? '  ← счётчик' : isMessageText(n) ? '  ← сообщение' : '';
+      out.push(`${depth}: ${n.tagName}${attrs ? ' ' + attrs : ''}${mark}`);
     }
     return out.join('\n');
   }
