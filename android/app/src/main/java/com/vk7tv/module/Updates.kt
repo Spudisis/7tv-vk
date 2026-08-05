@@ -51,6 +51,15 @@ object Updates {
         }, "vk7tv-updates").apply { isDaemon = true; priority = Thread.MIN_PRIORITY }.start()
     }
 
+    /**
+     * Проверить прямо сейчас, мимо суточного окна (кнопка в настройках).
+     * Ходит в сеть — только не на UI-потоке. Возвращает найденную версию.
+     */
+    fun checkNow(): String? {
+        check(System.currentTimeMillis())
+        return available
+    }
+
     private fun check(now: Long) {
         val body = Net.get(API)
         val arr = JSONArray(body)

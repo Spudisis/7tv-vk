@@ -556,18 +556,14 @@ class MainActivity : Activity() {
             orientation = LinearLayout.VERTICAL
             setPadding(dp(16), 0, dp(16), dp(16))
         }
-        col.addView(outline("Скопировать журнал").apply {
+        val copyBtn = outline("Скопировать журнал").apply {
             layoutParams = lp(MATCH_PARENT, WRAP_CONTENT, bottom = 10)
             setOnClickListener { copyLog() }
-        })
+        }
+        col.addView(copyBtn)
         // Текст лежит прямо на странице, прокрутка одна — на всю вкладку.
         // Вложенная прокрутка (текст внутри своей прокручиваемой коробки) на
         // части устройств не рисовалась вовсе: вкладка выглядела пустой.
-        //
-        // Вес при WRAP_CONTENT, а не высота 0: короткий журнал растягивается на
-        // всю высоту и прижимает подвал к низу, длинный оставляет себе высоту по
-        // содержимому, и страница прокручивается целиком. С высотой 0 длинный
-        // журнал обрезался бы по экрану.
         logView = TextView(this).apply {
             sp(this, 12f)
             setTextColor(INK)
@@ -576,7 +572,7 @@ class MainActivity : Activity() {
             background = bg(LOG_BG, 12, LINE)
             minimumHeight = dp(160)
             setPadding(dp(12), dp(12), dp(12), dp(12))
-            layoutParams = LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT, 1f)
+            layoutParams = lp(MATCH_PARENT, WRAP_CONTENT)
         }
         col.addView(logView)
         renderLog()
@@ -594,12 +590,23 @@ class MainActivity : Activity() {
         })
         footer.addView(text("VK7TV Патчер · v${BuildConfig.VERSION_NAME}", 11.5f, MUTED))
         col.addView(footer)
-        // fillViewport: короткая страница растягивается до высоты экрана, и вес
-        // текста получает свободное место — без этого подвал висел бы сразу
-        // под коробкой, посреди экрана
         logScroll = ScrollView(this).apply {
             isFillViewport = true
             addView(col)
+        }
+
+        // Высоту коробки задаём по факту, а не весом и не fillViewport: оба
+        // раза, когда вкладка «уезжала», виноваты были они — то коробка нулевой
+        // высоты, то подвал посреди экрана. Тут просто: сколько осталось между
+        // кнопкой и подвалом, столько коробке и минимум. Пересчитываем на каждой
+        // разметке (поворот, клавиатура), но пишем, только когда значение
+        // поменялось, — иначе requestLayout зациклится.
+        logScroll.viewTreeObserver.addOnGlobalLayoutListener {
+            val free = logScroll.height - copyBtn.height - footer.height -
+                dp(16) - dp(10) - dp(10) // нижний отступ страницы и margin'ы
+            if (free > dp(160) && logView.minimumHeight != free) {
+                logView.minimumHeight = free
+            }
         }
         return logScroll
     }

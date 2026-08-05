@@ -13,8 +13,8 @@ android {
         // не запустится, незачем пускать установщик на устройства без модуля.
         minSdk = 28
         targetSdk = 34
-        versionCode = 20
-        versionName = "0.4.4"
+        versionCode = 21
+        versionName = "0.4.5"
     }
 
     buildFeatures {

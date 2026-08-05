@@ -21,6 +21,7 @@ import android.widget.ScrollView
 import android.widget.Switch
 import android.widget.TextView
 import android.widget.Toast
+import java.lang.ref.WeakReference
 
 /**
  * Настройки прямо внутри ВК — открываются долгим тапом по кнопке 7VK.
@@ -34,8 +35,14 @@ object SettingsUi {
     private val main = Handler(Looper.getMainLooper())
     private var popup: PopupWindow? = null
 
+    // Якорь последнего показа: по нему пересобираем экран после проверки
+    // обновления, чтобы блок «ЕСТЬ ОБНОВЛЕНИЕ» появился сразу, а не после
+    // ручного переоткрытия настроек.
+    private var anchorRef: WeakReference<View>? = null
+
     fun show(anchor: View) {
         popup?.dismiss()
+        anchorRef = WeakReference(anchor)
         val ctx = anchor.context
 
         val root = LinearLayout(ctx).apply {
@@ -274,6 +281,21 @@ object SettingsUi {
 
         // Версия модуля — по ней видно, доехало ли обновление через установщик.
         root.addView(note(ctx, "VK7TV модуль ${BuildConfig.VERSION_NAME}"))
+        // Сам модуль спрашивает GitHub раз в сутки; кнопка — когда ждать сутки
+        // не хочется (и чтобы проверить, что проверка вообще работает).
+        root.addView(
+            button(ctx, "Проверить обновление") {
+                busy(ctx, "Спрашиваю GitHub…") {
+                    val fresh = Updates.checkNow()
+                    if (fresh != null) {
+                        main.post { L.safe("обновление экрана") { refresh() } }
+                        "Вышла версия $fresh — обновляет установщик"
+                    } else {
+                        "Обновлений нет, у тебя свежий модуль"
+                    }
+                }
+            },
+        )
 
         // Модуль ронял процесс в прошлый раз — показываем стек прямо тут,
         // чтобы его можно было заскринить с телефона без кабеля и logcat.
@@ -551,6 +573,13 @@ object SettingsUi {
             true
         }
         if (opened != true) toast(ctx, "Не удалось открыть — зайди на страницу релизов вручную")
+    }
+
+    /** Пересобрать экран настроек на том же якоре. Только с главного потока. */
+    private fun refresh() {
+        val anchor = anchorRef?.get() ?: return
+        if (!anchor.isAttachedToWindow) return
+        show(anchor)
     }
 
     private fun toast(ctx: Context, msg: String) =
