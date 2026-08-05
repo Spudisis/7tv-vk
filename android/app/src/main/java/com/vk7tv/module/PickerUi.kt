@@ -253,6 +253,10 @@ object PickerUi {
                     buildChips(chipScroll?.scrollX ?: 0)
                     refresh(restore = true)
                     toast(ctx, "Порядок наборов сохранён")
+                    // Голое имя достаётся набору выше по списку, так что
+                    // после перестановки реестр надо собрать заново. Сети
+                    // тут нет — наборы читаются из дискового кэша.
+                    Boot.reload(ctx)
                 },
             )
             chipScroll = row

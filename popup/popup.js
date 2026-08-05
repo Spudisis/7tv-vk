@@ -42,8 +42,8 @@ function activeEmotes({ sync, local }) {
     for (const [n, v] of Object.entries(g)) map.set(n, normEmote(v));
   }
   // Так же, как content.js: у эмоута набора есть имя с постфиксом (имя_slug),
-  // а голое имя достаётся набору с первым по алфавиту слагом при коллизии —
-  // иначе список в попапе расходится с тем, что реально рендерится в чате.
+  // а при коллизии голое имя достаётся набору выше в списке — иначе список
+  // в попапе расходится с тем, что реально рендерится в чате.
   const fromSets = new Map(); // голое имя -> [{slug, em}]
   for (const s of sync.sets) {
     const m = local.setEmotes[s.id];
@@ -59,8 +59,7 @@ function activeEmotes({ sync, local }) {
   }
   for (const [n, list] of fromSets) {
     if (map.has(n)) continue; // занято глобальным
-    list.sort((a, b) => a.slug.localeCompare(b.slug) || a.em.u.localeCompare(b.em.u));
-    map.set(n, list[0].em);
+    map.set(n, list[0].em); // кандидаты складывались в порядке sync.sets
   }
   // у своего эмоута второе имя — с id эмоута на 7TV: по нему его узнаёт
   // чужое расширение (см. content.js)
@@ -87,10 +86,8 @@ async function render() {
   setList.innerHTML = '';
   sync.sets.forEach((s, i) => {
     const li = document.createElement('li');
-    // Порядок наборов — это порядок разделов в пикере и в этом списке.
-    // На коллизию имён он не влияет: голое имя достаётся набору с первым
-    // по алфавиту слагом, иначе у людей с одинаковыми наборами картинки
-    // под одним кодом разъезжались бы.
+    // Порядок наборов — это и порядок разделов в пикере, и приоритет:
+    // при коллизии кодов голое имя достаётся набору выше по списку.
     const up = moveButton('↑', 'Выше', i > 0, () => moveSet(i, -1));
     const down = moveButton('↓', 'Ниже', i < sync.sets.length - 1, () => moveSet(i, 1));
     const name = document.createElement('span');
