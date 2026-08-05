@@ -190,6 +190,7 @@ class MainActivity : Activity() {
         setContentView(buildUi())
         applySystemBars(night)
         selectTab(0)
+        logHeader()
         registerStatusReceiver()
         checkUpdates()
         render()
@@ -559,27 +560,22 @@ class MainActivity : Activity() {
             layoutParams = lp(MATCH_PARENT, WRAP_CONTENT, bottom = 10)
             setOnClickListener { copyLog() }
         })
-        // Своей прокрутки у текста нет намеренно: прокручиваемый TextView внутри
-        // ScrollView дерётся с ним за жест и за собственный scrollY — из-за
-        // этого журнал показывался пустым, хотя строки в нём были. Крутит
-        // только ScrollView.
+        // Текст лежит прямо в странице и растёт как есть, прокрутка одна на всю
+        // вкладку. Раньше тут было три вложенных механизма сразу: прокручиваемый
+        // TextView в ScrollView с весом и fillViewport — они делили и жест, и
+        // высоту, и вкладка оказывалась пустой. Плоская разметка схлопнуться
+        // не может.
         logView = TextView(this).apply {
             sp(this, 12f)
             setTextColor(INK)
             typeface = Typeface.MONOSPACE
             setTextIsSelectable(true)
-            setPadding(dp(12), dp(12), dp(12), dp(12))
-        }
-        logScroll = ScrollView(this).apply {
-            layoutParams = LinearLayout.LayoutParams(MATCH_PARENT, 0, 1f)
             background = bg(LOG_BG, 12, LINE)
-            // не даём коробке схлопнуться в ноль, если вес поделился неудачно:
-            // пустая полоса вместо журнала выглядит как поломка
             minimumHeight = dp(200)
-            isFillViewport = true
-            addView(logView)
+            setPadding(dp(12), dp(12), dp(12), dp(12))
+            layoutParams = lp(MATCH_PARENT, WRAP_CONTENT)
         }
-        col.addView(logScroll)
+        col.addView(logView)
         renderLog()
         val footer = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
@@ -595,7 +591,11 @@ class MainActivity : Activity() {
         })
         footer.addView(text("VK7TV Патчер · v${BuildConfig.VERSION_NAME}", 11.5f, MUTED))
         col.addView(footer)
-        return col
+        logScroll = ScrollView(this).apply {
+            isFillViewport = true
+            addView(col)
+        }
+        return logScroll
     }
 
     private fun openUrl(url: String) {
@@ -844,6 +844,20 @@ class MainActivity : Activity() {
         renderLog()
         // прокручиваем к свежей строке, иначе на длинном журнале видно начало
         logScroll.post { logScroll.fullScroll(View.FOCUS_DOWN) }
+    }
+
+    /**
+     * Шапка журнала: версия, канал, устройство. Пишется один раз за жизнь
+     * процесса — при пересоздании экрана строки уже есть и дублировать их
+     * незачем. Заодно журнал никогда не бывает пустым: раньше на вкладке до
+     * первой установки была пустая коробка, и было не понять, то ли нечего
+     * показывать, то ли сломался показ.
+     */
+    private fun logHeader() {
+        if (synchronized(logLines) { logLines.isNotEmpty() }) return
+        val channel = if (BuildConfig.DEV_CHANNEL) " · пробный канал" else ""
+        log("VK7TV Патчер v${BuildConfig.VERSION_NAME}$channel")
+        log("${Build.MANUFACTURER} ${Build.MODEL} · Android ${Build.VERSION.RELEASE} (SDK ${Build.VERSION.SDK_INT})")
     }
 
     /** Показать журнал во вьюхе. Строки живут в модели, вьюха — отражение. */
@@ -1128,11 +1142,21 @@ class MainActivity : Activity() {
     // ---- проверка обновлений при старте (без скачивания APK) ----
 
     private fun checkUpdates() {
+        log("Проверяю релизы на GitHub…")
         io.execute {
-            val snap = runCatching { Releases.snapshot(BuildConfig.VERSION_NAME) }.getOrNull() ?: return@execute
+            val snap = runCatching { Releases.snapshot(BuildConfig.VERSION_NAME) }
+            val ok = snap.getOrNull()
+            if (ok == null) {
+                // сеть — самая частая причина, по которой установщик «ничего не
+                // делает»: без неё не узнать ни версию модуля, ни обновление
+                log("Релизы не проверились: ${snap.exceptionOrNull()?.message ?: "нет ответа"}")
+                return@execute
+            }
             runOnUiThread {
-                availableModule = snap.module
-                snap.installerUpdate?.let { showSelfUpdate(it) }
+                log("Свежий модуль на GitHub: ${ok.module?.version ?: "не нашёлся"}")
+                ok.installerUpdate?.let { log("Есть обновление установщика: v${it.version}") }
+                availableModule = ok.module
+                ok.installerUpdate?.let { showSelfUpdate(it) }
                 render()  // перерисовать карточки с доступной версией модуля
             }
         }
