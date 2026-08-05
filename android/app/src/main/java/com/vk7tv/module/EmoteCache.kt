@@ -34,11 +34,11 @@ object EmoteCache {
     }
 
     // Картинки лежат в постоянной папке (filesDir) — переживают офлайн и очистку
-    // кэша ВК. Чтобы папка не разрослась до гигабайтов, держим свой потолок: как
-    // вышли за DISK_CAP — вытесняем давно не тронутые файлы (LRU по времени
-    // файла) до DISK_TRIM_TO.
-    private const val DISK_CAP = 300L * 1024 * 1024
-    private const val DISK_TRIM_TO = 240L * 1024 * 1024
+    // кэша ВК. Чтобы папка не разрослась бесконтрольно, держим свой потолок из
+    // настроек (Config.cacheCapMb): как вышли за него — вытесняем давно не
+    // тронутые файлы (LRU по времени файла) до 80 % потолка.
+    private fun capBytes() = Config.cacheCapMb.toLong() * 1024 * 1024
+    private fun trimToBytes() = capBytes() * 4 / 5
 
     private val diskLock = Any()
 
@@ -152,21 +152,33 @@ object EmoteCache {
         }
     }
 
-    /** Вытесняем самые давние файлы, пока не уложимся в DISK_TRIM_TO. */
+    /** Вытесняем самые давние файлы, пока не уложимся в 80 % потолка. */
     private fun trimDisk() {
-        if (diskBytes <= DISK_CAP) return
+        val cap = capBytes()
+        if (diskBytes <= cap) return
         synchronized(diskLock) {
-            if (diskBytes <= DISK_CAP) return
+            if (diskBytes <= cap) return
+            val target = trimToBytes()
             val files = dir.listFiles() ?: return
             files.sortBy { it.lastModified() } // давние — первыми
             var i = 0
-            while (diskBytes > DISK_TRIM_TO && i < files.size) {
+            while (diskBytes > target && i < files.size) {
                 val f = files[i]; i++
                 val len = f.length()
                 if (L.safe("удаление картинки") { f.delete() } == true) diskBytes -= len
             }
             L.i("кэш картинок подрезан до ${diskBytes / (1024 * 1024)} МБ")
         }
+    }
+
+    /**
+     * Применить потолок кэша после смены его в настройках: если уменьшили —
+     * лишнее подрежется сразу, не дожидаясь новых загрузок. Дисковый ввод-вывод,
+     * звать только вне UI-потока.
+     */
+    fun enforceCap() {
+        ensureAccounted()
+        trimDisk()
     }
 
     /** Сколько сейчас занято кэшем картинок на диске, байт. Считать вне UI. */

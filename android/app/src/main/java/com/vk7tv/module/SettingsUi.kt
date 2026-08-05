@@ -42,6 +42,26 @@ object SettingsUi {
 
         root.addView(head(ctx))
 
+        if (Config.safeMode) {
+            root.addView(label(ctx, "АВАРИЙНЫЙ РЕЖИМ"))
+            root.addView(
+                note(
+                    ctx,
+                    "Модуль выключил эмоуты и картинки: приложение падало при запуске. " +
+                        "Так оно хотя бы открывается. Нажми, чтобы включить всё обратно — " +
+                        "если снова начнёт падать, напиши нам и приложи скрин.",
+                ),
+            )
+            root.addView(
+                button(ctx, "Включить эмоуты обратно") {
+                    Config.exitSafeMode()
+                    toast(ctx, "Готово — перезапусти приложение")
+                    popup?.dismiss()
+                    popup = null
+                },
+            )
+        }
+
         root.addView(switch(ctx, "Эмоуты включены", Config.enabled) {
             Config.setFlag(Config.KEY_ENABLED, it)
         })
@@ -147,11 +167,15 @@ object SettingsUi {
         root.addView(
             note(
                 ctx,
-                "Картинки хранятся локально, чтобы паки открывались офлайн. Размер " +
-                    "ограничен (потолок 300 МБ), давние вытесняются сами. Можно " +
-                    "очистить вручную — наборы не пропадут, картинки до-качаются при показе.",
+                "Картинки хранятся локально, чтобы паки открывались офлайн. Как размер " +
+                    "превысит потолок — давние вытесняются сами. Можно очистить " +
+                    "вручную — наборы не пропадут, картинки до-качаются при показе.",
             ),
         )
+        root.addView(note(ctx, "Потолок кэша:"))
+        val capBox = LinearLayout(ctx).apply { orientation = LinearLayout.HORIZONTAL }
+        root.addView(capBox)
+        drawCacheChips(ctx, capBox, cacheNote)
         root.addView(
             button(ctx, "Очистить кэш картинок") {
                 busy(ctx, "Чистим кэш…") {
@@ -374,8 +398,52 @@ object SettingsUi {
         setPadding(0, dp(ctx, 4), 0, dp(ctx, 4))
     }
 
+    // Варианты потолка кэша, МБ. 512 МБ — минимум для тех, у кого мало места;
+    // по умолчанию 1 ГБ (Config.CACHE_MB_DEFAULT).
+    private val CACHE_PRESETS = intArrayOf(512, 1024, 2048, 4096)
+
     private fun usageText(bytes: Long) =
-        "Скачано: ${bytes / (1024 * 1024)} МБ из 300"
+        "Скачано: ${bytes / (1024 * 1024)} МБ из ${capLabel(Config.cacheCapMb)}"
+
+    private fun capLabel(mb: Int) =
+        if (mb >= 1024 && mb % 1024 == 0) "${mb / 1024} ГБ" else "$mb МБ"
+
+    /** Ряд кнопок выбора потолка кэша; выделяем текущий. */
+    private fun drawCacheChips(ctx: Context, box: LinearLayout, cacheNote: TextView) {
+        box.removeAllViews()
+        for (mb in CACHE_PRESETS) {
+            box.addView(chip(ctx, capLabel(mb), on = Config.cacheCapMb == mb) {
+                if (Config.cacheCapMb == mb) return@chip
+                Config.setCacheCapMb(mb)
+                drawCacheChips(ctx, box, cacheNote)
+                refreshCacheSize(cacheNote) // обновить знаменатель «из N» сразу
+                busy(ctx, "Применяем…") {
+                    EmoteCache.enforceCap() // уменьшили — лишнее подрежем сейчас
+                    main.post { refreshCacheSize(cacheNote) }
+                    "Потолок кэша: ${capLabel(mb)}"
+                }
+            })
+        }
+    }
+
+    private fun chip(ctx: Context, title: String, on: Boolean, onTap: () -> Unit) =
+        TextView(ctx).apply {
+            text = title
+            textSize = 12f
+            gravity = Gravity.CENTER
+            setTextColor(if (on) Ui.TEXT else Ui.MUTED)
+            background = GradientDrawable().apply {
+                setColor(if (on) Ui.HOVER else Ui.BG2)
+                cornerRadius = dp(ctx, 8).toFloat()
+                setStroke(dp(ctx, 1), if (on) Ui.ACCENT else Ui.BORDER)
+            }
+            setPadding(dp(ctx, 10), dp(ctx, 8), dp(ctx, 10), dp(ctx, 8))
+            val lp = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
+            lp.topMargin = dp(ctx, 6)
+            lp.rightMargin = dp(ctx, 6)
+            layoutParams = lp
+            setOnClickListener { L.safe("выбор размера кэша") { onTap() } }
+        }
 
     /** Размер кэша считаем в фоне: на большом наборе перебор файлов не мгновенный. */
     private fun refreshCacheSize(view: TextView) {

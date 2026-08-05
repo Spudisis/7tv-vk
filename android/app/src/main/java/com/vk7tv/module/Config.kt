@@ -33,6 +33,19 @@ object Config {
     const val KEY_SUGGEST = "suggest"
     const val KEY_EVERYWHERE = "everywhere"
     const val KEY_DISMISSED = "dismissedSuggests"
+    const val KEY_CACHE_MB = "cacheCapMb"
+    const val KEY_START_ATTEMPTS = "startAttempts"
+
+    // Потолок кэша картинок, МБ. По умолчанию 1 ГБ — паки большие, а память
+    // на телефонах давно не 8 ГБ; человек может поменять в настройках.
+    const val CACHE_MB_DEFAULT = 1024
+
+    // Сколько раз подряд модуль может уронить процесс на старте, прежде чем
+    // при следующем запуске он уйдёт в аварийный режим. Нативный вылет (напр.
+    // в декодере картинок) не ловится ни L.safe, ни ловушкой вылетов — процесс
+    // просто умирает, и клиент нельзя открыть. Тогда лучше выключить эмоуты,
+    // но дать приложению запуститься.
+    const val SAFE_MODE_AFTER = 2
 
     @Volatile
     var enabled = true
@@ -61,6 +74,17 @@ object Config {
     // снимает ограничение: эмоуты появляются везде (лента, комментарии и т.д.).
     @Volatile
     var everywhere = false
+        private set
+
+    @Volatile
+    var cacheCapMb = CACHE_MB_DEFAULT
+        private set
+
+    // Аварийный режим: подмена, картинки, автоподсказки и пикер выключены,
+    // чтобы клиент, падавший на старте, всё-таки открылся. Считается при
+    // запуске (beginStartup), сбрасывается временем без вылета или вручную.
+    @Volatile
+    var safeMode = false
         private set
 
     @Volatile
@@ -98,6 +122,7 @@ object Config {
         diag = p.getBoolean(KEY_DIAG, false)
         suggest = p.getBoolean(KEY_SUGGEST, true)
         everywhere = p.getBoolean(KEY_EVERYWHERE, false)
+        cacheCapMb = p.getInt(KEY_CACHE_MB, CACHE_MB_DEFAULT).coerceAtLeast(64)
         sets = parseSets(p.getString(KEY_SETS, "[]"))
         custom = parseCustom(p.getString(KEY_CUSTOM, "{}"))
         favorites = parseList(p.getString(KEY_FAVORITES, "[]"))
@@ -124,6 +149,42 @@ object Config {
             KEY_SUGGEST -> suggest = value
             KEY_EVERYWHERE -> everywhere = value
         }
+    }
+
+    /**
+     * Отметить начало запуска и решить, не пора ли в аварийный режим.
+     * Счётчик пишем ДО рискованной работы и синхронно (commit): нативный вылет
+     * не даст выполнить apply() позже, а нам важно, чтобы попытка сохранилась.
+     * Возвращает true, если модуль уже ронял старт [SAFE_MODE_AFTER] раз подряд.
+     */
+    fun beginStartup(): Boolean {
+        val p = prefs ?: return false
+        val old = p.getInt(KEY_START_ATTEMPTS, 0)
+        if (old >= SAFE_MODE_AFTER) {
+            safeMode = true // остаёмся в аварийном режиме, пока не переживём старт
+            return true
+        }
+        p.edit().putInt(KEY_START_ATTEMPTS, old + 1).commit()
+        safeMode = false
+        return false
+    }
+
+    /** Старт пережили без вылета — обнуляем счётчик неудачных попыток. */
+    fun startupSurvived() {
+        prefs?.edit()?.putInt(KEY_START_ATTEMPTS, 0)?.apply()
+    }
+
+    /** Ручной выход из аварийного режима (кнопка в настройках). */
+    fun exitSafeMode() {
+        safeMode = false
+        startupSurvived()
+    }
+
+    /** Сменить потолок кэша картинок (МБ). Подрезку запускает вызывающий. */
+    fun setCacheCapMb(mb: Int) {
+        val v = mb.coerceAtLeast(64)
+        prefs?.edit()?.putInt(KEY_CACHE_MB, v)?.apply()
+        cacheCapMb = v
     }
 
     fun addSet(ref: SetRef) {

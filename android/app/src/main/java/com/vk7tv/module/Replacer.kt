@@ -39,6 +39,7 @@ object Replacer {
         private set
 
     fun apply(tv: TextView, text: CharSequence): CharSequence? {
+        if (Config.safeMode) return null // аварийный режим — текст не трогаем
         if (!Config.enabled || !Emotes.ready) return null
         if (tv is EditText) return null // поле ввода не трогаем никогда
         if (text.isEmpty()) return null
