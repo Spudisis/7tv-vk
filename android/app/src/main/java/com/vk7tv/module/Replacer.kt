@@ -61,7 +61,7 @@ object Replacer {
         // Счётчик (непрочитанные, бейдж вкладки, «N участника») — часть той же
         // области: без галки «Показывать везде» картинка вместо числа ломает
         // разметку, с галкой человек этого и просит.
-        if (!Config.everywhere && Service.isCounterView(tv)) return null
+        if (!Config.everywhere && Service.isCounterView(tv, text)) return null
 
         // По умолчанию подменяем только в переписке; галка «Показывать везде»
         // снимает ограничение. Вне переписки текст не трогаем. Вьюху всё равно
@@ -132,7 +132,10 @@ object Replacer {
                     shown++
                     val stack = StackDrawable(d)
                     stack.callback = cb
-                    sb.setSpan(SuggestEmoteSpan(stack), s.start, s.end, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
+                    // ник рядом с картинкой: слово целиком заменено, и без него
+                    // не видно, чей это набор
+                    val span = SuggestEmoteSpan(stack, s.hit.ref.slug)
+                    sb.setSpan(span, s.start, s.end, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
                 } else {
                     if (Config.suggestPreview && shown < MAX_PREVIEWS) missing = true
                     sb.setSpan(ForegroundColorSpan(Ui.ACCENT), s.start, s.end, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)

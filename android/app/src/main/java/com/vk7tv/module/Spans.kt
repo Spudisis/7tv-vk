@@ -26,6 +26,9 @@ open class EmoteSpan(val stack: StackDrawable) : ReplacementSpan() {
      */
     protected open fun footer(paint: Paint): Int = 0
 
+    /** Место справа от картинки: у обычного эмоута его нет. */
+    protected open fun extraWidth(paint: Paint): Int = 0
+
     override fun getSize(
         paint: Paint,
         text: CharSequence,
@@ -49,7 +52,7 @@ open class EmoteSpan(val stack: StackDrawable) : ReplacementSpan() {
             fm.descent = center + box / 2
             fm.bottom = fm.descent
         }
-        return w
+        return w + extraWidth(paint)
     }
 
     override fun draw(
@@ -84,19 +87,31 @@ open class EmoteSpan(val stack: StackDrawable) : ReplacementSpan() {
 }
 
 /**
- * Эмоут из набора, которого у нас нет: картинка чуть ниже обычной, а под ней —
- * полоска цвета ссылки.
+ * Эмоут из набора, которого у нас нет: картинка чуть ниже обычной, под ней —
+ * полоска цвета ссылки, а справа — ник стримера в скобках.
  *
  * Полоска, а не прозрачность или значок «+»: эмоуты 7TV сами по себе часто
  * бледные и полупрозрачные, так что приглушённостью «чужой» не показать, а
  * значок на картинке в палец высотой закрыл бы ровно то, что мы показываем.
  * Зато полоска — тот же знак, что и у слова без картинки (цвет + подчёркивание),
  * так что оба состояния читаются как одно и то же «нажми, чтобы подключить».
+ *
+ * Ник нужен потому, что слово целиком заменено картинкой: до подмены из
+ * `non_nicosl` было видно, чей это набор, после — нет. Цвет берём от текста
+ * сообщения с прозрачностью, а не из своей палитры: у ВК бывает светлая тема,
+ * и фиксированный серый там сливался бы с фоном.
  */
-class SuggestEmoteSpan(stack: StackDrawable) : EmoteSpan(stack) {
+class SuggestEmoteSpan(stack: StackDrawable, slug: String) : EmoteSpan(stack) {
+
+    private val label = if (slug.isEmpty()) "" else "($slug)"
 
     override fun footer(paint: Paint): Int =
         (paint.textSize * FOOTER_RATIO).toInt().coerceAtLeast(3)
+
+    override fun extraWidth(paint: Paint): Int {
+        if (label.isEmpty()) return 0
+        return (gap(paint) + measure(paint)).toInt()
+    }
 
     override fun decorate(canvas: Canvas, x: Float, y: Float, w: Float, paint: Paint) {
         // draw зовётся из onDraw чужой вьюхи — мимо всех наших L.safe.
@@ -106,16 +121,43 @@ class SuggestEmoteSpan(stack: StackDrawable) : EmoteSpan(stack) {
             val thick = (f * BAR_RATIO).coerceAtLeast(2f)
             bar.color = Ui.ACCENT
             canvas.drawRect(x, y + (f - thick) / 2f, x + w, y + (f + thick) / 2f, bar)
+            if (label.isEmpty()) return
+            // по центру картинки: y — её нижняя граница
+            prepare(paint)
+            val fm = text.fontMetrics
+            val center = y - stackHeight(paint) / 2f
+            canvas.drawText(label, x + w + gap(paint), center - (fm.ascent + fm.descent) / 2f, text)
         } catch (t: Throwable) {
-            L.e("сбой в полоске предложения", t)
+            L.e("сбой в подписи предложения", t)
         }
+    }
+
+    /** Высота самой картинки без полоски — та же арифметика, что в getSize. */
+    private fun stackHeight(paint: Paint): Int =
+        ((paint.textSize * HEIGHT_RATIO).toInt() - footer(paint)).coerceAtLeast(1)
+
+    private fun gap(paint: Paint) = paint.textSize * GAP_RATIO
+
+    private fun measure(paint: Paint): Float {
+        prepare(paint)
+        return text.measureText(label)
+    }
+
+    /** Кисть подписи под текущий текст: размер и цвет — от текста сообщения. */
+    private fun prepare(paint: Paint) {
+        text.textSize = paint.textSize * LABEL_RATIO
+        text.color = (paint.color and 0x00FFFFFF) or (LABEL_ALPHA shl 24)
     }
 
     private companion object {
         // отрисовка идёт только на главном потоке — одной кисти хватает всем
         val bar = Paint(Paint.ANTI_ALIAS_FLAG)
+        val text = Paint(Paint.ANTI_ALIAS_FLAG)
         const val FOOTER_RATIO = 0.25f
         const val BAR_RATIO = 0.4f
+        const val LABEL_RATIO = 0.72f
+        const val GAP_RATIO = 0.12f
+        const val LABEL_ALPHA = 0xB0
     }
 }
 

@@ -35,6 +35,8 @@ object Service {
         "unread", "unseen",
     )
 
+    private val COUNT_TEXT = Regex("^\\d{1,4}([.,]\\d)?\\s*[кkмm]?\\s*\\+?$", RegexOption.IGNORE_CASE)
+
     private const val COUNTER_DEPTH = 3
 
     private val SPLIT = Regex("[^a-z]+")
@@ -49,11 +51,18 @@ object Service {
     fun isServiceView(tv: TextView): Boolean = hasToken(tv, TOKENS)
 
     /**
-     * Счётчик: непрочитанные, бейдж вкладки, «N участника». Смотрим и на пару
-     * родителей — у самого текста бейджа id часто нет, он есть у контейнера.
+     * Счётчик: непрочитанные, бейдж вкладки, «N участника».
+     *
+     * id самой вьюхи — сигнал точный, ему верим как есть. Родителей смотрим
+     * тоже (у текста бейджа своего id часто нет, он есть у контейнера), но там
+     * дополнительно требуем, чтобы текст был похож на счётчик: иначе под
+     * проверку попало бы обычное сообщение, лежащее внутри чего-нибудь с
+     * «count» в имени.
      */
-    fun isCounterView(tv: TextView): Boolean {
-        var node: View? = tv
+    fun isCounterView(tv: TextView, text: CharSequence): Boolean {
+        if (hasToken(tv, COUNTER_TOKENS)) return true
+        if (!looksLikeCount(text)) return false
+        var node: View? = tv.parent as? View
         var depth = 0
         while (node != null && depth < COUNTER_DEPTH) {
             if (hasToken(node, COUNTER_TOKENS)) return true
@@ -62,6 +71,10 @@ object Service {
         }
         return false
     }
+
+    /** «7», «99+», «1,2К» — число, а не текст человека. */
+    private fun looksLikeCount(t: CharSequence): Boolean =
+        t.length <= 8 && COUNT_TEXT.matches(t)
 
     private fun hasToken(v: View, set: Set<String>): Boolean {
         val id = v.id
