@@ -13,6 +13,13 @@ import org.json.JSONObject
  */
 object SevenTv {
 
+    /**
+     * Определённый ответ «такого нет» — в отличие от «не смогли спросить»
+     * (нет сети, 5xx). Разница нужна кэшу предложений: первое кэшируется
+     * на диск, второе — нет.
+     */
+    class NotFound(message: String) : RuntimeException(message)
+
     // ID набора на 7TV — ULID: 26 символов Crockford base32
     private val ULID = Regex("[0-9A-HJKMNP-TV-Z]{26}", RegexOption.IGNORE_CASE)
     private val LOGIN = Regex("^[a-zA-Z0-9_]{1,25}$")
@@ -30,10 +37,11 @@ object SevenTv {
         val raw = try {
             Net.get("https://7tv.io/v3/emote-sets/$id")
         } catch (e: Net.HttpException) {
-            throw RuntimeException(
-                if (e.code == 404) "Набор 7TV с таким ID не найден — проверь ссылку"
-                else "7TV сейчас недоступен (код ${e.code}), попробуй позже",
-            )
+            throw if (e.code == 404) {
+                NotFound("Набор 7TV с таким ID не найден — проверь ссылку")
+            } else {
+                RuntimeException("7TV сейчас недоступен (код ${e.code}), попробуй позже")
+            }
         }
         val json = JSONObject(raw)
         val owner = json.optJSONObject("owner")
@@ -45,19 +53,26 @@ object SevenTv {
         try {
             // 7TV-первым: его собственный API надёжнее стороннего ivr
             viaGql(login)
-        } catch (t: Throwable) {
-            viaIvr(login)
+        } catch (first: Throwable) {
+            try {
+                viaIvr(login)
+            } catch (second: Throwable) {
+                // отдаём наружу NotFound от 7TV, если он был: это определённый
+                // ответ, а недоступность запасного ivr.fi — нет. По нему
+                // Suggest решает, кэшировать ли «набора нет» на диск.
+                throw if (first is NotFound) first else second
+            }
         }
 
     private fun viaIvr(login: String): SetRef {
         val arr = JSONArray(Net.get("https://api.ivr.fi/v2/twitch/user?login=$login"))
-        if (arr.length() == 0) throw RuntimeException("Стример «$login» не найден на Twitch")
+        if (arr.length() == 0) throw NotFound("Стример «$login» не найден на Twitch")
         val twitchId = arr.getJSONObject(0).optString("id")
         val user = JSONObject(Net.get("https://7tv.io/v3/users/twitch/$twitchId"))
         val es = user.optJSONObject("emote_set")
-            ?: throw RuntimeException("У «$login» нет активного набора 7TV")
+            ?: throw NotFound("У «$login» нет активного набора 7TV")
         val id = es.optString("id")
-        if (id.isEmpty()) throw RuntimeException("У «$login» нет активного набора 7TV")
+        if (id.isEmpty()) throw NotFound("У «$login» нет активного набора 7TV")
         // Имя набора уже пришло в этом же ответе — за ним не надо ходить
         // отдельно. Раньше тут вызывался bySetId, и он выкачивал весь набор
         // (у стримеров это сотни килобайт) только ради названия.
@@ -72,7 +87,7 @@ object SevenTv {
             .toString()
         val json = JSONObject(Net.postJson("https://7tv.io/v3/gql", body))
         val users = json.optJSONObject("data")?.optJSONArray("users")
-            ?: throw RuntimeException("Стример «$login» не найден на 7TV")
+            ?: throw NotFound("Стример «$login» не найден на 7TV")
         var userId: String? = null
         for (i in 0 until users.length()) {
             val u = users.optJSONObject(i) ?: continue
@@ -83,7 +98,7 @@ object SevenTv {
                 break
             }
         }
-        if (userId.isNullOrEmpty()) throw RuntimeException("Стример «$login» не найден на 7TV")
+        if (userId.isNullOrEmpty()) throw NotFound("Стример «$login» не найден на 7TV")
 
         val user = JSONObject(Net.get("https://7tv.io/v3/users/$userId"))
         val conns = user.optJSONArray("connections")
@@ -94,7 +109,7 @@ object SevenTv {
                 return bySetId(setId, login)
             }
         }
-        throw RuntimeException("У «$login» нет активного набора 7TV")
+        throw NotFound("У «$login» нет активного набора 7TV")
     }
 
     fun slugify(s: String): String =

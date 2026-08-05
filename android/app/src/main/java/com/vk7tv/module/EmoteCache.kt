@@ -174,7 +174,12 @@ object EmoteCache {
         }
     }
 
-    /** Вытесняем самые давние файлы, пока не уложимся в 80 % потолка. */
+    /**
+     * Вытесняем, пока не уложимся в 80 % потолка. Сначала удаляем картинки не из
+     * подключённых наборов — превью чужих эмоутов: они нужны разово, для одного
+     * сообщения. Свои удаляем в последнюю очередь: без них пустеет пикер и пак
+     * перестаёт открываться офлайн. Внутри каждой группы — по давности.
+     */
     private fun trimDisk() {
         val cap = capBytes()
         if (diskBytes <= cap) return
@@ -182,15 +187,33 @@ object EmoteCache {
             if (diskBytes <= cap) return
             val target = trimToBytes()
             val files = dir.listFiles() ?: return
-            files.sortBy { it.lastModified() } // давние — первыми
+            val own = ownKeys()
+            // время и «своё ли» считаем по разу на файл: в компараторе это были
+            // бы тысячи лишних обращений к файловой системе
+            val order = files.map { Row(it, it.lastModified(), own.contains(it.name)) }
+                .sortedWith(compareBy({ it.own }, { it.mtime })) // сначала чужие, внутри — давние
             var i = 0
-            while (diskBytes > target && i < files.size) {
-                val f = files[i]; i++
+            while (diskBytes > target && i < order.size) {
+                val f = order[i].file; i++
                 val len = f.length()
                 if (L.safe("удаление картинки") { f.delete() } == true) diskBytes -= len
             }
             L.i("кэш картинок подрезан до ${diskBytes / (1024 * 1024)} МБ")
         }
+    }
+
+    private class Row(val file: File, val mtime: Long, val own: Boolean)
+
+    /**
+     * Имена файлов картинок из подключённых наборов. Считаем по текущим наборам,
+     * а не помечаем файлы при скачивании: приоритет меняется сам при
+     * подключении и отключении набора, чинить пометки не надо.
+     */
+    private fun ownKeys(): Set<String> {
+        if (!Emotes.ready) return emptySet() // наборы ещё не поднялись — судить не по чему
+        return L.safe("список своих картинок") {
+            Emotes.allUrls().mapTo(HashSet()) { keyOf(it) }
+        } ?: emptySet()
     }
 
     /**

@@ -17,7 +17,9 @@ import java.util.concurrent.Executors
  * и берётся первый вариант, который сходится.
  *
  * Кэш хранит и отрицательный ответ: чат может сыпать одним словом сколько
- * угодно, в сеть ходим один раз.
+ * угодно, в сеть ходим один раз. Ответы переживают перезапуск клиента —
+ * их держит [SuggestCache], иначе одно и то же сообщение при каждом запуске
+ * снова проверялось бы по сети.
  */
 object Suggest {
 
@@ -31,9 +33,15 @@ object Suggest {
 
     private const val MAX_SPLITS = 3
 
-    // потолок на сессию: чат с тысячей незнакомых слов не должен
-    // превращаться в тысячу запросов к API
+    // потолок запросов к API на сессию: чат с тысячей незнакомых слов не должен
+    // превращаться в тысячу обращений. Считаем только походы в сеть: ответ из
+    // кэша на диске лимит не тратит, иначе после перезапуска уже проверенные
+    // слова съедали бы его целиком.
     private const val MAX_PROBES = 40
+
+    // Сколько слов держим в памяти за сессию. До кэша на диске границу задавал
+    // MAX_PROBES, теперь он только про сеть, а на разбор нужен свой потолок.
+    private const val MAX_WORDS = 500
 
     // три потока: в чате обычно несколько незнакомых слов, и в одну очередь
     // они складывались в заметное ожидание
@@ -51,6 +59,10 @@ object Suggest {
 
     fun init(cacheDir: File) {
         dir = cacheDir
+        SuggestCache.init(cacheDir)
+        // читаем кэш в фоне: старт клиента и так тяжёлый, а нужен он только
+        // к первому незнакомому слову в чате
+        io.execute { L.safe("подъём кэша предложений") { SuggestCache.warm() } }
     }
 
     /** Найденные предложения, по одному на набор; скрытые не показываем. */
@@ -77,6 +89,18 @@ object Suggest {
             val dead = cache.filterValues { it?.ref?.slug == slug }.keys.toList()
             for (k in dead) cache.remove(k)
         }
+        synchronized(probedSets) { probedSets.remove(slug) }
+        SuggestCache.forget(slug)
+    }
+
+    /**
+     * Забыть всё про чужие наборы — и в памяти, и на диске (кнопка очистки
+     * кэша в настройках). Возвращает, сколько байт освободили.
+     */
+    fun clearCache(): Long {
+        synchronized(cache) { cache.clear() }
+        synchronized(probedSets) { probedSets.clear() }
+        return SuggestCache.clear()
     }
 
     /**
@@ -114,9 +138,8 @@ object Suggest {
     fun consider(word: String) {
         synchronized(cache) {
             if (cache.containsKey(word)) return
-            if (probes >= MAX_PROBES) return
+            if (cache.size >= MAX_WORDS) return
             if (!inFlight.add(word)) return
-            probes++
         }
         io.execute {
             // весь раннабл под L.safe: вылет тут ушёл бы глобальному
@@ -127,6 +150,8 @@ object Suggest {
                     cache[word] = hit
                     inFlight.remove(word)
                 }
+                // проверка могла скачать чужой набор — сносим лишние
+                SuggestCache.trimSets()
                 // нашлось — перерисуем чат, чтобы слово подсветилось
                 if (hit != null) Replacer.rerenderAll()
             }
@@ -135,8 +160,19 @@ object Suggest {
 
     private fun probe(word: String): Hit? {
         val cacheDir = dir ?: return null
+        SuggestCache.warm()
         val connected = Config.sets.map { it.slug }.toSet()
         val dismissed = Config.dismissedSuggests
+
+        // это слово уже разбирали в прошлый раз — ни сети, ни чтения набора
+        SuggestCache.word(word)?.let { known ->
+            val slug = known.ref.slug.lowercase()
+            // набор с тех пор подключили или скрыли — предлагать нечего
+            if (slug in connected || slug in dismissed) return null
+            SuggestCache.touch(known.ref.id)
+            return known
+        }
+
         for ((name, slug) in splits(word)) {
             // набор уже подключён — значит эмоута в нём просто нет; пробуем
             // следующий разделитель, вдруг граница проходит не здесь
@@ -148,22 +184,44 @@ object Suggest {
             // Набор кладётся в тот же дисковый кэш, из которого потом читает
             // Emotes.load, — поэтому подключение по кнопке уже не качает ничего.
             val emotes = Emotes.emotesOf(cacheDir, ref.id) ?: continue
+            SuggestCache.touch(ref.id) // набор в ходу — вытеснится позже других
             // имя сверяем с учётом регистра: подключим набор — эмоут должен
             // отрендериться ровно тем словом, которое пришло в сообщении
             val em = emotes[name] ?: continue
-            return Hit(word, name, ref, emotes.size, em.url)
+            val hit = Hit(word, name, ref, emotes.size, em.url)
+            SuggestCache.putWord(slug, hit)
+            return hit
         }
         return null
     }
 
+    /**
+     * Ник -> набор. Определённый ответ 7TV («вот набор», 404, «такого стримера
+     * нет») кэшируется на диск — второй раз за ним не ходим. Сбой связи и 5xx
+     * не кэшируем: это не ответ «набора нет», спросим при следующем запуске.
+     */
     private fun probeSet(slug: String): SetRef? = synchronized(probedSets) {
         if (probedSets.containsKey(slug)) return probedSets[slug]
+        SuggestCache.set(slug)?.let { known ->
+            probedSets[slug] = known.ref
+            return known.ref
+        }
+        if (probes >= MAX_PROBES) return null
+        probes++
+        var definite = true
         val ref = try {
             SevenTv.resolve(slug)
+        } catch (t: SevenTv.NotFound) {
+            null
+        } catch (t: Net.HttpException) {
+            definite = t.code == 404
+            null
         } catch (t: Throwable) {
+            definite = false
             null
         }
         probedSets[slug] = ref
+        if (definite) SuggestCache.putSet(slug, ref)
         ref
     }
 
