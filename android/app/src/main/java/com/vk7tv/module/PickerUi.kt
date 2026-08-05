@@ -366,13 +366,17 @@ object PickerUi {
         )
         // Настройки живут на долгом тапе по кнопке 7VK — жест непроверяемый:
         // о нём знает только тот, кому сказали. Тут же они на виду.
+        val gear = Inject.dp(ctx, 18)
         row.addView(
-            TextView(ctx).apply {
-                text = "⚙"
-                setTextColor(Ui.MUTED)
-                textSize = 16f
-                setPadding(Inject.dp(ctx, 8), 0, Inject.dp(ctx, 8), 0)
+            ImageView(ctx).apply {
+                setImageDrawable(GearDrawable(Ui.MUTED))
                 contentDescription = "Настройки VK7TV"
+                // область нажатия больше самой иконки: 18dp пальцем не поймать
+                setPadding(Inject.dp(ctx, 8), Inject.dp(ctx, 6), Inject.dp(ctx, 8), Inject.dp(ctx, 6))
+                layoutParams = LinearLayout.LayoutParams(
+                    gear + Inject.dp(ctx, 16),
+                    gear + Inject.dp(ctx, 12),
+                )
                 setOnClickListener { v ->
                     L.safe("настройки из пикера") {
                         // Якорь берём до закрытия и не из пикера: после dismiss

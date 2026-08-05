@@ -26,7 +26,6 @@ import android.os.Looper
 import android.provider.Settings
 import android.text.Editable
 import android.text.TextWatcher
-import android.text.method.ScrollingMovementMethod
 import android.util.TypedValue
 import android.view.Gravity
 import android.view.View
@@ -62,6 +61,14 @@ class MainActivity : Activity() {
     private var io = Executors.newSingleThreadExecutor()
 
     private val ui = Handler(Looper.getMainLooper())
+
+    // Журнал держим строками, а не только во вьюхе: активность пересоздаётся
+    // (поворот, смена темы, возврат из системного установщика), вьюха при этом
+    // новая и пустая — а строки нужны те же, ради них журнал и открывают.
+    private companion object {
+        val logLines = StringBuilder()
+        const val LOG_CAP = 200_000
+    }
 
     // Долгая пауза перед авто-разблокировкой: фоновой установке (Xiaomi и др.)
     // надо успеть прислать SUCCESS раньше, иначе покажем ложную «отмену».
@@ -132,6 +139,7 @@ class MainActivity : Activity() {
 
     // --- вкладка «Журнал» ---
     private lateinit var logView: TextView
+    private lateinit var logScroll: ScrollView
 
     // Последняя версия модуля на GitHub — узнаём одним лёгким запросом при старте,
     // без скачивания APK. Нужна, чтобы показать «доступно vX» на карточке.
@@ -551,20 +559,28 @@ class MainActivity : Activity() {
             layoutParams = lp(MATCH_PARENT, WRAP_CONTENT, bottom = 10)
             setOnClickListener { copyLog() }
         })
+        // Своей прокрутки у текста нет намеренно: прокручиваемый TextView внутри
+        // ScrollView дерётся с ним за жест и за собственный scrollY — из-за
+        // этого журнал показывался пустым, хотя строки в нём были. Крутит
+        // только ScrollView.
         logView = TextView(this).apply {
             sp(this, 12f)
             setTextColor(INK)
             typeface = Typeface.MONOSPACE
-            movementMethod = ScrollingMovementMethod()
+            setTextIsSelectable(true)
             setPadding(dp(12), dp(12), dp(12), dp(12))
         }
-        val logScroll = ScrollView(this).apply {
+        logScroll = ScrollView(this).apply {
             layoutParams = LinearLayout.LayoutParams(MATCH_PARENT, 0, 1f)
             background = bg(LOG_BG, 12, LINE)
+            // не даём коробке схлопнуться в ноль, если вес поделился неудачно:
+            // пустая полоса вместо журнала выглядит как поломка
+            minimumHeight = dp(200)
             isFillViewport = true
             addView(logView)
         }
         col.addView(logScroll)
+        renderLog()
         val footer = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
@@ -818,7 +834,28 @@ class MainActivity : Activity() {
     }
 
     private fun log(s: String) = runOnUiThread {
-        logView.append(if (logView.text.isEmpty()) s else "\n$s")
+        synchronized(logLines) {
+            if (logLines.isNotEmpty()) logLines.append('\n')
+            logLines.append(s)
+            // потолок: патч большого APK пишет много, а держать всё в памяти
+            // и в буфере обмена незачем — режем начало
+            if (logLines.length > LOG_CAP) logLines.delete(0, logLines.length - LOG_CAP)
+        }
+        renderLog()
+        // прокручиваем к свежей строке, иначе на длинном журнале видно начало
+        logScroll.post { logScroll.fullScroll(View.FOCUS_DOWN) }
+    }
+
+    /** Показать журнал во вьюхе. Строки живут в модели, вьюха — отражение. */
+    private fun renderLog() {
+        val text = synchronized(logLines) { logLines.toString() }
+        if (text.isEmpty()) {
+            logView.setTextColor(MUTED)
+            logView.text = "Журнал пуст — он наполняется во время установки."
+        } else {
+            logView.setTextColor(INK)
+            logView.text = text
+        }
     }
 
     private fun percent(done: Long, total: Long) = runOnUiThread {
@@ -847,8 +884,13 @@ class MainActivity : Activity() {
         }
 
     private fun copyLog() {
+        val text = synchronized(logLines) { logLines.toString() }
+        if (text.isEmpty()) {
+            Toast.makeText(this, "Журнал пуст", Toast.LENGTH_SHORT).show()
+            return
+        }
         val cm = getSystemService(CLIPBOARD_SERVICE) as ClipboardManager
-        cm.setPrimaryClip(ClipData.newPlainText("vk7tv log", logView.text))
+        cm.setPrimaryClip(ClipData.newPlainText("vk7tv log", text))
         Toast.makeText(this, "Журнал скопирован", Toast.LENGTH_SHORT).show()
     }
 
