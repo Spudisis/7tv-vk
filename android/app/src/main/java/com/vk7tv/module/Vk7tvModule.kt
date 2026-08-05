@@ -120,6 +120,12 @@ object Boot {
             Config.init(app)
             Diag.attach(app)
             val data = dataDir(app)
+            // Журнал подключаем первым: строки после этой точки уже ложатся
+            // на диск, а всё, что модуль записал раньше, Journal досылает
+            // из памяти. Разделитель отбивает сессии друг от друга — по нему
+            // видно, где начался запуск, который не пережили.
+            Journal.attach(data)
+            L.i("--- запуск ${BuildConfig.VERSION_NAME} в ${app.packageName} ---")
             Crash.attach(data)
             EmoteCache.init(data)
             Suggest.init(data)

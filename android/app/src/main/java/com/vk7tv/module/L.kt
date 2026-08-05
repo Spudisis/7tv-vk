@@ -15,15 +15,19 @@ internal object L {
 
     fun i(msg: String) {
         XposedBridge.log("$TAG: $msg")
+        Journal.add(msg)
     }
 
     fun v(msg: String) {
-        if (verbose) XposedBridge.log("$TAG: $msg")
+        if (!verbose) return
+        XposedBridge.log("$TAG: $msg")
+        Journal.add(msg)
     }
 
     fun e(msg: String, t: Throwable? = null) {
         XposedBridge.log("$TAG: $msg${if (t != null) " — $t" else ""}")
         if (t != null) XposedBridge.log(t)
+        Journal.add("ОШИБКА: $msg${if (t != null) " — $t" else ""}")
     }
 
     inline fun <T> safe(what: String, block: () -> T): T? =

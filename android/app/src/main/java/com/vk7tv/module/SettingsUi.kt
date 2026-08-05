@@ -301,6 +301,31 @@ object SettingsUi {
             },
         )
 
+        root.addView(label(ctx, "ЖУРНАЛ"))
+        root.addView(
+            note(
+                ctx,
+                "Модуль пишет последние ${Journal.LINES} строк о том, что делает, сразу " +
+                    "в файл. Если эмоуты выключились аварийным режимом или клиент падает — " +
+                    "сохрани журнал и пришли: по нему видно, на чём всё оборвалось. " +
+                    "Личного в нём нет — только имена наборов и что модуль делал.",
+            ),
+        )
+        root.addView(note(ctx, "Записей: ${Journal.size()}"))
+        root.addView(
+            button(ctx, "Сохранить в «Загрузки»") {
+                busy(ctx, "Сохраняю…") { "Готово: Загрузки/${Journal.saveToDownloads(ctx)}" }
+            },
+        )
+        root.addView(button(ctx, "Отправить журнал") { shareJournal(ctx) })
+        root.addView(
+            button(ctx, "Очистить журнал") {
+                Journal.clear()
+                toast(ctx, "Журнал очищен")
+                main.post { L.safe("обновление экрана") { refresh() } }
+            },
+        )
+
         // Модуль ронял процесс в прошлый раз — показываем стек прямо тут,
         // чтобы его можно было заскринить с телефона без кабеля и logcat.
         Crash.last?.let { trace ->
@@ -570,6 +595,31 @@ object SettingsUi {
             }
         }
         openUrl(ctx, Updates.page ?: "https://github.com/Spudisis/7tv-vk/releases")
+    }
+
+    /**
+     * Журнал в системное «Поделиться» — оттуда его кидают прямо в чат.
+     * Текстом, а не файлом: файл пришлось бы отдавать через FileProvider,
+     * а объявить его в чужом манифесте ВК мы не можем.
+     */
+    private fun shareJournal(ctx: Context) {
+        val body = Journal.text()
+        if (body.isBlank()) {
+            toast(ctx, "Журнал пуст")
+            return
+        }
+        val send = Intent(Intent.ACTION_SEND).apply {
+            type = "text/plain"
+            putExtra(Intent.EXTRA_SUBJECT, "Журнал VK7TV ${BuildConfig.VERSION_NAME}")
+            putExtra(Intent.EXTRA_TEXT, body)
+        }
+        val sent = L.safe("отправка журнала") {
+            ctx.startActivity(
+                Intent.createChooser(send, "Журнал VK7TV").addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
+            )
+            true
+        }
+        if (sent != true) toast(ctx, "Не удалось открыть отправку — сохрани в «Загрузки»")
     }
 
     private fun openUrl(ctx: Context, url: String) {
