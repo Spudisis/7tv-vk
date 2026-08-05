@@ -246,6 +246,25 @@
   color: #7a8090;
 }
 
+/* стрелки перестановки: видны при наведении на заголовок, чтобы не рябить
+   в списке из десятка наборов */
+.vk7tv-picker-move {
+  padding: 0 2px;
+  font-size: 12px;
+  line-height: 1;
+  color: #5c6270;
+  opacity: 0;
+  transition: opacity 0.12s ease;
+}
+
+.vk7tv-picker-group-title:hover .vk7tv-picker-move {
+  opacity: 1;
+}
+
+.vk7tv-picker-move:hover {
+  color: #4c8bf5;
+}
+
 .vk7tv-picker-group.vk7tv-collapsed .vk7tv-picker-grid {
   display: none;
 }

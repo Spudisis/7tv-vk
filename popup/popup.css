@@ -195,6 +195,25 @@ ul li .del:hover {
   background: none;
 }
 
+/* порядок наборов: он же порядок разделов в пикере */
+ul li .move {
+  background: none;
+  color: #7a8090;
+  padding: 2px 4px;
+  font-size: 12px;
+  line-height: 1;
+}
+
+ul li .move:hover:not(:disabled) {
+  color: #4c8bf5;
+  background: none;
+}
+
+ul li .move:disabled {
+  opacity: 0.25;
+  cursor: default;
+}
+
 details {
   margin-top: 10px;
 }

@@ -85,8 +85,14 @@ async function render() {
 
   const setList = $('#setList');
   setList.innerHTML = '';
-  for (const s of sync.sets) {
+  sync.sets.forEach((s, i) => {
     const li = document.createElement('li');
+    // Порядок наборов — это порядок разделов в пикере и в этом списке.
+    // На коллизию имён он не влияет: голое имя достаётся набору с первым
+    // по алфавиту слагом, иначе у людей с одинаковыми наборами картинки
+    // под одним кодом разъезжались бы.
+    const up = moveButton('↑', 'Выше', i > 0, () => moveSet(i, -1));
+    const down = moveButton('↓', 'Ниже', i < sync.sets.length - 1, () => moveSet(i, 1));
     const name = document.createElement('span');
     name.className = 'name';
     name.textContent = s.name;
@@ -107,9 +113,9 @@ async function render() {
       await sendMessage({ type: 'remove-set', id: s.id });
       render();
     });
-    li.append(name, slug, count, del);
+    li.append(name, slug, count, up, down, del);
     setList.appendChild(li);
-  }
+  });
 
   const customList = $('#customList');
   customList.innerHTML = '';
@@ -143,6 +149,27 @@ async function render() {
   }
 
   renderGrid(activeEmotes(state));
+}
+
+function moveButton(glyph, title, enabled, onClick) {
+  const b = document.createElement('button');
+  b.className = 'move';
+  b.textContent = glyph;
+  b.title = title;
+  b.disabled = !enabled;
+  b.addEventListener('click', onClick);
+  return b;
+}
+
+// Меняем набор местами с соседним. Пишем весь список: пикер и модуль
+// читают порядок именно из него.
+async function moveSet(i, dir) {
+  const { sets } = await chrome.storage.sync.get({ sets: [] });
+  const j = i + dir;
+  if (j < 0 || j >= sets.length) return;
+  [sets[i], sets[j]] = [sets[j], sets[i]];
+  await chrome.storage.sync.set({ sets });
+  render();
 }
 
 let gridEmotes = new Map();

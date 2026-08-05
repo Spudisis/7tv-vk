@@ -156,8 +156,16 @@
     for (const s of sync.sets) {
       const m = local.setEmotes[s.id];
       // suffix — постфикс набора: пикер всегда вставляет имя с ним
+      // setId — по нему набор двигается по списку; у глобального и «своих»
+      // его нет, они всегда с краю
       if (m && Object.keys(m).length) {
-        groups.push({ key: `set:${s.id}`, title: s.name, emotes: m, suffix: s.slug || '' });
+        groups.push({
+          key: `set:${s.id}`,
+          setId: s.id,
+          title: s.name,
+          emotes: m,
+          suffix: s.slug || '',
+        });
       }
     }
     if (Object.keys(sync.customEmotes).length) {
@@ -464,6 +472,12 @@
         toggleFav(star.parentElement.dataset.name);
         return;
       }
+      const move = e.target.closest('.vk7tv-picker-move');
+      if (move) {
+        e.stopPropagation(); // иначе заголовок заодно свернёт набор
+        moveSet(move.dataset.setId, Number(move.dataset.move));
+        return;
+      }
       const head = e.target.closest('.vk7tv-picker-group-title');
       if (head) {
         toggleGroup(head.parentElement);
@@ -629,8 +643,9 @@
 
   // Заголовок набора — он же кнопка сворачивания. Число рядом показывает,
   // сколько эмоутов внутри: у свёрнутого набора это единственный признак,
-  // что находки по поиску там есть.
-  function groupTitle(text, count) {
+  // что находки по поиску там есть. Стрелки двигают набор по списку;
+  // у глобального набора и «своих» их нет — они стоят на своих местах.
+  function groupTitle(g, count) {
     const h = document.createElement('div');
     h.className = 'vk7tv-picker-group-title';
     h.title = 'Свернуть или развернуть набор';
@@ -639,12 +654,38 @@
     chevron.textContent = '▾';
     const name = document.createElement('span');
     name.className = 'vk7tv-picker-group-name';
-    name.textContent = text;
+    name.textContent = g.title;
     const cnt = document.createElement('span');
     cnt.className = 'vk7tv-picker-group-count';
     cnt.textContent = count;
     h.append(chevron, name, cnt);
+    if (g.setId) {
+      h.append(moveButton(g.setId, -1, '↑'), moveButton(g.setId, 1, '↓'));
+    }
     return h;
+  }
+
+  function moveButton(setId, dir, glyph) {
+    const b = document.createElement('span');
+    b.className = 'vk7tv-picker-move';
+    b.textContent = glyph;
+    b.dataset.move = dir;
+    b.dataset.setId = setId;
+    b.title = dir < 0 ? 'Поднять набор' : 'Опустить набор';
+    return b;
+  }
+
+  // Порядок наборов хранится в самом списке наборов: его же читают попап
+  // и модуль для приложения. На то, какой набор владеет голым именем, он
+  // не влияет — там всё решает первый по алфавиту слаг.
+  async function moveSet(setId, dir) {
+    const { sets } = await chrome.storage.sync.get({ sets: [] });
+    const i = sets.findIndex((s) => s.id === setId);
+    const j = i + dir;
+    if (i < 0 || j < 0 || j >= sets.length) return;
+    [sets[i], sets[j]] = [sets[j], sets[i]];
+    // сетку пересоберёт слушатель хранилища — он же обновит попап
+    await chrome.storage.sync.set({ sets });
   }
 
   // Ячейки наборов, порциями по кадрам. Свёрнутый набор ячеек не создаёт
@@ -716,7 +757,7 @@
       sec.className = 'vk7tv-picker-group';
       const grid = document.createElement('div');
       grid.className = 'vk7tv-picker-grid';
-      sec.append(groupTitle(g.title, found.length), grid);
+      sec.append(groupTitle(g, found.length), grid);
       // работа по сборке живёт на самой секции: раскрыли набор или он
       // подошёл к видимой части — берём её оттуда и досоздаём ячейки
       sec._vk7tvJob = { key: g.key, sec, grid, found, at: 0, filled: false, running: false };
