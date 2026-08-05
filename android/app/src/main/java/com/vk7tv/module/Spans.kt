@@ -7,23 +7,45 @@ import android.graphics.PixelFormat
 import android.graphics.Rect
 import android.graphics.drawable.Animatable
 import android.graphics.drawable.Drawable
+import android.text.TextPaint
+import android.text.style.ClickableSpan
 import android.text.style.ReplacementSpan
 import android.view.View
+import android.widget.TextView
 import java.lang.ref.WeakReference
 
 /** Маркер «этот текст мы уже обработали» + оригинал для перерисовки. */
 class Vk7tvMark(val original: CharSequence)
 
 /**
- * Метка «за этим словом стоит чужой набор» — по ней [Taps] ловит тап и
- * открывает поповер с предложением подключить.
+ * Слово, за которым стоит чужой набор: нажимаемое, открывает поповер
+ * с предложением подключить.
  *
- * Держим одно только слово, а не саму находку: пока сообщение висит на экране,
- * набор могли подключить или скрыть, и находка протухла бы. По слову находку
- * перезапрашиваем в момент тапа ([Suggest.hitOf]). Ни вьюх, ни контекста
- * внутри нет — метка живёт в тексте, который ВК переиспользует как хочет.
+ * Именно ClickableSpan — тот же способ, которым в сообщении живут ссылки
+ * и упоминания. Значит и обрабатывается он тем же кодом ВК, который уже
+ * умеет не показывать меню сообщения, когда нажали на что-то внутри текста.
+ * Свой разбор касаний ([Taps]) остаётся запасным путём — на случай вьюхи,
+ * у которой movementMethod не выставлен и нажимать спаны некому.
+ *
+ * Держим одно только слово, а не саму находку: пока сообщение висит на
+ * экране, набор могли подключить или скрыть, и находка протухла бы. По слову
+ * находку перезапрашиваем в момент тапа ([Suggest.hitOf]). Ни вьюх,
+ * ни контекста внутри нет — спан живёт в тексте, который ВК переиспользует
+ * как хочет.
  */
-class SuggestSpan(val word: String)
+class SuggestSpan(val word: String) : ClickableSpan() {
+
+    override fun onClick(widget: View) {
+        L.safe("тап по слову") {
+            val tv = widget as? TextView ?: return@safe
+            SuggestUi.show(tv, word, SuggestUi.rectOf(tv, this))
+        }
+    }
+
+    // слово мы уже нарисовали сами — картинкой или цветом с подчёркиванием;
+    // ссылочную раскраску поверх накладывать не надо
+    override fun updateDrawState(ds: TextPaint) = Unit
+}
 
 /**
  * Эмоут вместо слова. Высота — от размера шрифта, чтобы картинка

@@ -94,6 +94,10 @@ object Taps {
             // свой же пикер и настройки: с «эмоутами везде» метки попадают
             // и в наш текст, но тапы там наши обработчики разбирают сами
             if (Inject.isOurs(tv)) return false
+            // У вьюхи есть movementMethod — значит спаны в ней нажимает сам ВК,
+            // тем же кодом, что ссылки и упоминания. Не лезем: он про своё меню
+            // сообщения знает, а мы нет, и вдвоём мы открывали два окна разом.
+            if (tv.movementMethod != null) return false
             val s = spanAt(tv, e.x, e.y) ?: return false
             owner = WeakReference(tv)
             word = s.word
@@ -178,28 +182,7 @@ object Taps {
         return x >= minOf(x1, x2) && x <= maxOf(x1, x2)
     }
 
-    /** Слово на экране — чтобы поповер встал рядом с ним, а не посреди экрана. */
-    private fun rectOf(tv: TextView, s: SuggestSpan): Rect? = L.safe("место слова") {
-        val text = tv.text as? Spanned ?: return@safe null
-        val layout = tv.layout ?: return@safe null
-        val start = text.getSpanStart(s)
-        val end = text.getSpanEnd(s)
-        if (start < 0 || end <= start) return@safe null
-        val line = layout.getLineForOffset(start)
-        val at = IntArray(2)
-        tv.getLocationOnScreen(at)
-        val left = at[0] + tv.totalPaddingLeft - tv.scrollX
-        val top = at[1] + tv.totalPaddingTop - tv.scrollY
-        val x1 = layout.getPrimaryHorizontal(start)
-        val x2 = if (layout.getLineForOffset(end) != line) layout.getLineRight(line)
-        else layout.getPrimaryHorizontal(end)
-        Rect(
-            (left + minOf(x1, x2)).toInt(),
-            top + layout.getLineTop(line),
-            (left + maxOf(x1, x2)).toInt(),
-            top + layout.getLineBottom(line),
-        )
-    }
+    private fun rectOf(tv: TextView, s: SuggestSpan): Rect? = SuggestUi.rectOf(tv, s)
 
     private fun release() {
         owner = WeakReference(null)
