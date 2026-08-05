@@ -36,6 +36,9 @@ object Config {
     const val KEY_DISMISSED = "dismissedSuggests"
     const val KEY_CACHE_MB = "cacheCapMb"
     const val KEY_START_ATTEMPTS = "startAttempts"
+    const val KEY_UPD_CHECKED = "updateCheckedAt"
+    const val KEY_UPD_VERSION = "updateVersion"
+    const val KEY_UPD_TOLD = "updateTold"
 
     // Потолок кэша картинок, МБ. По умолчанию 1 ГБ — паки большие, а память
     // на телефонах давно не 8 ГБ; человек может поменять в настройках.
@@ -189,6 +192,28 @@ object Config {
     /** Старт пережили без вылета — обнуляем счётчик неудачных попыток. */
     fun startupSurvived() {
         prefs?.edit()?.putInt(KEY_START_ATTEMPTS, 0)?.apply()
+    }
+
+    // --- обновления модуля ---
+
+    /** Когда последний раз спрашивали GitHub про релизы. */
+    val updateCheckedAt: Long
+        get() = prefs?.getLong(KEY_UPD_CHECKED, 0L) ?: 0L
+
+    /** Найденная в прошлый раз версия — чтобы знать о ней и без сети. */
+    val updateVersion: String?
+        get() = prefs?.getString(KEY_UPD_VERSION, null)?.ifEmpty { null }
+
+    /** Версия, про которую уже сказали тостом: второй раз не тревожим. */
+    val updateTold: String?
+        get() = prefs?.getString(KEY_UPD_TOLD, null)
+
+    fun rememberUpdate(version: String?, at: Long) {
+        prefs?.edit()?.putString(KEY_UPD_VERSION, version ?: "")?.putLong(KEY_UPD_CHECKED, at)?.apply()
+    }
+
+    fun rememberUpdateTold(version: String) {
+        prefs?.edit()?.putString(KEY_UPD_TOLD, version)?.apply()
     }
 
     /** Ручной выход из аварийного режима (кнопка в настройках). */
