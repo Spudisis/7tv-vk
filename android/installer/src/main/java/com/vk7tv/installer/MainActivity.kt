@@ -560,25 +560,25 @@ class MainActivity : Activity() {
             layoutParams = lp(MATCH_PARENT, WRAP_CONTENT, bottom = 10)
             setOnClickListener { copyLog() }
         })
-        // Коробка занимает всю высоту между кнопкой и подвалом, длинный журнал
-        // прокручивается внутри неё. Своей прокрутки у текста нет: два
-        // прокручиваемых механизма один в другом делят жест и высоту — на этом
-        // вкладка когда-то и оказывалась пустой.
+        // Текст лежит прямо на странице, прокрутка одна — на всю вкладку.
+        // Вложенная прокрутка (текст внутри своей прокручиваемой коробки) на
+        // части устройств не рисовалась вовсе: вкладка выглядела пустой.
+        //
+        // Вес при WRAP_CONTENT, а не высота 0: короткий журнал растягивается на
+        // всю высоту и прижимает подвал к низу, длинный оставляет себе высоту по
+        // содержимому, и страница прокручивается целиком. С высотой 0 длинный
+        // журнал обрезался бы по экрану.
         logView = TextView(this).apply {
             sp(this, 12f)
             setTextColor(INK)
             typeface = Typeface.MONOSPACE
             setTextIsSelectable(true)
-            setPadding(dp(12), dp(12), dp(12), dp(12))
-        }
-        logScroll = ScrollView(this).apply {
-            layoutParams = LinearLayout.LayoutParams(MATCH_PARENT, 0, 1f)
             background = bg(LOG_BG, 12, LINE)
-            minimumHeight = dp(120) // на случай, если вес поделился неудачно
-            isFillViewport = true
-            addView(logView)
+            minimumHeight = dp(160)
+            setPadding(dp(12), dp(12), dp(12), dp(12))
+            layoutParams = LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT, 1f)
         }
-        col.addView(logScroll)
+        col.addView(logView)
         renderLog()
         val footer = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
@@ -594,7 +594,14 @@ class MainActivity : Activity() {
         })
         footer.addView(text("VK7TV Патчер · v${BuildConfig.VERSION_NAME}", 11.5f, MUTED))
         col.addView(footer)
-        return col
+        // fillViewport: короткая страница растягивается до высоты экрана, и вес
+        // текста получает свободное место — без этого подвал висел бы сразу
+        // под коробкой, посреди экрана
+        logScroll = ScrollView(this).apply {
+            isFillViewport = true
+            addView(col)
+        }
+        return logScroll
     }
 
     private fun openUrl(url: String) {
