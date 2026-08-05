@@ -13,8 +13,8 @@ android {
         // с 7TV декодируются системой, свой GIF-декодер не нужен
         minSdk = 28
         targetSdk = 34
-        versionCode = 32
-        versionName = "0.6.1"
+        versionCode = 33
+        versionName = "0.6.2"
     }
 
     buildFeatures {
