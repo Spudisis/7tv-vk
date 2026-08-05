@@ -89,7 +89,7 @@ object SettingsUi {
         )
         root.addView(switch(ctx, "Предлагать наборы стримеров", Config.suggest) {
             Config.setFlag(Config.KEY_SUGGEST, it)
-            // без перерисовки уже показанные слова оставались бы нажимаемыми
+            // иначе выключение видно только после перезахода в диалог
             Replacer.rerenderAll()
         })
         root.addView(switch(ctx, "Показывать картинку предложения", Config.suggestPreview) {
@@ -99,9 +99,10 @@ object SettingsUi {
         root.addView(
             note(
                 ctx,
-                "Незнакомое слово из чужого набора показывается картинкой с чертой снизу — " +
-                    "нажми на неё, чтобы подключить набор. Выключи, если клиент падает: " +
-                    "предложения останутся, но словом, а не картинкой.",
+                "Незнакомое слово из чужого набора показывается картинкой с чертой снизу. " +
+                    "Подключить набор можно в пикере, строкой «МОЖНО ПОДКЛЮЧИТЬ». " +
+                    "Выключи, если клиент падает: предложения останутся, но словом, " +
+                    "а не картинкой.",
             ),
         )
         root.addView(switch(ctx, "Показывать диагностику", Config.diag) {
@@ -282,7 +283,6 @@ object SettingsUi {
         }
 
         val scroll = ScrollView(ctx).apply {
-            contentDescription = Inject.OUR_UI // см. Inject.isOurs
             background = GradientDrawable().apply {
                 setColor(Ui.BG)
                 cornerRadius = dp(ctx, 12).toFloat()

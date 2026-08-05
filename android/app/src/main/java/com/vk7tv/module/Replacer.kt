@@ -108,9 +108,12 @@ object Replacer {
         }
 
         // Предложения: слово из чужого набора показываем картинкой с полоской
-        // снизу, а если картинки ещё нет — подсвечиваем как раньше. Поверх
-        // в обоих случаях кладём метку SuggestSpan: по ней Taps ловит тап
-        // и открывает поповер с предложением подключить набор.
+        // снизу, а если картинки ещё нет — подсвечиваем цветом, как раньше.
+        //
+        // Нажимаемым слово не делаем. Пробовали и своим разбором касаний, и
+        // ClickableSpan: ВК ловит нажатие по сообщению раньше нас и открывает
+        // своё меню («ответить», «переслать») поверх нашего окошка — оба разом.
+        // Набор подключается из пикера, строкой «МОЖНО ПОДКЛЮЧИТЬ».
         found.sugs?.let { list ->
             val sb = out ?: SpannableStringBuilder(text).also { out = it }
             var shown = 0
@@ -130,9 +133,7 @@ object Replacer {
                     sb.setSpan(ForegroundColorSpan(Ui.ACCENT), s.start, s.end, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
                     sb.setSpan(UnderlineSpan(), s.start, s.end, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
                 }
-                sb.setSpan(SuggestSpan(s.word), s.start, s.end, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
             }
-            Taps.arm()
         }
 
         // Отметку «ждём картинку» ставим ДО раннего выхода. Иначе, когда

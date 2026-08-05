@@ -92,7 +92,6 @@ object PickerUi {
 
         val rootView = LinearLayout(ctx).apply {
             orientation = LinearLayout.VERTICAL
-            contentDescription = Inject.OUR_UI // см. Inject.isOurs
             background = GradientDrawable().apply {
                 setColor(Ui.BG)
                 cornerRadius = r(ctx)
@@ -431,10 +430,8 @@ object PickerUi {
      * и крестик — скрыть набор из предложений насовсем ([Suggest.dismiss]),
      * не выключая саму функцию.
      *
-     * Одна на два места — ленту в пикере и поповер по тапу в сообщении
-     * ([SuggestUi]): один и тот же вид, один и тот же путь загрузки картинки.
-     * [onChanged] зовём, когда карточка сделала своё дело: в ленте это
-     * перерисовка, в поповере — закрытие.
+     * [onChanged] зовём, когда карточка сделала своё дело, — лента
+     * перерисовывается.
      */
     internal fun suggestCard(
         ctx: Context,
