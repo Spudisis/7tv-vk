@@ -43,6 +43,7 @@ object Config {
     const val KEY_SUGGEST_PREVIEW = "suggestPreview"
     const val KEY_EVERYWHERE = "everywhere"
     const val KEY_DISMISSED = "dismissedSuggests"
+    const val KEY_DISMISSED_EMOTES = "dismissedEmotes"
     const val KEY_CACHE_MB = "cacheCapMb"
     const val KEY_START_ATTEMPTS = "startAttempts"
     const val KEY_UPD_CHECKED = "updateCheckedAt"
@@ -126,6 +127,12 @@ object Config {
     var dismissedSuggests: Set<String> = emptySet()
         private set
 
+    // чужие эмоуты, которые пользователь скрыл из «можно добавить себе»:
+    // хранятся по id эмоута на 7TV
+    @Volatile
+    var dismissedEmotes: Set<String> = emptySet()
+        private set
+
     private var prefs: SharedPreferences? = null
 
     fun init(ctx: Context) {
@@ -152,6 +159,7 @@ object Config {
         custom = parseCustom(p.getString(KEY_CUSTOM, "{}"))
         favorites = parseList(p.getString(KEY_FAVORITES, "[]"))
         dismissedSuggests = parseList(p.getString(KEY_DISMISSED, "[]")).toSet()
+        dismissedEmotes = parseList(p.getString(KEY_DISMISSED_EMOTES, "[]")).toSet()
         L.i("конфиг: наборов ${sets.size}, своих ${custom.size}, избранных ${favorites.size}")
     }
 
@@ -320,6 +328,16 @@ object Config {
         }
         prefs?.edit()?.putString(KEY_CUSTOM, o.toString())?.apply()
         custom = map
+    }
+
+    /** Скрыть чужой эмоут из «можно добавить себе» насовсем. */
+    fun dismissEmote(id: String) {
+        if (id.isEmpty() || dismissedEmotes.contains(id)) return
+        val list = dismissedEmotes + id
+        val arr = JSONArray()
+        for (s in list) arr.put(s)
+        prefs?.edit()?.putString(KEY_DISMISSED_EMOTES, arr.toString())?.apply()
+        dismissedEmotes = list
     }
 
     fun isFavorite(name: String): Boolean = favorites.contains(name)

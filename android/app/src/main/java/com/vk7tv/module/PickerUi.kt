@@ -535,6 +535,23 @@ object PickerUi {
                 leftMargin = Inject.dp(ctx, 8)
             },
         )
+        // крестик со своим обработчиком: тап по нему тратится на скрытие и не
+        // всплывает к карточке, поэтому эмоут не добавится по ошибке
+        top.addView(
+            TextView(ctx).apply {
+                text = "✕"
+                setTextColor(Ui.MUTED)
+                textSize = 13f
+                setPadding(Inject.dp(ctx, 6), Inject.dp(ctx, 2), Inject.dp(ctx, 2), Inject.dp(ctx, 2))
+                setOnClickListener {
+                    L.safe("скрытие чужого эмоута") {
+                        Shared.dismiss(h.id)
+                        onChanged()
+                        toast(ctx, "Скрыл «${h.name}»")
+                    }
+                }
+            },
+        )
         card.addView(top)
 
         card.addView(

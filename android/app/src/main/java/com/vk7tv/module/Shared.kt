@@ -98,10 +98,11 @@ object Shared {
         return Emote(word, url, isZeroWidth(id))
     }
 
-    /** Находки для пикера: без тех, что успели добавить в свои. */
+    /** Находки для пикера: без тех, что уже свои или скрыты крестиком. */
     fun hits(): List<Hit> = synchronized(seen) {
         val mine = Config.custom.values.map { it.id }.filter { it.isNotEmpty() }.toSet()
-        seen.values.filter { it.id !in mine }.distinctBy { it.id }
+        val hidden = Config.dismissedEmotes
+        seen.values.filter { it.id !in mine && it.id !in hidden }.distinctBy { it.id }
     }
 
     /** Эмоут добавили себе — предлагать его больше не нужно. */
@@ -110,6 +111,16 @@ object Shared {
             val dead = seen.filterValues { it.id == id }.keys.toList()
             for (k in dead) seen.remove(k)
         }
+    }
+
+    /**
+     * Крестик на карточке: эмоут не нужен, больше не предлагаем — и в этот
+     * раз, и после перезапуска. Сам он в чате продолжает рисоваться: скрываем
+     * предложение добавить, а не картинку.
+     */
+    fun dismiss(id: String) {
+        Config.dismissEmote(id)
+        forget(id)
     }
 
     // Crockford base32: без I, L, O, U — их в id не бывает
