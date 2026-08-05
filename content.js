@@ -154,7 +154,14 @@
       list.sort((a, b) => a.slug.localeCompare(b.slug) || a.em.u.localeCompare(b.em.u));
       emoteMap.set(n, list[0].em);
     }
-    for (const [n, v] of Object.entries(sync.customEmotes)) emoteMap.set(n, normEmote(v));
+    // Свои эмоуты перебивают наборы и глобальные: их добавил сам
+    // пользователь. Второе имя — с id эмоута на 7TV: по нему свой эмоут
+    // узнаёт чужое расширение, у которого этого эмоута нет.
+    for (const [n, v] of Object.entries(sync.customEmotes)) {
+      const em = normEmote(v);
+      emoteMap.set(n, em);
+      if (em.id) emoteMap.set(`${n}_${em.id}`, { u: em.u, z: em.z, a: n });
+    }
 
     // Префильтр строим по голым именам: имя с постфиксом содержит голое
     // как подстроку, поэтому такой текст регексп поймает и без него. Голое
@@ -169,8 +176,34 @@
     for (const [n, v] of emoteMap) if (!v.a || !emoteMap.has(v.a)) probes.push(n);
     testRegex = probes.length ? new RegExp(probes.map(escapeRegex).join('|')) : null;
 
+    // Индекс для автозаполнения: имена в нижнем регистре, разложенные по
+    // первой букве. Автозаполнение ищет по началу слова, поэтому нужная
+    // корзина всегда одна. Раньше оно перебирало весь emoteMap и звало
+    // toLowerCase на каждое имя — на 20 000 эмоутов это тысячи строк
+    // на каждое нажатие клавиши.
+    // alias — имя с постфиксом набора, у которого есть голое имя: такие
+    // прячем, пока в наборе не появится «_» (правило то же, что было
+    // в autocomplete.js, но проверка делается один раз здесь).
+    // ins — что вставлять в сообщение. У своего эмоута голое имя работает
+    // только у автора, поэтому в поле уходит полное имя с id: показываем
+    // короткое, вставляем то, что доедет до собеседника.
+    acIndex = new Map();
+    for (const [n, v] of emoteMap) {
+      const l = n.toLowerCase();
+      const entry = {
+        l,
+        n,
+        u: v.u,
+        alias: !!(v.a && emoteMap.has(v.a)),
+        ins: v.id ? `${n}_${v.id}` : n,
+      };
+      const bucket = acIndex.get(l[0]);
+      if (bucket) bucket.push(entry);
+      else acIndex.set(l[0], [entry]);
+    }
+
     // общее состояние для autocomplete.js и picker.js (один isolated world)
-    window.__vk7tv = { emoteMap, enabled, resolveEmote, chain };
+    window.__vk7tv = { emoteMap, acIndex, enabled, resolveEmote, chain };
 
     // Подпись состояния: по ней видно, надо ли перерисовывать уже
     // показанные сообщения. Фоновое обновление наборов раз в полчаса
@@ -289,6 +322,45 @@
           btn.disabled = false;
           label.textContent = '+ ' + hit.slug;
           btn.title = (resp && resp.error) || 'Не получилось подключить набор';
+          btn.classList.add('vk7tv-suggest-err');
+          return;
+        }
+        label.textContent = 'готово';
+      });
+    });
+    return btn;
+  }
+
+  // --- чужой свой эмоут: имя_<id эмоута на 7TV> ---
+  // Постфикс своего эмоута — его id на 7TV, а из id адрес картинки
+  // собирается однозначно. Поэтому чужой kek_01H4… рисуется сразу,
+  // без подключённых наборов и без запросов к API, а чип рядом кладёт
+  // его в свои эмоуты.
+  const EMOTE_ID_RE = /^(.+)_([0-9A-HJKMNP-TV-Z]{26})$/i;
+  const cdnUrl = (id) => `https://cdn.7tv.app/emote/${id}/2x.webp`;
+
+  function makeAddCustom(name, id) {
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'vk7tv-suggest';
+    btn.title = `«${name}» — чужой свой эмоут. Нажми, чтобы добавить его себе.`;
+    const label = document.createElement('span');
+    label.className = 'vk7tv-suggest-label';
+    label.textContent = '+ себе';
+    btn.appendChild(label);
+    btn.addEventListener('pointerdown', (e) => e.preventDefault());
+    btn.addEventListener('mousedown', (e) => e.stopPropagation());
+    btn.addEventListener('click', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      if (btn.disabled) return;
+      btn.disabled = true;
+      label.textContent = 'добавляю…';
+      chrome.runtime.sendMessage({ type: 'add-custom', input: id, name }, (resp) => {
+        if (!resp || resp.error) {
+          btn.disabled = false;
+          label.textContent = '+ себе';
+          btn.title = (resp && resp.error) || 'Не получилось добавить эмоут';
           btn.classList.add('vk7tv-suggest-err');
           return;
         }
@@ -451,9 +523,9 @@
     if (node._vk7tv) return; // уже отрендерен, текст занулён нами
     const text = node.nodeValue;
     if (!text) return;
-    // префильтр: эмоут в тексте или хотя бы слово с разделителем,
-    // из которого может выйти предложение подключить набор
-    if (!(testRegex && testRegex.test(text)) && !(suggestOn && text.includes('_'))) return;
+    // префильтр: эмоут в тексте или хотя бы слово с разделителем — из него
+    // может выйти чужой свой эмоут (имя_id) или предложение поставить набор
+    if (!(testRegex && testRegex.test(text)) && !text.includes('_')) return;
 
     const parent = node.parentElement;
     if (!parent) return;
@@ -518,10 +590,31 @@
       }
 
       lastStack = null;
+      if (!underscore) continue;
+      const word = text.slice(start, end);
+
+      // чужой свой эмоут: имя и id — прямо в слове, картинку собираем из id
+      const byId = EMOTE_ID_RE.exec(word);
+      if (byId) {
+        if (start > flushed) frag.appendChild(document.createTextNode(text.slice(flushed, start)));
+        lastStack = document.createElement('span');
+        lastStack.className = 'vk7tv-stack';
+        lastStack.appendChild(makeEmote(byId[1], cdnUrl(byId[2]), false));
+        frag.appendChild(lastStack);
+        if (!seen) seen = new Set();
+        if (!seen.has(word)) {
+          seen.add(word); // одно и то же слово в сообщении — один чип
+          frag.appendChild(makeAddCustom(byId[1], byId[2].toUpperCase()));
+        }
+        flushed = end;
+        changed = true;
+        continue;
+      }
+
       // эмоута нет — может, он из набора, который у нас не подключён
-      if (!suggestOn || !underscore) continue;
+      if (!suggestOn) continue;
       if (!seen) seen = new Set();
-      const chip = suggestFor(text.slice(start, end), seen);
+      const chip = suggestFor(word, seen);
       if (!chip) continue;
       frag.appendChild(document.createTextNode(text.slice(flushed, end)));
       frag.appendChild(chip);

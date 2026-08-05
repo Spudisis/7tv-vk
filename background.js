@@ -255,6 +255,54 @@ async function probeSet(word) {
   return { found: false };
 }
 
+// --- свои эмоуты ---
+// Постфикс своего эмоута — id этого эмоута на 7TV. Из id адрес картинки
+// собирается однозначно, поэтому чужое расширение рисует kek_01H4… без
+// каких-либо запросов к нам и без общего сервера. У картинки не с 7TV id
+// взять неоткуда: такой эмоут работает только у того, кто его добавил.
+const EMOTE_API = 'https://7tv.io/v3/emotes/';
+
+async function addCustom(input, wanted) {
+  const raw = String(input || '').trim();
+  const m = ULID_RE.exec(raw);
+  let name = String(wanted || '').trim();
+  let em;
+  if (m) {
+    const id = m[0].toUpperCase();
+    const resp = await fetch(EMOTE_API + id, { cache: 'no-cache' });
+    if (resp.status === 404) throw new Error('Эмоута с таким id на 7TV нет — проверь ссылку');
+    if (!resp.ok) throw new Error('7TV API: HTTP ' + resp.status);
+    const json = await resp.json();
+    // zero-width у 7TV помечается в наборе, а не у самого эмоута,
+    // поэтому у одиночного взять этот флаг неоткуда
+    em = { u: `https://cdn.7tv.app/emote/${id}/2x.webp`, z: 0, id };
+    if (!name) name = json.name || id;
+  } else {
+    if (!/^https?:\/\//i.test(raw)) {
+      throw new Error('Нужна ссылка на эмоут 7TV или прямая ссылка на картинку');
+    }
+    if (!name) throw new Error('Придумай имя — по нему эмоут вставляется в сообщение');
+    em = { u: raw, z: 0 };
+  }
+  if (/\s/.test(name)) throw new Error('Имя — одно слово без пробелов');
+
+  const { customEmotes } = await chrome.storage.sync.get({ customEmotes: {} });
+  // Занятое имя не перетираем: у обоих эмоутов остаётся своё полное имя
+  // с id, а голое достаётся тому, кто добавлен первым.
+  if (customEmotes[name]) {
+    const cur = customEmotes[name];
+    const same = (typeof cur === 'string' ? cur : cur.u) === em.u;
+    if (!same) {
+      let i = 2;
+      while (customEmotes[name + i]) i++;
+      name += i;
+    }
+  }
+  customEmotes[name] = em;
+  await chrome.storage.sync.set({ customEmotes });
+  return { name, id: em.id || '', full: em.id ? `${name}_${em.id}` : name };
+}
+
 // Картинки эмоутов держим в Cache API, а не только в памяти воркера:
 // MV3 усыпляет воркер через полминуты простоя вместе со всем, что он
 // накопил, и без этого каждая перезагрузка страницы качала эмоуты заново.
@@ -307,6 +355,10 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   }
   if (msg.type === 'probe-set') {
     reply(probeSet(msg.word));
+    return true;
+  }
+  if (msg.type === 'add-custom') {
+    reply(addCustom(msg.input, msg.name));
     return true;
   }
   if (msg.type === 'fetch-emote') {

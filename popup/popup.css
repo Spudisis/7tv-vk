@@ -41,6 +41,13 @@ h2 {
   text-transform: none;
 }
 
+.hint {
+  margin: 6px 0 0;
+  font-size: 11px;
+  line-height: 1.45;
+  color: #7a8090;
+}
+
 .switch {
   position: relative;
   width: 40px;

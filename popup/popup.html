@@ -62,13 +62,18 @@
   </details>
 
   <details>
-    <summary>Свои эмоуты (имя + ссылка на гифку)</summary>
+    <summary>Свои эмоуты (ссылка на 7TV или на картинку)</summary>
     <div class="row">
-      <input type="text" id="customName" placeholder="имяЭмоута">
-      <input type="text" id="customUrl" placeholder="https://…/emote.gif">
+      <input type="text" id="customName" placeholder="имя (необязательно)">
+      <input type="text" id="customUrl" placeholder="https://7tv.app/emotes/…">
       <button id="addCustom">+</button>
     </div>
     <div class="status" id="customStatus"></div>
+    <p class="hint">
+      Эмоут с 7TV получает постфикс с его id — такой эмоут увидит и сможет
+      добавить себе любой собеседник с расширением. Своя картинка по прямой
+      ссылке работает только у тебя.
+    </p>
     <ul id="customList"></ul>
   </details>
 

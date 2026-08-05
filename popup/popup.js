@@ -62,7 +62,13 @@ function activeEmotes({ sync, local }) {
     list.sort((a, b) => a.slug.localeCompare(b.slug) || a.em.u.localeCompare(b.em.u));
     map.set(n, list[0].em);
   }
-  for (const [n, v] of Object.entries(sync.customEmotes)) map.set(n, normEmote(v));
+  // у своего эмоута второе имя — с id эмоута на 7TV: по нему его узнаёт
+  // чужое расширение (см. content.js)
+  for (const [n, v] of Object.entries(sync.customEmotes)) {
+    const em = normEmote(v);
+    map.set(n, em);
+    if (em.id) map.set(`${n}_${em.id}`, em);
+  }
   return map;
 }
 
@@ -107,14 +113,22 @@ async function render() {
 
   const customList = $('#customList');
   customList.innerHTML = '';
-  for (const [n, u] of Object.entries(sync.customEmotes)) {
+  for (const [n, v] of Object.entries(sync.customEmotes)) {
+    const em = normEmote(v);
     const li = document.createElement('li');
     const img = document.createElement('img');
-    img.src = u;
+    img.src = em.u;
     img.alt = n;
     const name = document.createElement('span');
     name.className = 'name';
     name.textContent = n;
+    // полное имя с id — то, что уезжает в сообщение и работает у собеседника
+    const idTag = document.createElement('span');
+    idTag.className = 'muted';
+    idTag.textContent = em.id ? '_' + em.id : 'только у тебя';
+    idTag.title = em.id
+      ? `Полное имя: ${n}_${em.id} — по нему эмоут увидит собеседник с расширением`
+      : 'Картинка не с 7TV: у собеседника останется текстом';
     const del = document.createElement('button');
     del.className = 'del';
     del.textContent = '✕';
@@ -124,7 +138,7 @@ async function render() {
       await chrome.storage.sync.set({ customEmotes });
       render();
     });
-    li.append(img, name, del);
+    li.append(img, name, idTag, del);
     customList.appendChild(li);
   }
 
@@ -297,20 +311,17 @@ $('#addCustom').addEventListener('click', async () => {
   const url = $('#customUrl').value.trim();
   const status = $('#customStatus');
   status.classList.remove('error');
-  status.textContent = '';
-  if (!name || /\s/.test(name)) {
+  status.textContent = 'Добавляю…';
+  // разбор ссылки и запрос к 7TV — в фоновом скрипте, там же остальные ошибки
+  const resp = await sendMessage({ type: 'add-custom', input: url, name });
+  if (!resp || resp.error) {
     status.classList.add('error');
-    status.textContent = 'Имя — одно слово без пробелов';
+    status.textContent = (resp && resp.error) || 'Не получилось добавить эмоут';
     return;
   }
-  if (!/^https?:\/\//.test(url)) {
-    status.classList.add('error');
-    status.textContent = 'Ссылка должна начинаться с http(s)://';
-    return;
-  }
-  const { customEmotes } = await chrome.storage.sync.get({ customEmotes: {} });
-  customEmotes[name] = url;
-  await chrome.storage.sync.set({ customEmotes });
+  status.textContent = resp.id
+    ? `Добавлен «${resp.full}» — собеседник с расширением увидит его как картинку`
+    : `Добавлен «${resp.name}» — работает только у тебя`;
   $('#customName').value = '';
   $('#customUrl').value = '';
   render();

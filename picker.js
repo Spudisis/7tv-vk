@@ -16,13 +16,15 @@
   let searchInput = null;
   let body = null;
   let foot = null;
-  let favBox = null;
-  let favGrid = null;
-  let favEmpty = null;
+  let stripBox = null; // полоса над списком: «Недавние» или «Избранное»
+  let stripGrid = null;
+  let stripEmpty = null;
   let open = false;
   let groups = [];
   let favorites = []; // полные имена, порядок добавления
   let favSet = new Set();
+  let recent = []; // последние вставленные, свежие первыми
+  let stripTab = 'recent';
   let emoteIndex = new Map(); // полное имя -> url, чтобы найти картинку избранного
   let lastInput = null;
   let lastRange = null;
@@ -31,6 +33,7 @@
   let widgetOn = false; // кнопка спрятана настройкой — поповер не открываем
   let collapsedKeys = new Set(); // ключи свёрнутых наборов, помнятся между сессиями
   let pendingReveal = null; // {key, full} — доскроллить, когда набор соберётся
+  let nearObserver = null; // следит, какой набор подошёл к видимой части списка
 
   // --- последнее поле ввода ВК: куда вставлять эмоут ---
 
@@ -87,11 +90,32 @@
         r.collapse(false);
         sel.addRange(r);
       }
-      document.execCommand('insertText', false, name + ' ');
+      document.execCommand('insertText', false, spaceBefore(target) + name + ' ');
       flash(`${name} — вставлено`);
     } else {
       navigator.clipboard.writeText(name);
       flash(`${name} — скопировано, поле ввода не найдено`);
+    }
+    pushRecent(name);
+  }
+
+  // Эмоут — отдельное слово между пробелами. Без этой проверки вставка
+  // в конец «привет» давала «приветok»: код прилипал к предыдущему слову
+  // и подмена его не находила. Текст до курсора берём диапазоном от начала
+  // поля: ВК режет сообщение на несколько узлов, и соседний символ может
+  // лежать не в том же текстовом узле, где стоит курсор.
+  function spaceBefore(target) {
+    const sel = window.getSelection();
+    if (!sel.rangeCount) return '';
+    try {
+      const r = sel.getRangeAt(0);
+      const probe = document.createRange();
+      probe.selectNodeContents(target);
+      probe.setEnd(r.startContainer, r.startOffset);
+      const before = probe.toString();
+      return before && !/\s$/.test(before) ? ' ' : '';
+    } catch (e) {
+      return '';
     }
   }
 
@@ -105,7 +129,7 @@
     }, 1800);
   }
 
-  const FOOT_HINT = 'Клик по эмоуту — вставить в сообщение';
+  const FOOT_HINT = 'Вставить — клик или Enter, выбор — стрелками';
 
   // --- данные ---
 
@@ -144,7 +168,8 @@
     emoteIndex = new Map();
     for (const g of groups) {
       for (const [name, v] of Object.entries(g.emotes)) {
-        emoteIndex.set(fullName(g, name), typeof v === 'string' ? v : v.u);
+        const em = normEmote(v);
+        emoteIndex.set(fullName(g, name, em), em.u);
       }
     }
     setFavorites(sync.favorites);
@@ -152,9 +177,14 @@
     return widgetOn;
   }
 
-  // вставляем всегда полное имя с постфиксом — так эмоут не спутается
-  // с одноимённым из другого набора и с обычным словом
-  const fullName = (g, name) => (g.suffix ? `${name}_${g.suffix}` : name);
+  // Вставляем всегда полное имя: у эмоута набора это постфикс набора,
+  // у своего — id эмоута на 7TV, по которому его узнаёт чужое расширение.
+  // Так эмоут не спутается с одноимённым из другого набора и с обычным словом.
+  const fullName = (g, name, em) =>
+    em && em.id ? `${name}_${em.id}` : g.suffix ? `${name}_${g.suffix}` : name;
+
+  // старый кэш и часть своих эмоутов хранят просто строку-URL
+  const normEmote = (v) => (typeof v === 'string' ? { u: v, z: 0 } : v);
 
   function setFavorites(list) {
     favorites = Array.isArray(list) ? list : [];
@@ -164,10 +194,26 @@
   async function toggleFav(name) {
     const next = favSet.has(name) ? favorites.filter((n) => n !== name) : favorites.concat(name);
     setFavorites(next);
-    renderFavorites();
+    renderStrip();
     syncStars(name);
     await chrome.storage.sync.set({ favorites: next });
   }
+
+  // Недавние держим в local, а не в sync: вставка эмоута — частое действие,
+  // а у sync потолок в 120 записей в минуту на всё расширение.
+  const RECENT_MAX = 32;
+
+  function pushRecent(name) {
+    if (!name) return;
+    recent = [name, ...recent.filter((n) => n !== name)].slice(0, RECENT_MAX);
+    if (stripTab === 'recent') renderStrip();
+    chrome.storage.local.set({ recent });
+  }
+
+  // эмоут вставили автозаполнением — полоса «Недавние» ведётся здесь
+  document.addEventListener('vk7tv-used-emote', (e) => {
+    pushRecent((e.detail || {}).name);
+  });
 
   // --- DOM ---
 
@@ -206,34 +252,73 @@
       clearTimeout(filterTimer);
       filterTimer = setTimeout(applyFilter, 120);
     });
+    // Фокус всегда в поиске, поэтому перебор ячеек разбирается здесь.
+    // Влево-вправо без выбранной ячейки не перехватываем: там курсор
+    // ходит по набранному тексту.
     searchInput.addEventListener('keydown', (e) => {
       if (e.key === 'Escape') {
         e.stopPropagation();
         setOpen(false);
+        return;
       }
+      if (e.key === 'Enter') {
+        e.preventDefault();
+        const cell = selCell && selCell.isConnected ? selCell : firstCell();
+        if (cell) insertEmote(cell.dataset.name);
+        return;
+      }
+      const step =
+        e.key === 'ArrowDown' ? [0, 1]
+        : e.key === 'ArrowUp' ? [0, -1]
+        : selCell && e.key === 'ArrowRight' ? [1, 0]
+        : selCell && e.key === 'ArrowLeft' ? [-1, 0]
+        : null;
+      if (!step) return;
+      e.preventDefault();
+      moveSel(step[0], step[1]);
     });
 
-    // избранное живёт над прокруткой, поэтому всегда на виду
-    favBox = document.createElement('div');
-    favBox.className = 'vk7tv-picker-fav';
-    const favTitle = document.createElement('div');
-    favTitle.className = 'vk7tv-picker-fav-title';
-    favTitle.textContent = 'Избранное';
-    favGrid = document.createElement('div');
-    favGrid.className = 'vk7tv-picker-grid vk7tv-scroll';
-    favEmpty = document.createElement('div');
-    favEmpty.className = 'vk7tv-picker-fav-empty';
-    favEmpty.textContent = 'Наведи на эмоут и нажми ★ — он закрепится здесь';
-    favBox.append(favTitle, favGrid, favEmpty);
+    // полоса живёт над прокруткой списка, поэтому всегда на виду
+    stripBox = document.createElement('div');
+    stripBox.className = 'vk7tv-picker-fav';
+    const tabs = document.createElement('div');
+    tabs.className = 'vk7tv-picker-fav-title';
+    for (const [key, label] of [['recent', 'Недавние'], ['fav', 'Избранное']]) {
+      const tab = document.createElement('span');
+      tab.className = 'vk7tv-strip-tab';
+      tab.dataset.tab = key;
+      tab.textContent = label;
+      tab.addEventListener('click', () => setStripTab(key));
+      tabs.appendChild(tab);
+    }
+    stripGrid = document.createElement('div');
+    stripGrid.className = 'vk7tv-picker-grid vk7tv-scroll';
+    stripEmpty = document.createElement('div');
+    stripEmpty.className = 'vk7tv-picker-fav-empty';
+    stripBox.append(tabs, stripGrid, stripEmpty);
 
     body = document.createElement('div');
     body.className = 'vk7tv-picker-body vk7tv-scroll';
+    // Ячейки набора создаются, когда набор подходит к видимой части списка.
+    // Запас в 600px — чтобы при обычной прокрутке они успевали появиться
+    // до того, как набор покажется на экране.
+    nearObserver = new IntersectionObserver(
+      (entries) => {
+        for (const e of entries) {
+          if (!e.isIntersecting) continue;
+          const job = e.target._vk7tvJob;
+          if (!job || job.filled || job.running || collapsedKeys.has(job.key)) continue;
+          fillJobs([job], buildToken);
+        }
+      },
+      { root: body, rootMargin: '600px 0px' }
+    );
 
     foot = document.createElement('div');
     foot.className = 'vk7tv-picker-foot';
     foot.textContent = FOOT_HINT;
 
-    picker.append(head, searchInput, favBox, body, foot);
+    picker.append(head, searchInput, stripBox, body, foot);
     document.body.append(widget, picker);
 
     bindGrid();
@@ -246,11 +331,17 @@
   // Долгое нажатие показывает эмоут крупно: в сетке 32px не разобрать,
   // что именно за картинка, особенно у похожих вариантов одного эмоута.
   const PREVIEW_DELAY = 300;
+  // 4x тянем не сразу: при протяжке по сетке каждая ячейка под курсором
+  // иначе уходила бы в сеть, а показывается она доли секунды
+  const HI_DELAY = 160;
   const hiCache = new Map(); // cdn-url -> Promise<url версии 4x | null>
   let previewBox = null;
   let previewCell = null;
   let previewTimer = 0;
+  let hiTimer = 0;
   let previewShown = false;
+  let pressing = false; // кнопка мыши зажата на сетке — идёт протяжка
+  let armedCell = null; // ячейка, на которую заведён таймер превью
 
   function previewEl() {
     if (previewBox) return previewBox;
@@ -309,17 +400,22 @@
     img.src = src.src;
     placePreview(cell, box);
 
-    const p = hiRes(cell.dataset.cdn);
-    if (p) {
+    clearTimeout(hiTimer);
+    hiTimer = setTimeout(() => {
+      const p = hiRes(cell.dataset.cdn);
+      if (!p) return;
       p.then((u) => {
-        if (u && previewShown && label.textContent === name) img.src = u;
+        if (u && previewShown && previewCell === cell) img.src = u;
       });
-    }
+    }, HI_DELAY);
   }
 
   function hidePreview() {
     clearTimeout(previewTimer);
+    clearTimeout(hiTimer);
     previewTimer = 0;
+    pressing = false;
+    armedCell = null;
     if (previewBox) previewBox.style.display = 'none';
   }
 
@@ -383,14 +479,36 @@
       insertEmote(cell.dataset.name);
     });
 
+    // Фокус не забираем: вставка идёт в поле ВК, а перебор стрелками — из
+    // поиска, и клик по ячейке не должен его гасить. Уголок ресайза сюда
+    // не попадает — иначе поповер перестал бы растягиваться.
+    const NO_FOCUS =
+      '.vk7tv-fav, .vk7tv-picker-group-title, .vk7tv-strip-tab, .vk7tv-picker-cell';
+
     picker.addEventListener('pointerdown', (e) => {
-      if (e.target.closest('.vk7tv-fav, .vk7tv-picker-group-title')) {
-        e.preventDefault(); // не забираем фокус у поля ВК
-        return;
-      }
+      if (e.target.closest(NO_FOCUS)) e.preventDefault();
+      if (e.target.closest('.vk7tv-fav')) return; // звезда превью не открывает
       const cell = e.target.closest('.vk7tv-picker-cell');
       if (!cell) return;
       previewShown = false;
+      pressing = true;
+      armedCell = cell;
+      clearTimeout(previewTimer);
+      previewTimer = setTimeout(() => showPreview(cell), PREVIEW_DELAY);
+    });
+
+    // Не отпуская кнопку, ведём курсор по сетке — превью перескакивает
+    // на ячейку под курсором. В зазор между ячейками (2px) курсор попадает
+    // на каждом переходе, поэтому там оставляем прошлое превью.
+    picker.addEventListener('pointermove', (e) => {
+      if (!pressing) return;
+      const cell = e.target.closest('.vk7tv-picker-cell');
+      if (!cell || cell === armedCell) return;
+      armedCell = cell;
+      if (previewShown) {
+        showPreview(cell); // превью уже открыто — переключаем без задержки
+        return;
+      }
       clearTimeout(previewTimer);
       previewTimer = setTimeout(() => showPreview(cell), PREVIEW_DELAY);
     });
@@ -459,31 +577,47 @@
     }
   }
 
-  function renderFavorites() {
-    favGrid.innerHTML = '';
-    let shown = 0;
-    for (const name of favorites) {
-      const url = emoteIndex.get(name);
-      if (!url) continue; // набор отключили — эмоут просто не показываем
-      favGrid.appendChild(makeCell(name, url));
-      shown++;
-    }
-    favEmpty.style.display = shown ? 'none' : '';
-    filterFavorites();
+  const STRIP_EMPTY = {
+    recent: 'Здесь появятся эмоуты, которые ты вставлял последними',
+    fav: 'Наведи на эмоут и нажми ★ — он закрепится здесь',
+  };
+
+  function setStripTab(tab) {
+    stripTab = tab;
+    chrome.storage.local.set({ stripTab: tab });
+    renderStrip();
   }
 
-  // Избранного немного — тут перебор ячеек дешевле пересборки.
-  function filterFavorites() {
+  function renderStrip() {
+    for (const tab of stripBox.querySelectorAll('.vk7tv-strip-tab')) {
+      tab.classList.toggle('vk7tv-strip-tab-on', tab.dataset.tab === stripTab);
+    }
+    stripBox.classList.toggle('vk7tv-tab-fav', stripTab === 'fav');
+    stripGrid.innerHTML = '';
+    let shown = 0;
+    for (const name of stripTab === 'fav' ? favorites : recent) {
+      const url = emoteIndex.get(name);
+      if (!url) continue; // набор отключили — эмоут просто не показываем
+      stripGrid.appendChild(makeCell(name, url));
+      shown++;
+    }
+    stripEmpty.textContent = STRIP_EMPTY[stripTab];
+    stripEmpty.style.display = shown ? 'none' : '';
+    filterStrip();
+  }
+
+  // В полосе три десятка ячеек — тут перебор дешевле пересборки.
+  function filterStrip() {
     const q = searchInput.value.trim().toLowerCase();
     let shown = 0;
-    for (const cell of favGrid.querySelectorAll('.vk7tv-picker-cell')) {
+    for (const cell of stripGrid.querySelectorAll('.vk7tv-picker-cell')) {
       const hit = !q || cell.dataset.name.toLowerCase().includes(q);
       cell.style.display = hit ? '' : 'none';
       if (hit) shown++;
     }
     // при пустом поиске полоса остаётся с подсказкой, при поиске — только с находками
-    favBox.style.display = shown || !q ? '' : 'none';
-    favEmpty.style.display = shown || q ? 'none' : '';
+    stripBox.style.display = shown || !q ? '' : 'none';
+    stripEmpty.style.display = shown || q ? 'none' : '';
   }
 
   // Сколько ячеек создаём за кадр. Сборка тысяч картинок разом держала
@@ -550,31 +684,149 @@
   // ячейки-находки, а не все тысячи с последующим display: none.
   function renderBody() {
     const token = ++buildToken; // отменяет незаконченную прошлую сборку
+    selCell = null;
+    nearObserver.disconnect();
     body.innerHTML = '';
     const q = searchInput.value.trim().toLowerCase();
 
     const jobs = [];
+    let reached = false; // набор, к которому ведём прокрутку, уже встретился
     for (const g of groups) {
       const found = [];
       for (const [name, v] of Object.entries(g.emotes)) {
-        const full = fullName(g, name);
-        if (q && !full.toLowerCase().includes(q)) continue;
-        found.push([full, typeof v === 'string' ? v : v.u]);
+        const em = normEmote(v);
+        const full = fullName(g, name, em);
+        const low = full.toLowerCase();
+        if (q && !low.includes(q)) continue;
+        found.push([full, em.u, low]);
       }
       if (!found.length) continue;
+      // при поиске сперва совпадения с начала имени, потом короткие:
+      // порядок эмоутов в наборе для находок ничего не значит
+      if (q) {
+        found.sort((a, b) => {
+          const ax = a[2].startsWith(q) ? 0 : 1;
+          const bx = b[2].startsWith(q) ? 0 : 1;
+          if (ax !== bx) return ax - bx;
+          if (a[0].length !== b[0].length) return a[0].length - b[0].length;
+          return a[0].localeCompare(b[0]);
+        });
+      }
       const sec = document.createElement('div');
       sec.className = 'vk7tv-picker-group';
       const grid = document.createElement('div');
       grid.className = 'vk7tv-picker-grid';
       sec.append(groupTitle(g.title, found.length), grid);
-      // работа по сборке живёт на самой секции: раскрыли набор — берём её
-      // оттуда и досоздаём ячейки
+      // работа по сборке живёт на самой секции: раскрыли набор или он
+      // подошёл к видимой части — берём её оттуда и досоздаём ячейки
       sec._vk7tvJob = { key: g.key, sec, grid, found, at: 0, filled: false, running: false };
       body.appendChild(sec);
-      if (collapsedKeys.has(g.key)) sec.classList.add('vk7tv-collapsed');
-      else jobs.push(sec._vk7tvJob);
+      if (collapsedKeys.has(g.key)) {
+        sec.classList.add('vk7tv-collapsed');
+        continue;
+      }
+      nearObserver.observe(sec);
+      // Первый набор собираем сразу, не дожидаясь наблюдателя: он отвечает
+      // с задержкой, и поповер открывался бы пустым. Если ведём прокрутку
+      // к набору — так же собираем всё до него: высота того, что выше,
+      // должна быть окончательной, иначе прокрутка промахнётся.
+      if (!jobs.length || (pendingReveal && !reached)) {
+        jobs.push(sec._vk7tvJob);
+        if (pendingReveal && pendingReveal.key === g.key) reached = true;
+      }
     }
+    if (!body.firstChild) body.appendChild(emptyNote(q));
     fillJobs(jobs, token);
+  }
+
+  // Пустой список: без пояснения непонятно, то ли не нашлось, то ли
+  // расширение не загрузило наборы.
+  function emptyNote(q) {
+    const el = document.createElement('div');
+    el.className = 'vk7tv-picker-empty';
+    el.textContent = q
+      ? 'Ничего не найдено'
+      : 'Наборы не подключены — открой настройки расширения и добавь набор 7TV';
+    return el;
+  }
+
+  // --- перебор ячеек с клавиатуры ---
+
+  // Сетки в порядке показа: полоса сверху, дальше развёрнутые наборы.
+  function visibleGrids() {
+    const out = [];
+    if (stripBox.style.display !== 'none') out.push(stripGrid);
+    for (const sec of body.querySelectorAll('.vk7tv-picker-group:not(.vk7tv-collapsed)')) {
+      const grid = sec.querySelector('.vk7tv-picker-grid');
+      if (grid) out.push(grid);
+    }
+    return out;
+  }
+
+  // в полосе ячейки прячутся поиском, в наборах — пересобираются
+  function gridCells(grid) {
+    return [...grid.children].filter((c) => c.style.display !== 'none');
+  }
+
+  function selectCell(cell) {
+    if (selCell) selCell.classList.remove('vk7tv-sel');
+    selCell = cell || null;
+    if (!selCell) return;
+    selCell.classList.add('vk7tv-sel');
+    selCell.scrollIntoView({ block: 'nearest' });
+  }
+
+  function firstCell() {
+    for (const grid of visibleGrids()) {
+      const cells = gridCells(grid);
+      if (cells.length) return cells[0];
+    }
+    return null;
+  }
+
+  // Ячейки лежат в потоке с переносом строк: у соседней строки другой
+  // offsetTop. Из неё берём ближайшую по горизонтали к текущей.
+  function rowNeighbor(cells, i, dir) {
+    const top = cells[i].offsetTop;
+    const left = cells[i].offsetLeft;
+    let j = i;
+    while (j >= 0 && j < cells.length && cells[j].offsetTop === top) j += dir;
+    if (j < 0 || j >= cells.length) return null;
+    const rowTop = cells[j].offsetTop;
+    let best = cells[j];
+    for (let k = j; k >= 0 && k < cells.length && cells[k].offsetTop === rowTop; k += dir) {
+      if (Math.abs(cells[k].offsetLeft - left) < Math.abs(best.offsetLeft - left)) best = cells[k];
+    }
+    return best;
+  }
+
+  // Край сетки — переходим в соседнюю. Набор, до которого прокрутка ещё
+  // не дошла, пуст: первую порцию ячеек он создаёт сразу, её и хватает.
+  function edgeCell(grids, grid, dir) {
+    let gi = grids.indexOf(grid);
+    for (;;) {
+      gi += dir > 0 ? 1 : -1;
+      if (gi < 0 || gi >= grids.length) return null;
+      const job = grids[gi].parentElement._vk7tvJob;
+      if (job && !job.filled && !job.running) fillJobs([job], buildToken);
+      const cells = gridCells(grids[gi]);
+      if (cells.length) return dir > 0 ? cells[0] : cells[cells.length - 1];
+    }
+  }
+
+  function moveSel(dx, dy) {
+    const grids = visibleGrids();
+    if (!grids.length) return;
+    if (!selCell || !selCell.isConnected) return selectCell(firstCell());
+    const grid = selCell.parentElement;
+    const cells = gridCells(grid);
+    const i = cells.indexOf(selCell);
+    if (i < 0) return selectCell(firstCell());
+    if (dx) {
+      selectCell(cells[i + dx] || edgeCell(grids, grid, dx));
+      return;
+    }
+    selectCell(rowNeighbor(cells, i, dy) || edgeCell(grids, grid, dy));
   }
 
   function toggleGroup(sec) {
@@ -600,11 +852,10 @@
     let byUrl = null;
     for (const g of groups) {
       for (const [n, v] of Object.entries(g.emotes)) {
-        const full = fullName(g, n);
+        const em = normEmote(v);
+        const full = fullName(g, n, em);
         if (full === name) return { key: g.key, full };
-        if (!byUrl && url && (typeof v === 'string' ? v : v.u) === url) {
-          byUrl = { key: g.key, full };
-        }
+        if (!byUrl && url && em.u === url) byUrl = { key: g.key, full };
       }
     }
     return byUrl;
@@ -612,6 +863,7 @@
 
   let hitCell = null;
   let hitTimer = null;
+  let selCell = null; // ячейка, выбранная стрелками
 
   // Прокручиваем список к набору и подсвечиваем сам эмоут: в наборе на
   // тысячу картинок иначе непонятно, о какой из них речь.
@@ -658,7 +910,7 @@
     }
     dirty = true; // сетку пересобираем: без фильтра и с раскрытым набором
     setOpen(true);
-    filterFavorites();
+    filterStrip();
   }
 
   document.addEventListener('vk7tv-reveal-emote', (e) => {
@@ -667,7 +919,7 @@
   });
 
   function applyFilter() {
-    filterFavorites();
+    filterStrip();
     renderBody();
   }
 
@@ -747,7 +999,7 @@
 
   // Данные изменились: закрытый пикер соберётся при открытии, открытый — сразу.
   function refreshGrid() {
-    renderFavorites();
+    renderStrip();
     dirty = true;
     if (!open) return;
     dirty = false;
@@ -778,6 +1030,11 @@
 
   let reloadTimer = null;
   chrome.storage.onChanged.addListener((changes, area) => {
+    // недавние пишет и соседняя вкладка, и автозаполнение — обновляем полосу
+    if (area === 'local' && changes.recent) {
+      recent = changes.recent.newValue || [];
+      if (stripTab === 'recent') renderStrip();
+    }
     // позиция и размер — наши же записи, сетку из-за них не перерисовываем
     if (area === 'local' && !changes.setEmotes && !changes.globalEmotes) return;
     // избранное меняется часто (в том числе в соседней вкладке) — тысячу
@@ -785,7 +1042,7 @@
     const keys = Object.keys(changes);
     if (area === 'sync' && keys.length === 1 && keys[0] === 'favorites') {
       setFavorites(changes.favorites.newValue || []);
-      renderFavorites();
+      renderStrip();
       syncStars(); // из соседней вкладки могло измениться несколько имён сразу
       return;
     }
@@ -804,14 +1061,33 @@
     if (open) positionPicker();
   });
 
+  // Ctrl+Shift+E — открыть поповер, не отрываясь от клавиатуры; фокус
+  // сразу в поиске. На перехвате, иначе сочетание разберёт ВК.
+  document.addEventListener(
+    'keydown',
+    (e) => {
+      if (!widgetOn || e.code !== 'KeyE') return;
+      if (!e.ctrlKey || !e.shiftKey || e.altKey || e.metaKey) return;
+      e.preventDefault();
+      e.stopPropagation();
+      setOpen(!open);
+    },
+    true
+  );
+
   async function init() {
     buildUi();
-    const { widgetPos, pickerSize, collapsedGroups } = await chrome.storage.local.get({
+    const stored = await chrome.storage.local.get({
       widgetPos: null,
       pickerSize: null,
       collapsedGroups: [],
+      recent: [],
+      stripTab: 'recent',
     });
-    collapsedKeys = new Set(Array.isArray(collapsedGroups) ? collapsedGroups : []);
+    const { widgetPos, pickerSize } = stored;
+    collapsedKeys = new Set(Array.isArray(stored.collapsedGroups) ? stored.collapsedGroups : []);
+    recent = Array.isArray(stored.recent) ? stored.recent : [];
+    stripTab = stored.stripTab === 'fav' ? 'fav' : 'recent';
     if (pickerSize) {
       picker.style.width = pickerSize.w + 'px';
       picker.style.height = pickerSize.h + 'px';
