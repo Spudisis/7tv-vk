@@ -207,14 +207,14 @@
     favTitle.className = 'vk7tv-picker-fav-title';
     favTitle.textContent = 'Избранное';
     favGrid = document.createElement('div');
-    favGrid.className = 'vk7tv-picker-grid';
+    favGrid.className = 'vk7tv-picker-grid vk7tv-scroll';
     favEmpty = document.createElement('div');
     favEmpty.className = 'vk7tv-picker-fav-empty';
     favEmpty.textContent = 'Наведи на эмоут и нажми ★ — он закрепится здесь';
     favBox.append(favTitle, favGrid, favEmpty);
 
     body = document.createElement('div');
-    body.className = 'vk7tv-picker-body';
+    body.className = 'vk7tv-picker-body vk7tv-scroll';
 
     foot = document.createElement('div');
     foot.className = 'vk7tv-picker-foot';

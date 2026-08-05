@@ -1,0 +1,46 @@
+/* Полоса прокрутки в наших окошках: пикер, автоподстановка, окно расширения.
+   Системную браузер рисует по светлой теме страницы ВК — на тёмной панели
+   это широкая белая полоса.
+
+   Chrome и Safari красятся через ::-webkit-scrollbar; scrollbar-color им
+   не задаём — заданный, он с Chrome 121 отключает эти стили целиком.
+   Firefox ::-webkit-scrollbar не знает, поэтому получает свои свойства
+   отдельным блоком.
+
+   Красим только по классу vk7tv-scroll: файл подключён и к странице ВК,
+   а её собственную прокрутку трогать нельзя. */
+
+.vk7tv-scroll::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+.vk7tv-scroll::-webkit-scrollbar-track,
+.vk7tv-scroll::-webkit-scrollbar-corner {
+  background: transparent;
+}
+
+.vk7tv-scroll::-webkit-scrollbar-thumb {
+  background-color: #3a3d46;
+  /* прозрачная рамка вместо отступа: ползунок выглядит тонким,
+     но попасть по нему можно по всей ширине полосы */
+  border: 3px solid transparent;
+  background-clip: padding-box;
+  border-radius: 999px;
+  min-height: 28px; /* в длинном списке ползунок не должен схлопываться в точку */
+}
+
+.vk7tv-scroll::-webkit-scrollbar-thumb:hover {
+  background-color: #575c69;
+}
+
+.vk7tv-scroll::-webkit-scrollbar-thumb:active {
+  background-color: #4c8bf5;
+}
+
+@supports not selector(::-webkit-scrollbar) {
+  .vk7tv-scroll {
+    scrollbar-width: thin;
+    scrollbar-color: #3a3d46 transparent;
+  }
+}

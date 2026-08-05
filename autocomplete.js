@@ -18,7 +18,7 @@
   function ensureMenu() {
     if (menu && menu.isConnected) return menu;
     menu = document.createElement('div');
-    menu.className = 'vk7tv-ac';
+    menu.className = 'vk7tv-ac vk7tv-scroll';
     // не отдаём фокус при клике по панели — иначе поле ввода закроется раньше клика
     menu.addEventListener('mousedown', (e) => e.preventDefault());
     document.body.appendChild(menu);

@@ -3,9 +3,10 @@
 <head>
   <meta charset="UTF-8">
   <title>VK7TV</title>
+  <link rel="stylesheet" href="../scrollbar.css">
   <link rel="stylesheet" href="popup.css">
 </head>
-<body>
+<body class="vk7tv-scroll">
   <header>
     <h1>VK7TV</h1>
     <label class="switch" title="Включить/выключить замену эмоутов">
@@ -74,7 +75,7 @@
   <section>
     <h2>Все эмоуты <span class="muted" id="totalCount"></span></h2>
     <input type="text" id="search" placeholder="Поиск… (клик по эмоуту копирует имя)">
-    <div id="grid"></div>
+    <div id="grid" class="vk7tv-scroll"></div>
   </section>
 
   <footer>

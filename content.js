@@ -298,15 +298,55 @@
   // --- ограничение области: по умолчанию только переписка ---
   // По умолчанию подменяем коды только в мессенджере; галка «Показывать
   // эмоуты везде» снимает это ограничение. Определяем, переписка ли это.
-  // Раздел /im — это и список диалогов, и открытый чат: там подменяем всё.
-  // Вне его (лента, стена, комментарии, профили) — не трогаем ничего, кроме
-  // всплывающих окошек чата, которые ВК показывает поверх других страниц:
-  // их опознаём по классам-контейнерам с узнаваемыми кусками (im, msg, chat…).
+  // Раздел /im — это и список диалогов, и открытый чат: там подменяем всё,
+  // кроме обвязки (см. CHROME_TOKENS). Вне его (лента, стена, комментарии,
+  // профили) — не трогаем ничего, кроме всплывающих окошек чата, которые ВК
+  // показывает поверх других страниц: их опознаём по классам-контейнерам
+  // с узнаваемыми кусками (im, msg, chat…).
   const MSG_TOKENS = new Set([
     'im', 'msg', 'msgs', 'message', 'messages', 'messaging',
     'dialog', 'dialogs', 'chat', 'chats', 'convo', 'conversation',
     'conversations', 'peer', 'bubble', 'history',
   ]);
+
+  // Обвязка вокруг переписки: левое меню, шапка чата, вкладки, панели.
+  // Она лежит внутри тех же контейнеров, что и сама переписка, поэтому
+  // запрет перебивает разрешение на любой глубине: раньше весь раздел /im
+  // считался перепиской целиком, и картинки вставали в меню и в шапке.
+  // Список диалогов сюда не входит намеренно: превью последнего сообщения —
+  // текст пользователя, там подмена нужна.
+  const CHROME_TOKENS = new Set([
+    'nav', 'navs', 'navigation', 'navbar', 'navmenu', 'menu', 'menus',
+    'side', 'sidebar', 'aside', 'tab', 'tabs', 'tabbar', 'tablist',
+    'toolbar', 'appbar', 'actionbar', 'head', 'header', 'headers',
+    'footer', 'participants', 'members',
+  ]);
+
+  // Теги разметки — сигнал надёжнее классов: имена классов ВК меняет,
+  // а <nav> вокруг меню остаётся <nav>.
+  const CHROME_TAGS = new Set(['NAV', 'HEADER', 'ASIDE', 'FOOTER']);
+
+  // Счётчики: непрочитанные, бейдж вкладки, «N участника». В наборах есть
+  // эмоуты с числовыми именами («67»), и картинка вставала вместо числа.
+  // Текст обязан выглядеть числом: у строки списка диалогов класс бывает
+  // с «unread» целиком, а превью сообщения в ней подменять надо.
+  const COUNTER_TOKENS = new Set([
+    'counter', 'counters', 'count', 'counts', 'badge', 'badges', 'unread', 'unseen',
+  ]);
+  const COUNT_TEXT = /^\d{1,4}([.,]\d)?\s*[кkмm]?\s*\+?$/i;
+  const COUNTER_DEPTH = 3;
+
+  // «im-page» → im page, «MessagesConvo» → messages convo; режем по
+  // границам, чтобы «time»/«image» не читались как «im»
+  function tokensOf(el) {
+    if (!el.getAttribute) return null;
+    const raw =
+      (el.getAttribute('class') || '') + ' ' +
+      (el.getAttribute('data-testid') || '') + ' ' +
+      (el.getAttribute('role') || '') + ' ' + (el.id || '');
+    if (!raw.trim()) return null;
+    return raw.replace(/([a-z0-9])([A-Z])/g, '$1 $2').toLowerCase().split(/[^a-z0-9]+/);
+  }
 
   function inImSection() {
     const p = location.pathname;
@@ -314,17 +354,26 @@
   }
 
   function inMessenger(el) {
-    if (inImSection()) return true; // весь раздел мессенджера целиком
+    let allowed = false;
     for (let n = el, depth = 0; n && n !== document.body && depth < 20; n = n.parentElement, depth++) {
-      if (!n.getAttribute) continue;
-      const raw =
-        (n.getAttribute('class') || '') + ' ' +
-        (n.getAttribute('data-testid') || '') + ' ' + (n.id || '');
-      if (!raw.trim()) continue;
-      // «im-page» → im page, «MessagesConvo» → messages convo; режем по
-      // границам, чтобы «time»/«image» не читались как «im»
-      const tokens = raw.replace(/([a-z0-9])([A-Z])/g, '$1 $2').toLowerCase().split(/[^a-z0-9]+/);
-      for (const t of tokens) if (MSG_TOKENS.has(t)) return true;
+      if (CHROME_TAGS.has(n.tagName)) return false;
+      const tokens = tokensOf(n);
+      if (!tokens) continue;
+      for (const t of tokens) {
+        if (CHROME_TOKENS.has(t)) return false;
+        if (MSG_TOKENS.has(t)) allowed = true;
+      }
+    }
+    return allowed || inImSection();
+  }
+
+  // «7», «99+», «1,2К» внутри контейнера-счётчика — число, а не текст человека
+  function isCounter(el, text) {
+    if (text.length > 8 || !COUNT_TEXT.test(text)) return false;
+    for (let n = el, depth = 0; n && n !== document.body && depth <= COUNTER_DEPTH; n = n.parentElement, depth++) {
+      const tokens = tokensOf(n);
+      if (!tokens) continue;
+      for (const t of tokens) if (COUNTER_TOKENS.has(t)) return true;
     }
     return false;
   }
@@ -362,6 +411,9 @@
     if (SERVICE_TEXT.test(text.trim())) return;
     if (isServiceText(parent, 3)) return;
     if (isServiceLabel(parent)) return;
+    // Счётчик — часть той же обвязки: без галки «Показывать везде» картинка
+    // вместо числа ломает разметку, с галкой человек этого и просит.
+    if (!everywhere && isCounter(parent, text.trim())) return;
     // включён режим «только мессенджер» — вне переписки текст не трогаем
     if (!everywhere && !inMessenger(parent)) return;
 
