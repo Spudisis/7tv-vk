@@ -61,6 +61,11 @@ object EmoteCache {
 
     fun init(cacheDir: File) {
         dir = File(cacheDir, "img").apply { mkdirs() }
+        // обрывки прошлых записей (.tmp) — если запись оборвалась крэшем или
+        // выключением; настоящие файлы их не читают, но копить незачем
+        L.safe("уборка tmp") {
+            dir.listFiles { f -> f.name.endsWith(TMP) }?.forEach { it.delete() }
+        }
     }
 
     /**
@@ -75,14 +80,19 @@ object EmoteCache {
 
         val onDisk = File(dir, key)
         if (onDisk.isFile) {
-            // LRU дискового кэша: освежаем время файла, чтобы часто нужные
-            // картинки не вытеснялись первыми при подрезке
-            L.safe("освежить $key") { onDisk.setLastModified(System.currentTimeMillis()) }
-            return L.safe("чтение $key") {
-                val data = onDisk.readBytes()
+            val data = L.safe("чтение $key") { onDisk.readBytes() }
+            if (data != null && isDecodable(data)) {
+                // LRU дискового кэша: освежаем время файла, чтобы часто нужные
+                // картинки не вытеснялись первыми при подрезке
+                L.safe("освежить $key") { onDisk.setLastModified(System.currentTimeMillis()) }
                 bytes.put(key, data)
-                decode(data)
+                return decode(data)
             }
+            // Битый/обрезанный файл — источник молчаливого нативного вылета
+            // (ImageDecoder на таком не бросает исключение, а роняет процесс).
+            // Сносим и качаем заново — проваливаемся ниже к постановке в очередь.
+            L.i("битый файл кэша, пересоздаю: $key")
+            L.safe("удаление битой картинки") { onDisk.delete() }
         }
 
         // становимся в очередь ожидающих; качает только тот, кто пришёл первым
@@ -96,7 +106,15 @@ object EmoteCache {
             io.execute {
                 try {
                     val data = Net.bytes(url)
-                    File(dir, key).writeBytes(data)
+                    if (!isDecodable(data)) {
+                        // мусор вместо картинки (заглушка провайдера, обрезок) —
+                        // в кэш не пускаем, иначе потом уронит нативный декодер
+                        failed.add(key)
+                        synchronized(waiters) { waiters.remove(key) }
+                        L.v("битые данные картинки, не кэширую $url")
+                        return@execute
+                    }
+                    writeAtomic(key, data)
                     bytes.put(key, data)
                     accountAndTrim(data.size)
                     wake(key)
@@ -126,7 +144,11 @@ object EmoteCache {
                     val f = File(dir, key)
                     if (f.isFile) return@safe
                     val data = Net.bytes(url)
-                    f.writeBytes(data)
+                    if (!isDecodable(data)) {
+                        L.v("битые данные при предзагрузке $url")
+                        return@safe
+                    }
+                    writeAtomic(key, data)
                     accountAndTrim(data.size)
                     wake(key) // вдруг эту картинку уже кто-то ждёт на экране
                 }
@@ -181,6 +203,17 @@ object EmoteCache {
         trimDisk()
     }
 
+    /**
+     * Полный объём раздела, где лежит кэш, в МБ — верхняя граница для «своего»
+     * размера кэша в настройках. Если посчитать не вышло — щедрый запас, чтобы
+     * поле ввода не блокировало разумные значения.
+     */
+    fun deviceTotalMb(): Long =
+        L.safe("объём хранилища") {
+            val st = android.os.StatFs(dir.path)
+            st.blockCountLong * st.blockSizeLong / (1024L * 1024L)
+        } ?: 8192L
+
     /** Сколько сейчас занято кэшем картинок на диске, байт. Считать вне UI. */
     fun usageBytes(): Long {
         var sum = 0L
@@ -224,6 +257,51 @@ object EmoteCache {
         // анимированные webp с 7TV система тянет сама, свой декодер не нужен
         (d as? AnimatedImageDrawable)?.repeatCount = AnimatedImageDrawable.REPEAT_INFINITE
         d
+    }
+
+    private const val TMP = ".tmp"
+
+    /**
+     * Пишем через .tmp + rename. Оборванная запись (крэш, выключение телефона)
+     * не оставит обрезанный файл под настоящим именем — а именно такой файл
+     * потом роняет нативный декодер. rename в пределах одной папки атомарен.
+     */
+    private fun writeAtomic(key: String, data: ByteArray) {
+        val tmp = File(dir, key + TMP)
+        tmp.writeBytes(data)
+        if (!tmp.renameTo(File(dir, key))) {
+            // редкий путь: не переименовалось — на диск не кладём, но в памяти
+            // картинка уже есть (данные проверены), эту сессию покажем и так
+            L.safe("удаление tmp") { tmp.delete() }
+        }
+    }
+
+    /**
+     * Похоже ли на целую картинку. Нативный ImageDecoder на битых/обрезанных
+     * данных не бросает исключение, а роняет ВЕСЬ процесс (SIGSEGV) — поймать
+     * нечем, поэтому в декодер пускаем только то, что прошло эту проверку.
+     * Сверяем сигнатуру, а для webp (формат 7TV) — ещё и что файл не обрезан:
+     * в заголовке RIFF записан его размер.
+     */
+    private fun isDecodable(data: ByteArray): Boolean {
+        if (data.size < 16) return false
+        fun b(i: Int) = data[i].toInt() and 0xff
+        // RIFF ???? WEBP
+        if (b(0) == 0x52 && b(1) == 0x49 && b(2) == 0x46 && b(3) == 0x46 &&
+            b(8) == 0x57 && b(9) == 0x45 && b(10) == 0x42 && b(11) == 0x50
+        ) {
+            val declared = b(4).toLong() or (b(5).toLong() shl 8) or
+                (b(6).toLong() shl 16) or (b(7).toLong() shl 24)
+            // обрезан, если данных меньше заявленного; длиннее — не беда
+            return data.size.toLong() >= declared + 8
+        }
+        // PNG \x89PNG
+        if (b(0) == 0x89 && b(1) == 0x50 && b(2) == 0x4E && b(3) == 0x47) return true
+        // GIF8
+        if (b(0) == 0x47 && b(1) == 0x49 && b(2) == 0x46 && b(3) == 0x38) return true
+        // JPEG FF D8 FF
+        if (b(0) == 0xFF && b(1) == 0xD8 && b(2) == 0xFF) return true
+        return false
     }
 
     private fun keyOf(url: String): String =

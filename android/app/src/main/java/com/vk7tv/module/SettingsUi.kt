@@ -7,6 +7,7 @@ import android.graphics.drawable.ColorDrawable
 import android.graphics.drawable.GradientDrawable
 import android.os.Handler
 import android.os.Looper
+import android.text.InputType
 import android.view.Gravity
 import android.view.View
 import android.view.ViewGroup
@@ -176,6 +177,38 @@ object SettingsUi {
         val capBox = LinearLayout(ctx).apply { orientation = LinearLayout.HORIZONTAL }
         root.addView(capBox)
         drawCacheChips(ctx, capBox, cacheNote)
+
+        // Своё значение. Верхняя граница — объём раздела, где лежит кэш: больше
+        // хранилища телефона выставить нельзя, это бессмысленно.
+        val maxMb = EmoteCache.deviceTotalMb()
+        root.addView(note(ctx, "Или своё, МБ (не больше хранилища — ~${maxMb / 1024} ГБ):"))
+        val capField = field(ctx, "например, 1500").apply {
+            inputType = InputType.TYPE_CLASS_NUMBER
+        }
+        root.addView(capField)
+        root.addView(
+            button(ctx, "Задать размер") {
+                val entered = capField.text.toString().trim().toIntOrNull()
+                if (entered == null) {
+                    toast(ctx, "Впиши число в МБ")
+                    return@button
+                }
+                val top = maxMb.coerceAtMost(Int.MAX_VALUE.toLong()).toInt().coerceAtLeast(64)
+                val mb = entered.coerceIn(64, top)
+                Config.setCacheCapMb(mb)
+                main.post {
+                    capField.setText("")
+                    drawCacheChips(ctx, capBox, cacheNote)
+                }
+                refreshCacheSize(cacheNote) // знаменатель «из N» — сразу
+                busy(ctx, "Применяем…") {
+                    EmoteCache.enforceCap() // уменьшили — лишнее подрежем сейчас
+                    main.post { refreshCacheSize(cacheNote) }
+                    if (mb != entered) "Ужал до ${capLabel(mb)} — больше не поместится"
+                    else "Потолок кэша: ${capLabel(mb)}"
+                }
+            },
+        )
         root.addView(
             button(ctx, "Очистить кэш картинок") {
                 busy(ctx, "Чистим кэш…") {
