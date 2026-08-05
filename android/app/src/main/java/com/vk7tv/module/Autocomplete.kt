@@ -144,7 +144,7 @@ object Autocomplete {
         iv.setPadding(p, p, p, p)
         iv.contentDescription = e.name
         bind(iv, e)
-        iv.setOnClickListener { L.safe("вставка автоподсказки") { accept(input, e.name) } }
+        iv.setOnClickListener { L.safe("вставка автоподсказки") { accept(input, e.insertName) } }
         return iv
     }
 

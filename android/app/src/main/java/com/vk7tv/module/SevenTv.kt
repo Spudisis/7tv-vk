@@ -33,6 +33,41 @@ object SevenTv {
         throw RuntimeException("Вставь ссылку на набор с 7tv.app или ник стримера на Twitch")
     }
 
+    /** Свой эмоут: имя с 7TV и id из ссылки. */
+    class EmoteRef(val id: String, val name: String, val url: String)
+
+    /**
+     * Эмоут по ссылке с 7TV или прямой ссылке на картинку. Только не на
+     * UI-потоке. У картинки не с 7TV id взять неоткуда — такой эмоут
+     * останется только у того, кто его добавил, и имя для него обязательно.
+     */
+    fun resolveEmote(input: String, wanted: String): EmoteRef {
+        val str = input.trim()
+        val m = ULID.find(str)
+        if (m != null) {
+            val id = m.value.uppercase()
+            val raw = try {
+                Net.get("https://7tv.io/v3/emotes/$id")
+            } catch (e: Net.HttpException) {
+                throw if (e.code == 404) {
+                    NotFound("Эмоута с таким id на 7TV нет — проверь ссылку")
+                } else {
+                    RuntimeException("7TV сейчас недоступен (код ${e.code}), попробуй позже")
+                }
+            }
+            val json = JSONObject(raw)
+            val name = wanted.ifEmpty { json.optString("name").ifEmpty { id } }
+            return EmoteRef(id, name, Shared.url(id))
+        }
+        if (!str.startsWith("http://") && !str.startsWith("https://")) {
+            throw RuntimeException("Вставь ссылку на эмоут с 7tv.app или прямую ссылку на картинку")
+        }
+        if (wanted.isEmpty()) {
+            throw RuntimeException("Придумай имя — по нему эмоут вставляется в сообщение")
+        }
+        return EmoteRef("", wanted, str)
+    }
+
     fun bySetId(id: String, slugOverride: String?): SetRef {
         val raw = try {
             Net.get("https://7tv.io/v3/emote-sets/$id")

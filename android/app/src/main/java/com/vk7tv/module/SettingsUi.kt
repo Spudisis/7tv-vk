@@ -166,6 +166,52 @@ object SettingsUi {
             },
         )
 
+        root.addView(label(ctx, "СВОИ ЭМОУТЫ"))
+        root.addView(
+            note(
+                ctx,
+                "Эмоут с 7TV получает второе имя с его id: xyz и xyz_01H4RX… — одно и то же. " +
+                    "Полное имя нарисуется у любого собеседника с VK7TV, даже если этого " +
+                    "эмоута у него нет, и он сможет добавить его себе из пикера. " +
+                    "Прямая ссылка на картинку работает только у тебя.",
+            ),
+        )
+        val customBox = LinearLayout(ctx).apply { orientation = LinearLayout.VERTICAL }
+        root.addView(customBox)
+        drawCustom(ctx, customBox)
+
+        val customName = field(ctx, "Имя (необязательно, возьмём с 7TV)")
+        root.addView(customName)
+        val customUrl = field(ctx, "Ссылка на эмоут с 7tv.app")
+        root.addView(customUrl)
+        root.addView(
+            button(ctx, "Добавить свой эмоут") {
+                val raw = customUrl.text.toString().trim()
+                if (raw.isEmpty()) return@button
+                val wanted = customName.text.toString().trim()
+                if (wanted.contains(' ')) {
+                    toast(ctx, "Имя — одно слово без пробелов")
+                    return@button
+                }
+                busy(ctx, "Ищем эмоут…") {
+                    val ref = SevenTv.resolveEmote(raw, wanted)
+                    val name = Config.addCustom(ref.name, ref.url, ref.id)
+                    Shared.forget(ref.id)
+                    Boot.reload(ctx)
+                    main.post {
+                        customName.setText("")
+                        customUrl.setText("")
+                        drawCustom(ctx, customBox)
+                    }
+                    if (ref.id.isEmpty()) {
+                        "«$name» добавлен — работает только у тебя"
+                    } else {
+                        "«${name}_${ref.id}» добавлен — собеседник увидит картинку"
+                    }
+                }
+            },
+        )
+
         root.addView(label(ctx, "ПЕРЕНОС ИЗ РАСШИРЕНИЯ"))
         root.addView(
             note(
@@ -432,6 +478,49 @@ object SettingsUi {
                         busy(ctx, "Обновляем…") {
                             Boot.reload(ctx)
                             "Набор убран"
+                        }
+                    }
+                },
+            )
+            box.addView(row)
+        }
+    }
+
+    /** Свои эмоуты: имя, полное имя с id и «убрать». */
+    private fun drawCustom(ctx: Context, box: LinearLayout) {
+        box.removeAllViews()
+        if (Config.custom.isEmpty()) {
+            box.addView(note(ctx, "Пока ни одного. Вставь ссылку на эмоут ниже."))
+            return
+        }
+        for ((name, c) in Config.custom) {
+            val row = LinearLayout(ctx).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER_VERTICAL
+                setPadding(0, dp(ctx, 4), 0, dp(ctx, 4))
+            }
+            row.addView(
+                TextView(ctx).apply {
+                    text = if (c.id.isEmpty()) "$name  ·  только у тебя" else c.fullName(name)
+                    setTextColor(Ui.TEXT)
+                    textSize = 13f
+                    isSingleLine = true
+                    ellipsize = android.text.TextUtils.TruncateAt.MIDDLE
+                },
+                LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f),
+            )
+            row.addView(
+                TextView(ctx).apply {
+                    text = "убрать"
+                    setTextColor(Ui.MUTED)
+                    textSize = 12f
+                    setPadding(dp(ctx, 8), dp(ctx, 4), dp(ctx, 4), dp(ctx, 4))
+                    setOnClickListener {
+                        Config.removeCustom(name)
+                        drawCustom(ctx, box)
+                        busy(ctx, "Обновляем…") {
+                            Boot.reload(ctx)
+                            "Эмоут убран"
                         }
                     }
                 },

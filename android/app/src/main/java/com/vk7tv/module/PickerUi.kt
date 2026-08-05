@@ -163,6 +163,15 @@ object PickerUi {
         rootView.addView(sugBox)
         fillSuggests(ctx, sugBox)
 
+        // чужие свои эмоуты: слово «имя_id» уже нарисовано картинкой,
+        // отсюда его можно положить себе
+        val sharedBox = LinearLayout(ctx).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(Inject.dp(ctx, 10), 0, Inject.dp(ctx, 10), Inject.dp(ctx, 6))
+        }
+        rootView.addView(sharedBox)
+        fillShared(ctx, sharedBox)
+
         // полоса избранного живёт над сеткой и не уезжает при прокрутке
         val favBox = LinearLayout(ctx).apply {
             orientation = LinearLayout.VERTICAL
@@ -456,6 +465,101 @@ object PickerUi {
     }
 
     /**
+     * Чужие свои эмоуты, попавшиеся в чате: картинка уже нарисована по id
+     * из самого слова, а отсюда эмоут кладётся в «Свои» — после этого он
+     * есть в пикере и в автоподсказках, и работает голым именем.
+     */
+    private fun fillShared(ctx: Context, box: LinearLayout) {
+        box.removeAllViews()
+        val hits = Shared.hits()
+        if (hits.isEmpty()) {
+            box.visibility = View.GONE
+            return
+        }
+        box.visibility = View.VISIBLE
+        box.addView(label(ctx, "МОЖНО ДОБАВИТЬ СЕБЕ"))
+        val row = LinearLayout(ctx).apply { orientation = LinearLayout.HORIZONTAL }
+        for (h in hits) row.addView(sharedCard(ctx, h, Inject.dp(ctx, 130)) { fillShared(ctx, box) })
+        box.addView(
+            HorizontalScrollView(ctx).apply {
+                isHorizontalScrollBarEnabled = false
+                addView(row)
+            },
+        )
+    }
+
+    private fun sharedCard(
+        ctx: Context,
+        h: Shared.Hit,
+        width: Int,
+        onChanged: () -> Unit,
+    ): View {
+        val card = LinearLayout(ctx).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(Inject.dp(ctx, 8), Inject.dp(ctx, 6), Inject.dp(ctx, 8), Inject.dp(ctx, 6))
+            background = GradientDrawable().apply {
+                setColor(Ui.BG2)
+                cornerRadius = Inject.dp(ctx, 8).toFloat()
+                setStroke(Inject.dp(ctx, 1), Ui.BORDER)
+            }
+            val lp = LinearLayout.LayoutParams(width, ViewGroup.LayoutParams.WRAP_CONTENT)
+            lp.rightMargin = Inject.dp(ctx, 8)
+            layoutParams = lp
+        }
+
+        val top = LinearLayout(ctx).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+        }
+        val iv = ImageView(ctx)
+        iv.layoutParams = LinearLayout.LayoutParams(Inject.dp(ctx, 32), Inject.dp(ctx, 32))
+        iv.scaleType = ImageView.ScaleType.FIT_CENTER
+        iv.contentDescription = h.name
+        bind(iv, Emote(h.name, h.url, false))
+        top.addView(iv)
+        top.addView(
+            TextView(ctx).apply {
+                text = h.name
+                setTextColor(Ui.TEXT)
+                textSize = 12f
+                isSingleLine = true
+                ellipsize = TextUtils.TruncateAt.END
+            },
+            LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply {
+                leftMargin = Inject.dp(ctx, 8)
+            },
+        )
+        card.addView(top)
+
+        card.addView(
+            TextView(ctx).apply {
+                text = "+ себе"
+                setTextColor(Ui.ACCENT)
+                textSize = 12f
+                typeface = Typeface.DEFAULT_BOLD
+                val lp = LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT,
+                    ViewGroup.LayoutParams.WRAP_CONTENT,
+                )
+                lp.topMargin = Inject.dp(ctx, 4)
+                layoutParams = lp
+            },
+        )
+
+        card.setOnClickListener {
+            L.safe("добавление чужого эмоута") {
+                val name = Config.addCustom(h.name, h.url, h.id)
+                Shared.forget(h.id)
+                onChanged()
+                // сети тут нет: картинка уже собрана из id, набор не качается
+                Boot.reload(ctx)
+                toast(ctx, "«$name» добавлен в свои")
+            }
+        }
+        return card
+    }
+
+    /**
      * Карточка предложения: превью, ник и число эмоутов, «подключить» по тапу
      * и крестик — скрыть набор из предложений насовсем ([Suggest.dismiss]),
      * не выключая саму функцию.
@@ -592,7 +696,7 @@ object PickerUi {
         val cell = Inject.dp(ctx, CELL_DP)
         for (e in found) {
             row.addView(
-                cellView(ctx, e, cell, { insert(input, e.name) }) {
+                cellView(ctx, e, cell, { insert(input, e.insertName) }) {
                     Config.toggleFavorite(e.name)
                     fillFavorites(ctx, box, input)
                     toast(ctx, "${e.name} убран из избранного")
@@ -1008,7 +1112,7 @@ object PickerUi {
             val e = items[position]
             iv.contentDescription = e.name
             bind(iv, e)
-            iv.setOnClickListener { onTap(e.name) }
+            iv.setOnClickListener { onTap(e.insertName) }
             iv.setOnLongClickListener {
                 L.safe("избранное") { onFav(e.name) }
                 true

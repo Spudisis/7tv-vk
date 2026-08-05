@@ -189,6 +189,16 @@ object Replacer {
                 }
             }
 
+            // Чужой свой эмоут: имя и id прямо в слове, картинка собирается
+            // из id. Проверяем до предложений — иначе такое слово ушло бы
+            // в Suggest и потратило запрос к API впустую.
+            if (Shared.looksLike(text, start, end)) {
+                val em = Shared.consider(text.subSequence(start, end).toString())
+                (found.hits ?: ArrayList<Hit>(4).also { found.hits = it })
+                    .add(Hit(start, end, em))
+                continue
+            }
+
             // эмоута нет, но слово похоже на «имя_ник» — вдруг у собеседника
             // подключён набор, которого нет у нас
             if (!Config.suggest) continue

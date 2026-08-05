@@ -5,7 +5,17 @@ import java.io.File
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.Executors
 
-class Emote(val name: String, val url: String, val zeroWidth: Boolean)
+/**
+ * [insertName] — что уходит в поле ввода. Отличается от [name] только у своих
+ * эмоутов с id: показываем короткое имя, а вставляем полное, иначе у
+ * собеседника вместо картинки останется текст.
+ */
+class Emote(
+    val name: String,
+    val url: String,
+    val zeroWidth: Boolean,
+    val insertName: String = name,
+)
 
 /**
  * Вкладка пикера. [setId] есть только у подключённых наборов — по нему вкладку
@@ -165,12 +175,23 @@ object Emotes {
             fresh[name] = pick.second
         }
 
+        // У своего эмоута, добавленного ссылкой с 7TV, есть второе имя с id
+        // эмоута — по нему его узнаёт чужой клиент, у которого этого эмоута
+        // нет. В пикер кладём именно его: вставленное слово должно доехать
+        // до собеседника, а голое имя работает только у тех, у кого эмоут
+        // уже есть под таким же именем.
         if (Config.custom.isNotEmpty()) {
             val own = ArrayList<Emote>()
-            for ((name, url) in Config.custom) {
-                val e = Emote(name, url, false)
-                fresh[name] = e
-                own.add(e)
+            for ((name, c) in Config.custom) {
+                val full = c.fullName(name)
+                // по голому имени эмоут рисуется, но в поле уходит полное:
+                // короткое работает только у тех, у кого этот эмоут уже есть
+                fresh[name] = Emote(name, c.url, false, full)
+                if (full != name) {
+                    fresh[full] = Emote(full, c.url, false)
+                    freshAlias[full] = name
+                }
+                own.add(Emote(full, c.url, false))
             }
             builtGroups.add(Group("Свои эмоуты", own))
         }

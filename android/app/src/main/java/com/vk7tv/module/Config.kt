@@ -9,6 +9,15 @@ import org.json.JSONObject
 class SetRef(val id: String, val slug: String, val name: String)
 
 /**
+ * Свой эмоут. [id] есть, если добавляли ссылкой с 7TV: из него собирается
+ * второе имя (`xyz_01H4RX…`), по которому эмоут узнаёт чужой клиент.
+ * У картинки не с 7TV id пустой — такой эмоут работает только у владельца.
+ */
+class CustomEmote(val url: String, val id: String) {
+    fun fullName(name: String): String = if (id.isEmpty()) name else "${name}_$id"
+}
+
+/**
  * Конфиг живёт в SharedPreferences самого ВК.
  *
  * Сначала он лежал в приложении-модуле и читался через XSharedPreferences,
@@ -104,7 +113,7 @@ object Config {
         private set
 
     @Volatile
-    var custom: Map<String, String> = emptyMap()
+    var custom: Map<String, CustomEmote> = emptyMap()
         private set
 
     @Volatile
@@ -277,6 +286,42 @@ object Config {
         dismissedSuggests = list
     }
 
+    /**
+     * Добавить свой эмоут. Занятое имя не перетираем: у обоих остаётся своё
+     * полное имя с id, а голое достаётся тому, кто добавлен первым, — поэтому
+     * второму приписываем номер. Возвращает имя, под которым эмоут записан.
+     *
+     * Формат в хранилище — тот же, что у расширения ({u, z, id}), чтобы
+     * резервная копия ходила между ними без правок.
+     */
+    fun addCustom(name: String, url: String, id: String): String {
+        var key = name
+        val cur = custom[key]
+        if (cur != null && cur.url != url) {
+            var i = 2
+            while (custom.containsKey(key + i)) i++
+            key += i
+        }
+        val next = LinkedHashMap(custom)
+        next[key] = CustomEmote(url, id)
+        writeCustom(next)
+        return key
+    }
+
+    fun removeCustom(name: String) {
+        if (!custom.containsKey(name)) return
+        writeCustom(custom.filterKeys { it != name })
+    }
+
+    private fun writeCustom(map: Map<String, CustomEmote>) {
+        val o = JSONObject()
+        for ((name, e) in map) {
+            o.put(name, JSONObject().put("u", e.url).put("z", 0).put("id", e.id))
+        }
+        prefs?.edit()?.putString(KEY_CUSTOM, o.toString())?.apply()
+        custom = map
+    }
+
     fun isFavorite(name: String): Boolean = favorites.contains(name)
 
     /** Возвращает новое состояние: true — эмоут теперь в избранном. */
@@ -347,15 +392,16 @@ object Config {
         return out
     }
 
-    private fun parseCustom(raw: String?): Map<String, String> {
-        val out = HashMap<String, String>()
+    private fun parseCustom(raw: String?): Map<String, CustomEmote> {
+        val out = LinkedHashMap<String, CustomEmote>()
         L.safe("разбор своих эмоутов") {
             val o = JSONObject(raw ?: "{}")
             for (k in o.keys()) {
-                // расширение хранит либо строку-URL, либо {u, z}
+                // расширение хранит либо строку-URL, либо {u, z, id}
                 val v = o.get(k)
                 val url = if (v is JSONObject) v.optString("u") else v.toString()
-                if (url.isNotEmpty()) out[k] = url
+                val id = if (v is JSONObject) v.optString("id") else ""
+                if (url.isNotEmpty()) out[k] = CustomEmote(url, id)
             }
         }
         return out
