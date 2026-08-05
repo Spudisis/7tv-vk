@@ -146,6 +146,7 @@ object Replacer {
         // оригинал носим с собой: по нему перерисуемся, когда докачается картинка
         result.setSpan(Vk7tvMark(text), 0, result.length, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
         replaced++
+        Scope.noteReplaced(tv) // под диагностикой: в какой вьюхе встала картинка
         return result
     }
 
