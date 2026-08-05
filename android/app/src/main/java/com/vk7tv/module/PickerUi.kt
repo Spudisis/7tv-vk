@@ -364,6 +364,30 @@ object PickerUi {
             },
             LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f),
         )
+        // Настройки живут на долгом тапе по кнопке 7VK — жест непроверяемый:
+        // о нём знает только тот, кому сказали. Тут же они на виду.
+        row.addView(
+            TextView(ctx).apply {
+                text = "⚙"
+                setTextColor(Ui.MUTED)
+                textSize = 16f
+                setPadding(Inject.dp(ctx, 8), 0, Inject.dp(ctx, 8), 0)
+                contentDescription = "Настройки VK7TV"
+                setOnClickListener { v ->
+                    L.safe("настройки из пикера") {
+                        // Якорь берём до закрытия и не из пикера: после dismiss
+                        // его вьюхи отвязаны от окна, и поповер настроек на такой
+                        // уже не открыть. Поле ввода живёт в окне клиента.
+                        val host = currentInput ?: v
+                        // пикер закрываем: два поповера поверх панели ввода
+                        // перекрывали бы друг друга
+                        popup?.dismiss()
+                        popup = null
+                        SettingsUi.show(host)
+                    }
+                }
+            },
+        )
         row.addView(
             TextView(ctx).apply {
                 text = "✕"
