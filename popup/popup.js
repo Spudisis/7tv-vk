@@ -84,12 +84,14 @@ async function render() {
 
   const setList = $('#setList');
   setList.innerHTML = '';
-  sync.sets.forEach((s, i) => {
+  for (const s of sync.sets) {
     const li = document.createElement('li');
     // Порядок наборов — это и порядок разделов в пикере, и приоритет:
     // при коллизии кодов голое имя достаётся набору выше по списку.
-    const up = moveButton('↑', 'Выше', i > 0, () => moveSet(i, -1));
-    const down = moveButton('↓', 'Ниже', i < sync.sets.length - 1, () => moveSet(i, 1));
+    // Строку можно перетащить, поэтому у неё есть id набора.
+    li.draggable = true;
+    li.dataset.setId = s.id;
+    li.title = 'Перетащи, чтобы поменять наборы местами';
     const name = document.createElement('span');
     name.className = 'name';
     name.textContent = s.name;
@@ -110,9 +112,9 @@ async function render() {
       await sendMessage({ type: 'remove-set', id: s.id });
       render();
     });
-    li.append(name, slug, count, up, down, del);
+    li.append(name, slug, count, del);
     setList.appendChild(li);
-  });
+  }
 
   const customList = $('#customList');
   customList.innerHTML = '';
@@ -148,26 +150,45 @@ async function render() {
   renderGrid(activeEmotes(state));
 }
 
-function moveButton(glyph, title, enabled, onClick) {
-  const b = document.createElement('button');
-  b.className = 'move';
-  b.textContent = glyph;
-  b.title = title;
-  b.disabled = !enabled;
-  b.addEventListener('click', onClick);
-  return b;
-}
+// --- перетаскивание наборов в списке ---
+// Строки короткие и стоят стопкой, поэтому хватает штатного drag and drop:
+// тащим строку, соседи расступаются, на отпускании пишем новый порядок.
 
-// Меняем набор местами с соседним. Пишем весь список: пикер и модуль
-// читают порядок именно из него.
-async function moveSet(i, dir) {
+let dragRow = null;
+
+$('#setList').addEventListener('dragstart', (e) => {
+  dragRow = e.target.closest('li');
+  if (!dragRow) return;
+  dragRow.classList.add('dragging');
+  e.dataTransfer.effectAllowed = 'move';
+  // без данных Firefox не начинает перетаскивание вовсе
+  e.dataTransfer.setData('text/plain', dragRow.dataset.setId || '');
+});
+
+$('#setList').addEventListener('dragover', (e) => {
+  if (!dragRow) return;
+  e.preventDefault();
+  const over = e.target.closest('li');
+  if (!over || over === dragRow) return;
+  const r = over.getBoundingClientRect();
+  const before = e.clientY < r.top + r.height / 2;
+  over.parentNode.insertBefore(dragRow, before ? over : over.nextSibling);
+});
+
+$('#setList').addEventListener('drop', (e) => e.preventDefault());
+
+$('#setList').addEventListener('dragend', async () => {
+  if (!dragRow) return;
+  dragRow.classList.remove('dragging');
+  dragRow = null;
+  const ids = [...$('#setList').children].map((li) => li.dataset.setId);
   const { sets } = await chrome.storage.sync.get({ sets: [] });
-  const j = i + dir;
-  if (j < 0 || j >= sets.length) return;
-  [sets[i], sets[j]] = [sets[j], sets[i]];
-  await chrome.storage.sync.set({ sets });
+  const byId = new Map(sets.map((s) => [s.id, s]));
+  const next = ids.map((id) => byId.get(id)).filter(Boolean);
+  if (next.length !== sets.length) return render(); // список разошёлся — перерисуем
+  await chrome.storage.sync.set({ sets: next });
   render();
-}
+});
 
 let gridEmotes = new Map();
 function renderGrid(map) {

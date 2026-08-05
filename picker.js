@@ -474,15 +474,10 @@
         toggleFav(star.parentElement.dataset.name);
         return;
       }
-      const move = e.target.closest('.vk7tv-picker-move');
-      if (move) {
-        e.stopPropagation(); // иначе заголовок заодно свернёт набор
-        moveSet(move.dataset.setId, Number(move.dataset.move));
-        return;
-      }
       const head = e.target.closest('.vk7tv-picker-group-title');
       if (head) {
-        toggleGroup(head.parentElement);
+        if (justDragged) justDragged = false; // это хвост перетаскивания
+        else toggleGroup(head.parentElement);
         return;
       }
       const cell = e.target.closest('.vk7tv-picker-cell');
@@ -504,6 +499,11 @@
     picker.addEventListener('pointerdown', (e) => {
       if (e.target.closest(NO_FOCUS)) e.preventDefault();
       if (e.target.closest('.vk7tv-fav')) return; // звезда превью не открывает
+      const head = e.target.closest('.vk7tv-picker-group-title');
+      if (head) {
+        if (e.button === 0) dragStart(head, e);
+        return;
+      }
       const cell = e.target.closest('.vk7tv-picker-cell');
       if (!cell) return;
       previewShown = false;
@@ -512,6 +512,10 @@
       clearTimeout(previewTimer);
       previewTimer = setTimeout(() => showPreview(cell), PREVIEW_DELAY);
     });
+
+    picker.addEventListener('pointermove', dragMove);
+    picker.addEventListener('pointerup', dragEnd);
+    picker.addEventListener('pointercancel', dragEnd);
 
     // Не отпуская кнопку, ведём курсор по сетке — превью перескакивает
     // на ячейку под курсором. В зазор между ячейками (2px) курсор попадает
@@ -662,32 +666,72 @@
     cnt.textContent = count;
     h.append(chevron, name, cnt);
     if (g.setId) {
-      h.append(moveButton(g.setId, -1, '↑'), moveButton(g.setId, 1, '↓'));
+      h.classList.add('vk7tv-movable');
+      h.title = 'Перетащи, чтобы поменять наборы местами; клик — свернуть';
     }
     return h;
   }
 
-  function moveButton(setId, dir, glyph) {
-    const b = document.createElement('span');
-    b.className = 'vk7tv-picker-move';
-    b.textContent = glyph;
-    b.dataset.move = dir;
-    b.dataset.setId = setId;
-    b.title = dir < 0 ? 'Поднять набор' : 'Опустить набор';
-    return b;
+  // --- перетаскивание наборов ---
+
+  let drag = null;
+  let justDragged = false; // чтобы клик после перетаскивания не свернул набор
+
+  // Секции наборов сверху вниз; глобальный и «свои» не двигаются.
+  function setSections() {
+    return [...body.querySelectorAll('.vk7tv-picker-group')].filter((s) => s._vk7tvSetId);
+  }
+
+  function dragStart(head, e) {
+    const sec = head.parentElement;
+    if (!sec._vk7tvSetId) return;
+    drag = { sec, head, y: e.clientY, moved: false };
+    head.setPointerCapture(e.pointerId);
+  }
+
+  function dragMove(e) {
+    if (!drag) return;
+    if (!drag.moved) {
+      if (Math.abs(e.clientY - drag.y) < 4) return;
+      drag.moved = true;
+      // Сетки прячем на время перетаскивания: иначе, чтобы поднять набор
+      // на одну позицию, заголовок пришлось бы тащить через тысячу ячеек.
+      body.classList.add('vk7tv-reorder');
+      drag.sec.classList.add('vk7tv-dragging');
+    }
+    for (const s of setSections()) {
+      if (s === drag.sec) continue;
+      const r = s.getBoundingClientRect();
+      if (e.clientY < r.top || e.clientY > r.bottom) continue;
+      body.insertBefore(drag.sec, e.clientY < r.top + r.height / 2 ? s : s.nextSibling);
+      break;
+    }
+  }
+
+  function dragEnd() {
+    if (!drag) return;
+    const { sec, moved } = drag;
+    drag = null;
+    body.classList.remove('vk7tv-reorder');
+    sec.classList.remove('vk7tv-dragging');
+    if (!moved) return; // не тащили — это обычный клик по заголовку
+    justDragged = true;
+    saveOrder();
   }
 
   // Порядок наборов хранится в самом списке наборов: его же читают попап
   // и модуль для приложения. Он задаёт и приоритет: при коллизии кодов
   // голое имя достаётся набору выше по списку.
-  async function moveSet(setId, dir) {
+  async function saveOrder() {
+    const ids = setSections().map((s) => s._vk7tvSetId);
     const { sets } = await chrome.storage.sync.get({ sets: [] });
-    const i = sets.findIndex((s) => s.id === setId);
-    const j = i + dir;
-    if (i < 0 || j < 0 || j >= sets.length) return;
-    [sets[i], sets[j]] = [sets[j], sets[i]];
+    const byId = new Map(sets.map((s) => [s.id, s]));
+    const next = ids.map((id) => byId.get(id)).filter(Boolean);
+    // Набор без единого эмоута секции не получил (не докачался) — его в
+    // списке нет, и он должен остаться, а не пропасть при перестановке.
+    for (const s of sets) if (!ids.includes(s.id)) next.push(s);
     // сетку пересоберёт слушатель хранилища — он же обновит попап
-    await chrome.storage.sync.set({ sets });
+    await chrome.storage.sync.set({ sets: next });
   }
 
   // Ячейки наборов, порциями по кадрам. Свёрнутый набор ячеек не создаёт
@@ -763,6 +807,7 @@
       // работа по сборке живёт на самой секции: раскрыли набор или он
       // подошёл к видимой части — берём её оттуда и досоздаём ячейки
       sec._vk7tvJob = { key: g.key, sec, grid, found, at: 0, filled: false, running: false };
+      sec._vk7tvSetId = g.setId || ''; // пусто у глобального и «своих» — их не двигаем
       body.appendChild(sec);
       if (collapsedKeys.has(g.key)) {
         sec.classList.add('vk7tv-collapsed');

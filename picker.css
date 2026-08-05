@@ -222,6 +222,17 @@
   color: #e4e6eb;
 }
 
+/* набор можно тащить за заголовок; touch-action — чтобы на сенсорном
+   экране это было перетаскивание, а не прокрутка списка */
+.vk7tv-picker-group-title.vk7tv-movable {
+  cursor: grab;
+  touch-action: none;
+}
+
+.vk7tv-picker-group-title.vk7tv-movable:active {
+  cursor: grabbing;
+}
+
 .vk7tv-picker-chevron {
   font-size: 9px;
   line-height: 1;
@@ -246,23 +257,19 @@
   color: #7a8090;
 }
 
-/* стрелки перестановки: видны при наведении на заголовок, чтобы не рябить
-   в списке из десятка наборов */
-.vk7tv-picker-move {
-  padding: 0 2px;
-  font-size: 12px;
-  line-height: 1;
-  color: #5c6270;
-  opacity: 0;
-  transition: opacity 0.12s ease;
+/* Пока тащим набор, сетки всех наборов спрятаны: заголовки складываются
+   в короткий список, и набор переносится одним движением. */
+.vk7tv-picker-body.vk7tv-reorder .vk7tv-picker-grid {
+  display: none;
 }
 
-.vk7tv-picker-group-title:hover .vk7tv-picker-move {
-  opacity: 1;
+.vk7tv-picker-body.vk7tv-reorder .vk7tv-picker-group {
+  border-bottom: 1px solid #26282f;
 }
 
-.vk7tv-picker-move:hover {
-  color: #4c8bf5;
+.vk7tv-picker-group.vk7tv-dragging .vk7tv-picker-group-title {
+  background: #2c2e36;
+  color: #e4e6eb;
 }
 
 .vk7tv-picker-group.vk7tv-collapsed .vk7tv-picker-grid {
