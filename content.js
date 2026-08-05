@@ -17,6 +17,15 @@
     return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
   }
 
+  // Границы слов — как у /\s/ в регекспе, но без создания строки на символ
+  function isWs(c) {
+    return (
+      c === 32 || (c >= 9 && c <= 13) || c === 160 || c === 5760 ||
+      (c >= 8192 && c <= 8202) || c === 8232 || c === 8233 || c === 8239 ||
+      c === 8287 || c === 12288 || c === 65279
+    );
+  }
+
   // старый кэш и «свои» эмоуты хранят просто строку-URL
   function normEmote(v) {
     return typeof v === 'string' ? { u: v, z: 0 } : v;
@@ -151,6 +160,11 @@
     // как подстроку, поэтому такой текст регексп поймает и без него. Голое
     // имя теперь есть у любого кода из наборов, так что постфиксные имена
     // в префильтр можно не класть.
+    //
+    // Одна альтернатива из всех имён выглядит тяжело, но пробовали заменить
+    // её проходом по словам с отсевом по длине и первому символу — на тексте
+    // страницы это оказалось в разы медленнее и на 1000 имён, и на 20000:
+    // движок регекспов отсеивает по первым символам сразу по всей строке.
     const probes = [];
     for (const [n, v] of emoteMap) if (!v.a || !emoteMap.has(v.a)) probes.push(n);
     testRegex = probes.length ? new RegExp(probes.map(escapeRegex).join('|')) : null;
@@ -426,51 +440,65 @@
     // контейнера сообщения.
     if (!everywhere && !inMessenger(parent)) return;
 
-    // эмоут — это отдельное «слово», разделённое пробелами (как в 7TV);
-    // zero-width эмоут после обычного накладывается поверх него,
-    // пробел между ними при рендере съедается
-    const parts = text.split(/(\s+)/);
-    let changed = false;
+    // Эмоут — это отдельное «слово», разделённое пробелами (как в 7TV);
+    // zero-width эмоут после обычного накладывается поверх него, пробел
+    // между ними при рендере съедается.
+    //
+    // Идём по словам сами, а не через split: фрагмент создаётся только
+    // с первой находки, а текст до неё переносится одним куском (flushed —
+    // граница уже перенесённого). Слова без находок не стоят ни одной
+    // аллокации.
+    const n = text.length;
     const frag = document.createDocumentFragment();
+    let changed = false;
+    let flushed = 0;
     let lastStack = null;
-    let pendingWs = '';
-    const seen = new Set(); // одно и то же слово в сообщении — один чип
-    for (const part of parts) {
-      if (!part) continue;
-      if (/^\s+$/.test(part)) {
-        pendingWs += part;
-        continue;
+    let seen = null; // одно и то же слово в сообщении — один чип
+    let i = 0;
+    while (i < n) {
+      while (i < n && isWs(text.charCodeAt(i))) i++;
+      if (i >= n) break;
+      const start = i;
+      let underscore = false;
+      while (i < n) {
+        const c = text.charCodeAt(i);
+        if (isWs(c)) break;
+        if (c === 95) underscore = true;
+        i++;
       }
-      const em = emoteMap.get(part);
-      if (!em) {
-        if (pendingWs) frag.appendChild(document.createTextNode(pendingWs));
-        pendingWs = '';
-        frag.appendChild(document.createTextNode(part));
-        // эмоута нет — может, он из набора, который у нас не подключён
-        const chip = suggestFor(part, seen);
-        if (chip) {
-          frag.appendChild(chip);
+      const end = i;
+      const em = emoteMap.get(text.slice(start, end));
+
+      if (em) {
+        if (em.z && lastStack) {
+          lastStack.appendChild(makeEmote(text.slice(start, end), em.u, true));
+          flushed = end; // пробел перед zero-width во фрагмент не попадает
           changed = true;
+          continue;
         }
-        lastStack = null;
-        continue;
-      }
-      if (em.z && lastStack) {
-        lastStack.appendChild(makeEmote(part, em.u, true));
-        pendingWs = '';
+        if (start > flushed) frag.appendChild(document.createTextNode(text.slice(flushed, start)));
+        lastStack = document.createElement('span');
+        lastStack.className = 'vk7tv-stack';
+        lastStack.appendChild(makeEmote(text.slice(start, end), em.u, false));
+        frag.appendChild(lastStack);
+        flushed = end;
         changed = true;
         continue;
       }
-      if (pendingWs) frag.appendChild(document.createTextNode(pendingWs));
-      pendingWs = '';
-      lastStack = document.createElement('span');
-      lastStack.className = 'vk7tv-stack';
-      lastStack.appendChild(makeEmote(part, em.u, false));
-      frag.appendChild(lastStack);
+
+      lastStack = null;
+      // эмоута нет — может, он из набора, который у нас не подключён
+      if (!suggestOn || !underscore) continue;
+      if (!seen) seen = new Set();
+      const chip = suggestFor(text.slice(start, end), seen);
+      if (!chip) continue;
+      frag.appendChild(document.createTextNode(text.slice(flushed, end)));
+      frag.appendChild(chip);
+      flushed = end;
       changed = true;
     }
-    if (pendingWs) frag.appendChild(document.createTextNode(pendingWs));
     if (!changed) return;
+    if (flushed < n) frag.appendChild(document.createTextNode(text.slice(flushed)));
 
     // ВК — React-приложение: удалять текстовый узел из-под него нельзя,
     // React упадёт на следующей перерисовке (removeChild) и уронит кусок

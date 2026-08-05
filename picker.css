@@ -172,6 +172,15 @@
   padding: 0 10px 8px;
 }
 
+/* Группа набора: браузер не считает раскладку и не рисует то, что сейчас
+   за пределами видимой части списка. На нескольких тысячах эмоутов без
+   этого дёргается прокрутка. contain-intrinsic-size с «auto» — высота
+   запоминается после первой отрисовки, поэтому полоса не прыгает. */
+.vk7tv-picker-group {
+  content-visibility: auto;
+  contain-intrinsic-size: auto 200px;
+}
+
 .vk7tv-picker-group-title {
   position: sticky;
   top: 0;

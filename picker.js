@@ -27,6 +27,7 @@
   let lastInput = null;
   let lastRange = null;
   let flashTimer = null;
+  let filterTimer = null;
 
   // --- последнее поле ввода ВК: куда вставлять эмоут ---
 
@@ -156,7 +157,7 @@
     const next = favSet.has(name) ? favorites.filter((n) => n !== name) : favorites.concat(name);
     setFavorites(next);
     renderFavorites();
-    syncStars();
+    syncStars(name);
     await chrome.storage.sync.set({ favorites: next });
   }
 
@@ -192,7 +193,11 @@
     searchInput.className = 'vk7tv-picker-search';
     searchInput.type = 'text';
     searchInput.placeholder = 'Поиск эмоута…';
-    searchInput.addEventListener('input', applyFilter);
+    // Пересборка сетки на каждую букву — лишняя работа, пока фраза набирается.
+    searchInput.addEventListener('input', () => {
+      clearTimeout(filterTimer);
+      filterTimer = setTimeout(applyFilter, 120);
+    });
     searchInput.addEventListener('keydown', (e) => {
       if (e.key === 'Escape') {
         e.stopPropagation();
@@ -223,6 +228,7 @@
     picker.append(head, searchInput, favBox, body, foot);
     document.body.append(widget, picker);
 
+    bindGrid();
     makeDraggable(widget, true);
     makeDraggable(head, false);
     sizeObserver.observe(picker);
@@ -317,6 +323,9 @@
   // элемент в видимую часть, и превью из-за этого не открывалось.
   // Отпускания кнопки достаточно — превью живёт ровно пока держишь.
 
+  // Ячейка — только разметка, без своих слушателей: в наборах бывают тысячи
+  // эмоутов, и пять обработчиков на ячейку складывались в десятки тысяч.
+  // Нажатия разбирает один общий обработчик на поповере (bindGrid).
   function makeCell(name, url) {
     const cell = document.createElement('span');
     cell.className = 'vk7tv-picker-cell';
@@ -332,47 +341,71 @@
     img.loading = 'lazy';
     img.decoding = 'async';
     img.draggable = false;
-    img.addEventListener('click', () => {
-      // зажали ради превью — вставлять не надо
-      if (previewShown) {
-        previewShown = false;
-        return;
-      }
-      insertEmote(name);
-    });
-    img.addEventListener('pointerdown', () => {
-      previewShown = false;
-      clearTimeout(previewTimer);
-      previewTimer = setTimeout(() => showPreview(cell), PREVIEW_DELAY);
-    });
-
-    // CSP ВК режет cdn.7tv.app — перезагружаем через фоновый скрипт (blob:)
-    img.addEventListener('error', () => {
-      if (img.dataset.fb) return cell.remove();
-      img.dataset.fb = '1';
-      const st = window.__vk7tv;
-      if (!st || !st.resolveEmote) return cell.remove();
-      st.resolveEmote(url).then((u) => {
-        if (!u) return cell.remove();
-        img.src = u;
-        // запоминаем рабочий blob: — копия в избранном не пойдёт за ним заново
-        if (emoteIndex.get(name) === url) emoteIndex.set(name, u);
-      });
-    });
 
     const star = document.createElement('button');
     star.className = 'vk7tv-fav';
     star.type = 'button';
     star.appendChild(starIcon());
     setStar(star, favSet.has(name));
-    star.addEventListener('pointerdown', (e) => e.preventDefault()); // не забираем фокус у поля ВК
-    star.addEventListener('click', (e) => {
-      e.stopPropagation();
-      toggleFav(name);
-    });
 
     cell.append(img, star);
     return cell;
+  }
+
+  function bindGrid() {
+    picker.addEventListener('click', (e) => {
+      const star = e.target.closest('.vk7tv-fav');
+      if (star) {
+        e.stopPropagation();
+        toggleFav(star.parentElement.dataset.name);
+        return;
+      }
+      const cell = e.target.closest('.vk7tv-picker-cell');
+      if (!cell) return;
+      // зажали ради превью — вставлять не надо
+      if (previewShown) {
+        previewShown = false;
+        return;
+      }
+      insertEmote(cell.dataset.name);
+    });
+
+    picker.addEventListener('pointerdown', (e) => {
+      if (e.target.closest('.vk7tv-fav')) {
+        e.preventDefault(); // не забираем фокус у поля ВК
+        return;
+      }
+      const cell = e.target.closest('.vk7tv-picker-cell');
+      if (!cell) return;
+      previewShown = false;
+      clearTimeout(previewTimer);
+      previewTimer = setTimeout(() => showPreview(cell), PREVIEW_DELAY);
+    });
+
+    // CSP ВК режет cdn.7tv.app — перезагружаем через фоновый скрипт (blob:).
+    // Слушаем на перехвате: error не всплывает.
+    picker.addEventListener(
+      'error',
+      (e) => {
+        const img = e.target;
+        if (!(img instanceof HTMLImageElement)) return;
+        const cell = img.parentElement;
+        if (!cell || !cell.classList.contains('vk7tv-picker-cell')) return;
+        if (img.dataset.fb) return cell.remove();
+        img.dataset.fb = '1';
+        const st = window.__vk7tv;
+        if (!st || !st.resolveEmote) return cell.remove();
+        const url = img.src;
+        const name = cell.dataset.name;
+        st.resolveEmote(url).then((u) => {
+          if (!u) return cell.remove();
+          img.src = u;
+          // запоминаем рабочий blob: — копия в избранном не пойдёт за ним заново
+          if (emoteIndex.get(name) === url) emoteIndex.set(name, u);
+        });
+      },
+      true
+    );
   }
 
   // залитая звезда картинкой, а не глифом: у ★ ink сидит выше середины строки
@@ -400,8 +433,14 @@
     btn.title = on ? 'Убрать из избранного' : 'В избранное';
   }
 
-  function syncStars() {
-    for (const cell of picker.querySelectorAll('.vk7tv-picker-cell')) {
+  // Звёздочка меняется у одного имени, а ячеек в сетке тысячи: перебирать
+  // все ради одной — заметная пауза на каждое нажатие звезды. Имя в селекторе
+  // экранируем: в именах эмоутов бывают скобки и двоеточия.
+  function syncStars(name) {
+    const sel = name
+      ? `.vk7tv-picker-cell[data-name="${CSS.escape(name)}"]`
+      : '.vk7tv-picker-cell';
+    for (const cell of picker.querySelectorAll(sel)) {
       const star = cell.querySelector('.vk7tv-fav');
       if (star) setStar(star, favSet.has(cell.dataset.name));
     }
@@ -417,12 +456,46 @@
       shown++;
     }
     favEmpty.style.display = shown ? 'none' : '';
-    applyFilter();
+    filterFavorites();
   }
 
+  // Избранного немного — тут перебор ячеек дешевле пересборки.
+  function filterFavorites() {
+    const q = searchInput.value.trim().toLowerCase();
+    let shown = 0;
+    for (const cell of favGrid.querySelectorAll('.vk7tv-picker-cell')) {
+      const hit = !q || cell.dataset.name.toLowerCase().includes(q);
+      cell.style.display = hit ? '' : 'none';
+      if (hit) shown++;
+    }
+    // при пустом поиске полоса остаётся с подсказкой, при поиске — только с находками
+    favBox.style.display = shown || !q ? '' : 'none';
+    favEmpty.style.display = shown || q ? 'none' : '';
+  }
+
+  // Сколько ячеек создаём за кадр. Сборка тысяч картинок разом держала
+  // страницу заблокированной; порциями поповер открывается сразу и
+  // дозаполняется на глазах.
+  const CHUNK = 120;
+  let buildToken = 0;
+  let dirty = true; // данные изменились, сетку надо собрать заново
+
+  // Сетка собирается только под текущий поиск: при запросе создаются
+  // ячейки-находки, а не все тысячи с последующим display: none.
   function renderBody() {
+    const token = ++buildToken; // отменяет незаконченную прошлую сборку
     body.innerHTML = '';
+    const q = searchInput.value.trim().toLowerCase();
+
+    const jobs = [];
     for (const g of groups) {
+      const found = [];
+      for (const [name, v] of Object.entries(g.emotes)) {
+        const full = fullName(g, name);
+        if (q && !full.toLowerCase().includes(q)) continue;
+        found.push([full, typeof v === 'string' ? v : v.u]);
+      }
+      if (!found.length) continue;
       const sec = document.createElement('div');
       sec.className = 'vk7tv-picker-group';
       const h = document.createElement('div');
@@ -430,35 +503,34 @@
       h.textContent = g.title;
       const grid = document.createElement('div');
       grid.className = 'vk7tv-picker-grid';
-      for (const [name, v] of Object.entries(g.emotes)) {
-        grid.appendChild(makeCell(fullName(g, name), typeof v === 'string' ? v : v.u));
-      }
       sec.append(h, grid);
       body.appendChild(sec);
+      jobs.push({ grid, found, at: 0 });
     }
-    renderFavorites();
+
+    let ji = 0;
+    const step = () => {
+      if (token !== buildToken) return; // пошла новая сборка
+      let budget = CHUNK;
+      while (ji < jobs.length && budget > 0) {
+        const job = jobs[ji];
+        const frag = document.createDocumentFragment();
+        while (job.at < job.found.length && budget > 0) {
+          frag.appendChild(makeCell(job.found[job.at][0], job.found[job.at][1]));
+          job.at++;
+          budget--;
+        }
+        job.grid.appendChild(frag);
+        if (job.at >= job.found.length) ji++;
+      }
+      if (ji < jobs.length) requestAnimationFrame(step);
+    };
+    step(); // первую порцию кладём сразу — поповер не открывается пустым
   }
 
   function applyFilter() {
-    const q = searchInput.value.trim().toLowerCase();
-    let favShown = 0;
-    for (const cell of favGrid.querySelectorAll('.vk7tv-picker-cell')) {
-      const hit = !q || cell.dataset.name.toLowerCase().includes(q);
-      cell.style.display = hit ? '' : 'none';
-      if (hit) favShown++;
-    }
-    // при пустом поиске полоса остаётся с подсказкой, при поиске — только с находками
-    favBox.style.display = favShown || !q ? '' : 'none';
-    favEmpty.style.display = favShown || q ? 'none' : '';
-    for (const sec of body.querySelectorAll('.vk7tv-picker-group')) {
-      let shown = 0;
-      for (const cell of sec.querySelectorAll('.vk7tv-picker-cell')) {
-        const hit = !q || cell.dataset.name.toLowerCase().includes(q);
-        cell.style.display = hit ? '' : 'none';
-        if (hit) shown++;
-      }
-      sec.style.display = shown ? '' : 'none';
-    }
+    filterFavorites();
+    renderBody();
   }
 
   // --- позиционирование и перетаскивание ---
@@ -523,9 +595,25 @@
     hidePreview();
     picker.style.display = open ? 'flex' : 'none';
     if (open) {
+      // Сетку собираем при первом открытии, а не на загрузке страницы:
+      // тысячи ячеек стоили заметной паузы каждой вкладке ВК, даже если
+      // пикер в ней ни разу не открывали.
+      if (dirty) {
+        dirty = false;
+        renderBody();
+      }
       positionPicker();
       searchInput.focus();
     }
+  }
+
+  // Данные изменились: закрытый пикер соберётся при открытии, открытый — сразу.
+  function refreshGrid() {
+    renderFavorites();
+    dirty = true;
+    if (!open) return;
+    dirty = false;
+    renderBody();
   }
 
   // --- ресайз поповера (нативный CSS resize за правый нижний угол) ---
@@ -560,7 +648,7 @@
     if (area === 'sync' && keys.length === 1 && keys[0] === 'favorites') {
       setFavorites(changes.favorites.newValue || []);
       renderFavorites();
-      syncStars();
+      syncStars(); // из соседней вкладки могло измениться несколько имён сразу
       return;
     }
     clearTimeout(reloadTimer);
@@ -568,7 +656,7 @@
       const show = await loadGroups();
       widget.style.display = show ? 'flex' : 'none';
       if (!show) setOpen(false);
-      renderBody();
+      refreshGrid();
     }, 200);
   });
 
@@ -595,7 +683,7 @@
     }
     const show = await loadGroups();
     widget.style.display = show ? 'flex' : 'none';
-    renderBody();
+    refreshGrid();
   }
 
   init();
