@@ -13,7 +13,7 @@ class SetRef(val id: String, val slug: String, val name: String)
  * второе имя (`xyz_01H4RX…`), по которому эмоут узнаёт чужой клиент.
  * У картинки не с 7TV id пустой — такой эмоут работает только у владельца.
  */
-class CustomEmote(val url: String, val id: String) {
+class CustomEmote(val url: String, val id: String, val zeroWidth: Boolean = false) {
     fun fullName(name: String): String = if (id.isEmpty()) name else "${name}_$id"
 }
 
@@ -294,7 +294,7 @@ object Config {
      * Формат в хранилище — тот же, что у расширения ({u, z, id}), чтобы
      * резервная копия ходила между ними без правок.
      */
-    fun addCustom(name: String, url: String, id: String): String {
+    fun addCustom(name: String, url: String, id: String, zeroWidth: Boolean = false): String {
         var key = name
         val cur = custom[key]
         if (cur != null && cur.url != url) {
@@ -303,7 +303,7 @@ object Config {
             key += i
         }
         val next = LinkedHashMap(custom)
-        next[key] = CustomEmote(url, id)
+        next[key] = CustomEmote(url, id, zeroWidth)
         writeCustom(next)
         return key
     }
@@ -316,7 +316,7 @@ object Config {
     private fun writeCustom(map: Map<String, CustomEmote>) {
         val o = JSONObject()
         for ((name, e) in map) {
-            o.put(name, JSONObject().put("u", e.url).put("z", 0).put("id", e.id))
+            o.put(name, JSONObject().put("u", e.url).put("z", if (e.zeroWidth) 1 else 0).put("id", e.id))
         }
         prefs?.edit()?.putString(KEY_CUSTOM, o.toString())?.apply()
         custom = map
@@ -401,7 +401,8 @@ object Config {
                 val v = o.get(k)
                 val url = if (v is JSONObject) v.optString("u") else v.toString()
                 val id = if (v is JSONObject) v.optString("id") else ""
-                if (url.isNotEmpty()) out[k] = CustomEmote(url, id)
+                val zw = v is JSONObject && v.optInt("z") != 0
+                if (url.isNotEmpty()) out[k] = CustomEmote(url, id, zw)
             }
         }
         return out

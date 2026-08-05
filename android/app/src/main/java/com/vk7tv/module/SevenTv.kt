@@ -34,7 +34,22 @@ object SevenTv {
     }
 
     /** Свой эмоут: имя с 7TV и id из ссылки. */
-    class EmoteRef(val id: String, val name: String, val url: String)
+    class EmoteRef(
+        val id: String,
+        val name: String,
+        val url: String,
+        val zeroWidth: Boolean = false,
+    )
+
+    // У самого эмоута zero-width — это флаг 256, а у эмоута внутри набора тот
+    // же смысл несёт флаг 1 (см. Emotes.fetchSet): это разные наборы флагов.
+    const val ZERO_WIDTH = 256
+
+    /** Флаг zero-width по id. Только не на UI-потоке: ходит в сеть. */
+    fun zeroWidthOf(id: String): Boolean {
+        val json = JSONObject(Net.get("https://7tv.io/v3/emotes/$id"))
+        return (json.optInt("flags") and ZERO_WIDTH) != 0
+    }
 
     /**
      * Эмоут по ссылке с 7TV или прямой ссылке на картинку. Только не на
@@ -57,7 +72,8 @@ object SevenTv {
             }
             val json = JSONObject(raw)
             val name = wanted.ifEmpty { json.optString("name").ifEmpty { id } }
-            return EmoteRef(id, name, Shared.url(id))
+            val zw = (json.optInt("flags") and ZERO_WIDTH) != 0
+            return EmoteRef(id, name, Shared.url(id), zw)
         }
         if (!str.startsWith("http://") && !str.startsWith("https://")) {
             throw RuntimeException("Вставь ссылку на эмоут с 7tv.app или прямую ссылку на картинку")

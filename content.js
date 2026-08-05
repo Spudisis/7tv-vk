@@ -336,6 +336,23 @@
   const EMOTE_ID_RE = /^(.+)_([0-9A-HJKMNP-TV-Z]{26})$/i;
   const cdnUrl = (id) => `https://cdn.7tv.app/emote/${id}/2x.webp`;
 
+  // Zero-width — это флаг эмоута на 7TV, в самом слове его нет. Спрашиваем
+  // фоновый скрипт один раз на id: пока ответа нет, эмоут рисуется обычным,
+  // а с ответом страница перерисовывается и он встаёт поверх предыдущего.
+  const idZero = new Map(); // id -> 0 | 1 | PENDING
+
+  function zeroWidthOf(id) {
+    const known = idZero.get(id);
+    if (known !== undefined) return known === PENDING ? 0 : known;
+    idZero.set(id, PENDING);
+    chrome.runtime.sendMessage({ type: 'emote-info', id }, (resp) => {
+      const z = resp && resp.z ? 1 : 0;
+      idZero.set(id, z);
+      if (z) scheduleRerender();
+    });
+    return 0;
+  }
+
   function makeAddCustom(name, id) {
     const btn = document.createElement('button');
     btn.type = 'button';
@@ -586,22 +603,34 @@
         continue;
       }
 
-      lastStack = null;
-      if (!underscore) continue;
+      // Стопку обнуляем только на словах, которые эмоутом не стали: чужой
+      // эмоут ниже сам решает, лечь ли поверх предыдущего.
+      if (!underscore) {
+        lastStack = null;
+        continue;
+      }
       const word = text.slice(start, end);
 
       // чужой свой эмоут: имя и id — прямо в слове, картинку собираем из id
       const byId = EMOTE_ID_RE.exec(word);
       if (byId) {
-        if (start > flushed) frag.appendChild(document.createTextNode(text.slice(flushed, start)));
-        lastStack = document.createElement('span');
-        lastStack.className = 'vk7tv-stack';
-        lastStack.appendChild(makeEmote(byId[1], cdnUrl(byId[2]), false));
-        frag.appendChild(lastStack);
+        const emName = byId[1];
+        const emId = byId[2].toUpperCase();
+        if (zeroWidthOf(emId) && lastStack) {
+          // как и у эмоута из набора: ложится поверх предыдущего,
+          // пробел между ними во фрагмент не попадает
+          lastStack.appendChild(makeEmote(emName, cdnUrl(emId), true));
+        } else {
+          if (start > flushed) frag.appendChild(document.createTextNode(text.slice(flushed, start)));
+          lastStack = document.createElement('span');
+          lastStack.className = 'vk7tv-stack';
+          lastStack.appendChild(makeEmote(emName, cdnUrl(emId), false));
+          frag.appendChild(lastStack);
+        }
         if (!seen) seen = new Set();
         if (!seen.has(word)) {
           seen.add(word); // одно и то же слово в сообщении — один чип
-          frag.appendChild(makeAddCustom(byId[1], byId[2].toUpperCase()));
+          frag.appendChild(makeAddCustom(emName, emId));
         }
         flushed = end;
         changed = true;
@@ -609,6 +638,7 @@
       }
 
       // эмоута нет — может, он из набора, который у нас не подключён
+      lastStack = null;
       if (!suggestOn) continue;
       if (!seen) seen = new Set();
       const chip = suggestFor(word, seen);

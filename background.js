@@ -262,6 +262,27 @@ async function probeSet(word) {
 // взять неоткуда: такой эмоут работает только у того, кто его добавил.
 const EMOTE_API = 'https://7tv.io/v3/emotes/';
 
+// У самого эмоута zero-width — это флаг 256, а у эмоута внутри набора тот же
+// смысл несёт флаг 1 (см. emoteMapFromSet): это разные наборы флагов.
+const ZERO_WIDTH = 256;
+
+const emoteInfo = new Map(); // id -> Promise<{name, z}>
+
+function fetchEmoteInfo(id) {
+  if (!emoteInfo.has(id)) {
+    const p = (async () => {
+      const resp = await fetch(EMOTE_API + id, { cache: 'no-cache' });
+      if (resp.status === 404) throw new Error('Эмоута с таким id на 7TV нет — проверь ссылку');
+      if (!resp.ok) throw new Error('7TV API: HTTP ' + resp.status);
+      const json = await resp.json();
+      return { name: json.name || id, z: (json.flags || 0) & ZERO_WIDTH ? 1 : 0 };
+    })();
+    emoteInfo.set(id, p);
+    p.catch(() => emoteInfo.delete(id)); // не запоминаем неудачу навсегда
+  }
+  return emoteInfo.get(id);
+}
+
 async function addCustom(input, wanted) {
   const raw = String(input || '').trim();
   const m = ULID_RE.exec(raw);
@@ -269,14 +290,9 @@ async function addCustom(input, wanted) {
   let em;
   if (m) {
     const id = m[0].toUpperCase();
-    const resp = await fetch(EMOTE_API + id, { cache: 'no-cache' });
-    if (resp.status === 404) throw new Error('Эмоута с таким id на 7TV нет — проверь ссылку');
-    if (!resp.ok) throw new Error('7TV API: HTTP ' + resp.status);
-    const json = await resp.json();
-    // zero-width у 7TV помечается в наборе, а не у самого эмоута,
-    // поэтому у одиночного взять этот флаг неоткуда
-    em = { u: `https://cdn.7tv.app/emote/${id}/2x.webp`, z: 0, id };
-    if (!name) name = json.name || id;
+    const info = await fetchEmoteInfo(id);
+    em = { u: `https://cdn.7tv.app/emote/${id}/2x.webp`, z: info.z, id };
+    if (!name) name = info.name;
   } else {
     if (!/^https?:\/\//i.test(raw)) {
       throw new Error('Нужна ссылка на эмоут 7TV или прямая ссылка на картинку');
@@ -359,6 +375,11 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   }
   if (msg.type === 'add-custom') {
     reply(addCustom(msg.input, msg.name));
+    return true;
+  }
+  // чужой эмоут по id: в слове флага zero-width нет, спрашиваем 7TV
+  if (msg.type === 'emote-info') {
+    reply(fetchEmoteInfo(msg.id));
     return true;
   }
   if (msg.type === 'fetch-emote') {

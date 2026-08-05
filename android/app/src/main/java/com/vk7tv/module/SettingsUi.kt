@@ -195,7 +195,7 @@ object SettingsUi {
                 }
                 busy(ctx, "Ищем эмоут…") {
                     val ref = SevenTv.resolveEmote(raw, wanted)
-                    val name = Config.addCustom(ref.name, ref.url, ref.id)
+                    val name = Config.addCustom(ref.name, ref.url, ref.id, ref.zeroWidth)
                     Shared.forget(ref.id)
                     Boot.reload(ctx)
                     main.post {

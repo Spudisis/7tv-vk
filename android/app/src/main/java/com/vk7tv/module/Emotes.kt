@@ -180,12 +180,12 @@ object Emotes {
                 val full = c.fullName(name)
                 // по голому имени эмоут рисуется, но в поле уходит полное:
                 // короткое работает только у тех, у кого этот эмоут уже есть
-                fresh[name] = Emote(name, c.url, false, full)
+                fresh[name] = Emote(name, c.url, c.zeroWidth, full)
                 if (full != name) {
-                    fresh[full] = Emote(full, c.url, false)
+                    fresh[full] = Emote(full, c.url, c.zeroWidth)
                     freshAlias[full] = name
                 }
-                own.add(Emote(full, c.url, false))
+                own.add(Emote(full, c.url, c.zeroWidth))
             }
             // Первой вкладкой: свои эмоуты не перетаскиваются (у них нет
             // setId), а лезть за ними в конец ряда вкладок неудобно.

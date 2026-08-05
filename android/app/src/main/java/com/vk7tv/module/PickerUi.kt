@@ -552,7 +552,7 @@ object PickerUi {
 
         card.setOnClickListener {
             L.safe("добавление чужого эмоута") {
-                val name = Config.addCustom(h.name, h.url, h.id)
+                val name = Config.addCustom(h.name, h.url, h.id, Shared.isZeroWidth(h.id))
                 Shared.forget(h.id)
                 onChanged()
                 // сети тут нет: картинка уже собрана из id, набор не качается

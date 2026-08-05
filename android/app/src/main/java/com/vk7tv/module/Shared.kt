@@ -1,5 +1,7 @@
 package com.vk7tv.module
 
+import java.util.concurrent.Executors
+
 /**
  * Чужой свой эмоут: слово вида `имя_01H4RX…`, где после последнего «_» стоит
  * id эмоута на 7TV.
@@ -26,7 +28,42 @@ object Shared {
 
     private val seen = LinkedHashMap<String, Hit>() // полное слово -> находка
 
+    // Zero-width — флаг эмоута на 7TV, в самом слове его нет. Спрашиваем один
+    // раз на id; пока ответа нет, эмоут рисуется обычным, с ответом чат
+    // перерисовывается и эмоут встаёт поверх предыдущего. Кэш живёт до
+    // перезапуска клиента и хранит в том числе неудачу — чат с одним и тем же
+    // словом не должен долбить API.
+    private val zeroWidth = HashMap<String, Boolean>()
+    private val asking = HashSet<String>()
+
+    private val io = Executors.newFixedThreadPool(2) { r ->
+        Thread(r, "vk7tv-shared").apply { isDaemon = true; priority = Thread.MIN_PRIORITY }
+    }
+
     fun url(id: String): String = "https://cdn.7tv.app/emote/$id/2x.webp"
+
+    /** Известный флаг zero-width; неизвестный спрашиваем в фоне. */
+    fun isZeroWidth(id: String): Boolean {
+        synchronized(zeroWidth) {
+            zeroWidth[id]?.let { return it }
+            if (!asking.add(id)) return false
+        }
+        io.execute {
+            L.safe("флаг эмоута $id") {
+                val zw = try {
+                    SevenTv.zeroWidthOf(id)
+                } catch (t: Throwable) {
+                    false
+                }
+                synchronized(zeroWidth) {
+                    zeroWidth[id] = zw
+                    asking.remove(id)
+                }
+                if (zw) Replacer.rerenderAll()
+            }
+        }
+        return false
+    }
 
     /**
      * Похоже ли слово на `имя_<id>`. Проверяем по месту, без создания строки:
@@ -58,7 +95,7 @@ object Shared {
                 }
             }
         }
-        return Emote(word, url, false)
+        return Emote(word, url, isZeroWidth(id))
     }
 
     /** Находки для пикера: без тех, что успели добавить в свои. */
