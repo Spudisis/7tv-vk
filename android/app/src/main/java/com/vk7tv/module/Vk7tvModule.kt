@@ -31,6 +31,7 @@ class Vk7tvModule : IXposedHookLoadPackage {
         hookApplication()
         hookSetText()
         L.safe("хук панели ввода") { Inject.hook() }
+        L.safe("хук тапов по словам") { Taps.hook() }
     }
 
     /** Контекст нужен как можно раньше: без него диагностику некуда показывать. */

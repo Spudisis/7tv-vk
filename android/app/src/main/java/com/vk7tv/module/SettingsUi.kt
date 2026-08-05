@@ -89,12 +89,29 @@ object SettingsUi {
         )
         root.addView(switch(ctx, "Предлагать наборы стримеров", Config.suggest) {
             Config.setFlag(Config.KEY_SUGGEST, it)
+            // без перерисовки уже показанные слова оставались бы нажимаемыми
+            Replacer.rerenderAll()
         })
+        root.addView(switch(ctx, "Показывать картинку предложения", Config.suggestPreview) {
+            Config.setFlag(Config.KEY_SUGGEST_PREVIEW, it)
+            Replacer.rerenderAll()
+        })
+        root.addView(
+            note(
+                ctx,
+                "Незнакомое слово из чужого набора показывается картинкой с чертой снизу — " +
+                    "нажми на неё, чтобы подключить набор. Выключи, если клиент падает: " +
+                    "предложения останутся, но словом, а не картинкой.",
+            ),
+        )
         root.addView(switch(ctx, "Показывать диагностику", Config.diag) {
             Config.setFlag(Config.KEY_DIAG, it)
         })
 
         root.addView(label(ctx, "НАБОРЫ"))
+        root.addView(
+            note(ctx, "Порядок вкладок в пикере: зажми вкладку набора и перетащи."),
+        )
         val setsBox = LinearLayout(ctx).apply { orientation = LinearLayout.VERTICAL }
         root.addView(setsBox)
         drawSets(ctx, setsBox)
@@ -265,6 +282,7 @@ object SettingsUi {
         }
 
         val scroll = ScrollView(ctx).apply {
+            contentDescription = Inject.OUR_UI // см. Inject.isOurs
             background = GradientDrawable().apply {
                 setColor(Ui.BG)
                 cornerRadius = dp(ctx, 12).toFloat()

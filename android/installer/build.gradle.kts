@@ -13,12 +13,32 @@ android {
         // не запустится, незачем пускать установщик на устройства без модуля.
         minSdk = 28
         targetSdk = 34
-        versionCode = 15
-        versionName = "0.3.12"
+        versionCode = 16
+        versionName = "0.4.0"
     }
 
     buildFeatures {
         buildConfig = true
+    }
+
+    // Два канала обновлений. Пробные сборки не должны доезжать до тех, у кого
+    // стоит обычный установщик, поэтому у пробной — своё имя пакета (стоит
+    // рядом, а не поверх), своя подпись в названии и свой набор тегов на
+    // GitHub (см. Releases.ours).
+    flavorDimensions += "channel"
+    productFlavors {
+        create("stable") {
+            dimension = "channel"
+            buildConfigField("boolean", "DEV_CHANNEL", "false")
+            resValue("string", "app_name", "VK7TV")
+        }
+        create("dev") {
+            dimension = "channel"
+            applicationIdSuffix = ".dev"
+            versionNameSuffix = "-dev"
+            buildConfigField("boolean", "DEV_CHANNEL", "true")
+            resValue("string", "app_name", "VK7TV dev")
+        }
     }
 
     // liblspatch.so лежит внутри lspatch.jar как ресурс assets/lspatch/so/...,

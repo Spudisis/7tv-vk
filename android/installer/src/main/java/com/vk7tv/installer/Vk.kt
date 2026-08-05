@@ -11,7 +11,9 @@ import java.util.zip.ZipFile
  */
 object Vk {
 
-    // Наш собственный установщик — не предлагать патчить сам себя.
+    // Наш собственный установщик — не предлагать патчить сам себя. Именно
+    // префикс: у пробной сборки имя пакета с хвостом «.dev», и она стоит рядом
+    // с обычной, так что скрываем обе от обеих.
     private const val SELF = "com.vk7tv.installer"
 
     // Метка, которую LSPatch прописывает в манифест пропатченного приложения.
@@ -59,7 +61,7 @@ object Vk {
         val out = ArrayList<Client>()
         for (ri in pm.queryIntentActivities(intent, 0)) {
             val pkg = ri.activityInfo?.packageName ?: continue
-            if (pkg == SELF || !seen.add(pkg)) continue
+            if (pkg.startsWith(SELF) || !seen.add(pkg)) continue
             val label = ri.loadLabel(pm)?.toString() ?: pkg
             out.add(Client(pkg, label, isPatched(pm, pkg)))
         }

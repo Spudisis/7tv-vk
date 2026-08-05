@@ -61,7 +61,15 @@ object Suggest {
             .distinctBy { it.ref.slug }
     }
 
-    fun ready(word: String): Boolean = synchronized(cache) { cache[word] != null }
+    /**
+     * Находка по слову или null, если про слово ещё не спрашивали, набор
+     * не нашёлся или его скрыли. Скрытые отсекаем и здесь: раньше проверка
+     * жила только в [hits], и скрытый набор переставал предлагаться в пикере,
+     * но слово в сообщении оставалось подсвеченным.
+     */
+    fun hitOf(word: String): Hit? = synchronized(cache) {
+        cache[word]?.takeIf { it.ref.slug.lowercase() !in Config.dismissedSuggests }
+    }
 
     /** Набор подключили — предложения по нему больше не нужны. */
     fun forget(slug: String) {

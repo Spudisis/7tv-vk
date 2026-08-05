@@ -31,6 +31,7 @@ object Config {
     const val KEY_SEEDED = "seeded"
     const val KEY_DIAG = "diag"
     const val KEY_SUGGEST = "suggest"
+    const val KEY_SUGGEST_PREVIEW = "suggestPreview"
     const val KEY_EVERYWHERE = "everywhere"
     const val KEY_DISMISSED = "dismissedSuggests"
     const val KEY_CACHE_MB = "cacheCapMb"
@@ -67,6 +68,15 @@ object Config {
 
     @Volatile
     var suggest = true
+        private set
+
+    // Картинка вместо незнакомого слова из чужого набора. Отдельный выключатель,
+    // а не часть suggest: рисование чужих эмоутов — это лишние декодирования
+    // картинок, а именно на них модуль когда-то ронял клиент нативно
+    // (см. аварийный режим). Останется способ выключить только картинки,
+    // не теряя сами предложения.
+    @Volatile
+    var suggestPreview = true
         private set
 
     // выкл. по умолчанию — коды подменяются ТОЛЬКО в переписке. Включённая
@@ -120,6 +130,7 @@ object Config {
         dockButton = p.getBoolean(KEY_DOCK, true)
         diag = p.getBoolean(KEY_DIAG, false)
         suggest = p.getBoolean(KEY_SUGGEST, true)
+        suggestPreview = p.getBoolean(KEY_SUGGEST_PREVIEW, true)
         everywhere = p.getBoolean(KEY_EVERYWHERE, false)
         cacheCapMb = p.getInt(KEY_CACHE_MB, CACHE_MB_DEFAULT).coerceAtLeast(64)
         sets = parseSets(p.getString(KEY_SETS, "[]"))
@@ -146,6 +157,7 @@ object Config {
             KEY_DOCK -> dockButton = value
             KEY_DIAG -> diag = value
             KEY_SUGGEST -> suggest = value
+            KEY_SUGGEST_PREVIEW -> suggestPreview = value
             KEY_EVERYWHERE -> everywhere = value
         }
     }
@@ -192,6 +204,27 @@ object Config {
 
     fun removeSet(id: String) {
         writeSets(sets.filter { it.id != id })
+    }
+
+    /**
+     * Новый порядок наборов — им же задаётся порядок вкладок в пикере
+     * (Emotes.load идёт по этому списку).
+     *
+     * Переставляем только те наборы, что перечислены в [ids], и только по их
+     * же местам. Набор, который не докачался (7tv.io недоступен), вкладки
+     * не получил, в [ids] не попал — и должен остаться там, где стоял:
+     * иначе одно перетаскивание молча сбрасывало бы его в конец списка.
+     */
+    fun reorderSets(ids: List<String>) {
+        val moving = ids.toSet()
+        val slots = sets.indices.filter { sets[it].id in moving }
+        if (slots.size < 2) return
+        val byId = sets.associateBy { it.id }
+        val ordered = ids.mapNotNull { byId[it] }
+        if (ordered.size != slots.size) return
+        val out = ArrayList(sets)
+        slots.forEachIndexed { n, i -> out[i] = ordered[n] }
+        writeSets(out)
     }
 
     private fun writeSets(list: List<SetRef>) {

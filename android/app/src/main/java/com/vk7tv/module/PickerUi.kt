@@ -12,6 +12,8 @@ import android.text.Editable
 import android.text.TextUtils
 import android.text.TextWatcher
 import android.view.Gravity
+import android.view.HapticFeedbackConstants
+import android.view.MotionEvent
 import android.view.View
 import android.view.ViewGroup
 import android.view.ViewTreeObserver
@@ -43,6 +45,9 @@ object PickerUi {
 
     private const val CELL_DP = 44
 
+    // через столько пробуем пересобрать пикер снова, если вкладку тащат
+    private const val DRAG_WAIT_MS = 250L
+
     private val main = Handler(Looper.getMainLooper())
     private var popup: PopupWindow? = null
 
@@ -64,6 +69,10 @@ object PickerUi {
     private var gridRef: GridView? = null
     private var queryRef: String = ""
 
+    // вкладку сейчас тащат: пересобирать панель нельзя — вьюха уедет из-под
+    // пальца, а перестановка не доедет до конфига
+    private var dragging = false
+
     fun toggle(anchor: View, input: EditText) {
         val p = popup
         if (p != null && p.isShowing) {
@@ -83,6 +92,7 @@ object PickerUi {
 
         val rootView = LinearLayout(ctx).apply {
             orientation = LinearLayout.VERTICAL
+            contentDescription = Inject.OUR_UI // см. Inject.isOurs
             background = GradientDrawable().apply {
                 setColor(Ui.BG)
                 cornerRadius = r(ctx)
@@ -91,6 +101,7 @@ object PickerUi {
         }
         content = rootView
         currentInput = input
+        dragging = false
         populate(ctx, rootView, input)
 
         // Поповер встаёт НАД панелью ввода, а не поверх неё: иначе не видно,
@@ -138,7 +149,8 @@ object PickerUi {
      */
     private fun populate(ctx: Context, rootView: LinearLayout, input: EditText) {
         rootView.removeAllViews()
-        val all = Emotes.groups.flatMap { it.emotes }
+        // не val: после перетаскивания вкладок порядок «Всех» меняется
+        var all = Emotes.groups.flatMap { it.emotes }
 
         rootView.addView(header(ctx))
         val search = search(ctx)
@@ -203,7 +215,38 @@ object PickerUi {
             }
         }
 
-        rootView.addView(chips(ctx, group) { i -> group = i; refresh(restore = false) })
+        // вкладки живут в своей коробке: после перетаскивания ряд пересобираем
+        // на новом порядке, не трогая остальную панель
+        val chipBox = LinearLayout(ctx).apply { orientation = LinearLayout.VERTICAL }
+        rootView.addView(chipBox)
+
+        fun buildChips() {
+            chipBox.removeAllViews()
+            chipBox.addView(
+                chips(
+                    ctx,
+                    group,
+                    onPick = { i -> group = i; refresh(restore = false) },
+                    onReorder = { ids ->
+                        // выбранную вкладку держим за саму группу, а не за
+                        // индекс: после перестановки индекс указывает на чужую
+                        val was = Emotes.groups.getOrNull(group)
+                        Config.reorderSets(ids)
+                        Emotes.reorderGroups(ids)
+                        group = if (was == null) -1 else Emotes.groups.indexOf(was)
+                        all = Emotes.groups.flatMap { it.emotes }
+                        // на вкладке набора список тот же — держим прокрутку;
+                        // на «Всех» порядок только что поменялся, и старый
+                        // номер указывал бы на другой эмоут
+                        savedScroll = if (group < 0) 0 else grid.firstVisiblePosition
+                        buildChips()
+                        refresh(restore = true)
+                        toast(ctx, "Порядок наборов сохранён")
+                    },
+                ),
+            )
+        }
+        buildChips()
 
         search.addTextChangedListener(object : TextWatcher {
             override fun afterTextChanged(s: Editable?) {
@@ -234,6 +277,13 @@ object PickerUi {
                 val root = content ?: return@safe
                 val input = currentInput ?: return@safe
                 if (popup?.isShowing != true) return@safe
+                // вкладку тащат прямо сейчас — ждём, пока отпустят: пересборка
+                // вырвала бы её из-под пальца. Пикер закроют — выйдем на
+                // проверке isShowing выше, так что это не вечный цикл.
+                if (dragging) {
+                    main.postDelayed({ onSetsChanged() }, DRAG_WAIT_MS)
+                    return@safe
+                }
                 populate(root.context, root, input)
             }
         }
@@ -360,7 +410,9 @@ object PickerUi {
         // всю сетку эмоутов; теперь это горизонтальная лента фиксированной
         // высоты — сколько бы наборов ни нашлось, сетка не сдвигается
         val row = LinearLayout(ctx).apply { orientation = LinearLayout.HORIZONTAL }
-        for (h in hits) row.addView(suggestCard(ctx, box, h))
+        for (h in hits) {
+            row.addView(suggestCard(ctx, h, Inject.dp(ctx, 150)) { fillSuggests(ctx, box) })
+        }
         box.addView(
             HorizontalScrollView(ctx).apply {
                 isHorizontalScrollBarEnabled = false
@@ -370,11 +422,21 @@ object PickerUi {
     }
 
     /**
-     * Карточка предложения в ленте: превью, ник и число эмоутов, «подключить»
-     * по тапу и крестик — скрыть набор из предложений насовсем ([Suggest.dismiss]),
+     * Карточка предложения: превью, ник и число эмоутов, «подключить» по тапу
+     * и крестик — скрыть набор из предложений насовсем ([Suggest.dismiss]),
      * не выключая саму функцию.
+     *
+     * Одна на два места — ленту в пикере и поповер по тапу в сообщении
+     * ([SuggestUi]): один и тот же вид, один и тот же путь загрузки картинки.
+     * [onChanged] зовём, когда карточка сделала своё дело: в ленте это
+     * перерисовка, в поповере — закрытие.
      */
-    private fun suggestCard(ctx: Context, box: LinearLayout, h: Suggest.Hit): View {
+    internal fun suggestCard(
+        ctx: Context,
+        h: Suggest.Hit,
+        width: Int,
+        onChanged: () -> Unit,
+    ): View {
         val card = LinearLayout(ctx).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(Inject.dp(ctx, 8), Inject.dp(ctx, 6), Inject.dp(ctx, 8), Inject.dp(ctx, 6))
@@ -383,10 +445,7 @@ object PickerUi {
                 cornerRadius = Inject.dp(ctx, 8).toFloat()
                 setStroke(Inject.dp(ctx, 1), Ui.BORDER)
             }
-            val lp = LinearLayout.LayoutParams(
-                Inject.dp(ctx, 150),
-                ViewGroup.LayoutParams.WRAP_CONTENT,
-            )
+            val lp = LinearLayout.LayoutParams(width, ViewGroup.LayoutParams.WRAP_CONTENT)
             lp.rightMargin = Inject.dp(ctx, 8)
             layoutParams = lp
         }
@@ -438,7 +497,7 @@ object PickerUi {
                 setOnClickListener {
                     L.safe("скрытие предложения") {
                         Suggest.dismiss(h.ref.slug)
-                        fillSuggests(ctx, box)
+                        onChanged()
                         toast(ctx, "Скрыл _${h.ref.slug}")
                     }
                 }
@@ -461,11 +520,16 @@ object PickerUi {
             },
         )
 
-        card.setOnClickListener { L.safe("подключение набора") { connect(ctx, h) } }
+        card.setOnClickListener {
+            L.safe("подключение набора") {
+                connect(ctx, h)
+                onChanged()
+            }
+        }
         return card
     }
 
-    private fun connect(ctx: Context, h: Suggest.Hit) {
+    internal fun connect(ctx: Context, h: Suggest.Hit) {
         toast(ctx, "Подключаю ${h.ref.name}…")
         Thread({
             val msg = try {
@@ -511,21 +575,43 @@ object PickerUi {
         )
     }
 
-    private fun chips(ctx: Context, selected: Int, onPick: (Int) -> Unit): View {
+    /**
+     * Ряд вкладок: «Все», глобальный набор, подключённые наборы, «свои эмоуты».
+     *
+     * Вкладку набора можно зажать и перетащить — порядок наборов меняется
+     * и запоминается ([onReorder]). Остальные вкладки не двигаются: своего
+     * набора за ними нет, и место у них постоянное.
+     */
+    private fun chips(
+        ctx: Context,
+        selected: Int,
+        onPick: (Int) -> Unit,
+        onReorder: (List<String>) -> Unit,
+    ): View {
+        val gap = Inject.dp(ctx, 6)
+        // Считаем слева направо: и подмотка к выбранной вкладке, и вся
+        // геометрия перетаскивания опираются на left/rightMargin. На арабской
+        // локали LinearLayout разложил бы ряд наоборот, и обе сломались бы.
         val row = LinearLayout(ctx).apply {
             orientation = LinearLayout.HORIZONTAL
+            layoutDirection = View.LAYOUT_DIRECTION_LTR
             setPadding(Inject.dp(ctx, 10), 0, Inject.dp(ctx, 10), Inject.dp(ctx, 8))
         }
         val scroll = HorizontalScrollView(ctx).apply {
             isHorizontalScrollBarEnabled = false
+            layoutDirection = View.LAYOUT_DIRECTION_LTR
             addView(row)
         }
         val chips = ArrayList<TextView>()
+        // вкладки наборов идут подряд — только их и переставляем
+        val packs = ArrayList<TextView>()
+        val packIds = ArrayList<String>()
+
         fun paint(t: TextView, on: Boolean) {
             t.setTextColor(if (on) Ui.TEXT else Ui.MUTED)
             (t.background as GradientDrawable).setColor(if (on) Ui.HOVER else Ui.BG2)
         }
-        fun chip(title: String, index: Int) {
+        fun chip(title: String, index: Int): TextView {
             val on = index == selected
             val t = TextView(ctx).apply {
                 text = title
@@ -538,7 +624,7 @@ object PickerUi {
                 ViewGroup.LayoutParams.WRAP_CONTENT,
                 ViewGroup.LayoutParams.WRAP_CONTENT,
             )
-            lp.rightMargin = Inject.dp(ctx, 6)
+            lp.rightMargin = gap
             t.layoutParams = lp
             t.setOnClickListener {
                 for (c in chips) paint(c, false)
@@ -554,9 +640,22 @@ object PickerUi {
                     scroll.scrollTo((t.left - Inject.dp(ctx, 12)).coerceAtLeast(0), 0)
                 }
             }
+            return t
         }
         chip("Все", -1)
-        Emotes.groups.forEachIndexed { i, g -> chip(g.title, i) }
+        Emotes.groups.forEachIndexed { i, g ->
+            val t = chip(g.title, i)
+            val id = g.setId ?: return@forEachIndexed
+            packs.add(t)
+            packIds.add(id)
+        }
+
+        if (packs.size > 1) {
+            val drag = ChipDrag(ctx, scroll, packs, gap) { order ->
+                onReorder(order.map { packIds[it] })
+            }
+            for (t in packs) drag.attach(t)
+        }
         return scroll
     }
 
@@ -616,6 +715,233 @@ object PickerUi {
         Toast.makeText(ctx, msg, Toast.LENGTH_SHORT).show()
 
     private fun r(ctx: Context) = Inject.dp(ctx, 12).toFloat()
+
+    /**
+     * Перетаскивание вкладок: зажал — потащил — отпустил.
+     *
+     * Руками, а не через startDragAndDrop: системное перетаскивание рисует тень
+     * в окне приложения, а мы живём в PopupWindow, и тень пряталась бы под
+     * панелью; подматывать ленту к краям оно тоже не умеет.
+     *
+     * Пока тащим, в разметку не лезем совсем: у вкладки меняется только
+     * translationX, соседи разъезжаются на её ширину той же анимацией. Поэтому
+     * left/width всех вкладок остаются такими же, как на старте, и вся
+     * геометрия считается по ним напрямую. Порядок применяем один раз, когда
+     * палец оторвали, — иначе LinearLayout переразмечался бы на каждый кадр.
+     */
+    private class ChipDrag(
+        private val ctx: Context,
+        private val scroll: HorizontalScrollView,
+        private val chips: List<TextView>,
+        private val gap: Int,
+        private val onDone: (List<Int>) -> Unit,
+    ) {
+
+        private val main = Handler(Looper.getMainLooper())
+        private val at = IntArray(2)
+
+        private var view: TextView? = null
+        private var from = 0
+        private var to = 0
+        private var grab = 0f // за какое место вкладки держит палец
+        private var lastRawX = 0f
+        private var width = 0 // ширина вкладки вместе с отступом
+        private var touching = false // палец на экране — есть кому отпустить
+
+        // до дальнего набора пальцем не дотянуться — у краёв подматываем ленту
+        private val edge = Inject.dp(ctx, 40)
+        private val step = Inject.dp(ctx, 10)
+
+        private val autoScroll = object : Runnable {
+            override fun run() {
+                val v = view ?: return
+                if (!v.isAttachedToWindow) return
+                L.safe("подмотка вкладок") {
+                    val max = (scroll.getChildAt(0).width - scroll.width).coerceAtLeast(0)
+                    val x = lastRawX - onScreen(scroll)
+                    val d = when {
+                        x < edge && scroll.scrollX > 0 -> -step
+                        x > scroll.width - edge && scroll.scrollX < max -> step
+                        else -> 0
+                    }
+                    if (d != 0) {
+                        scroll.scrollBy(d, 0)
+                        // палец на месте, а лента уехала — пересчитываем
+                        move(lastRawX)
+                    }
+                }
+                main.postDelayed(this, FRAME_MS)
+            }
+        }
+
+        fun attach(chip: TextView) {
+            // DOWN не перехватываем: пусть вьюха сама заводит счётчик долгого
+            // нажатия, а короткий тап по-прежнему выбирает набор
+            chip.setOnTouchListener { _, e ->
+                when (e.actionMasked) {
+                    MotionEvent.ACTION_DOWN -> {
+                        touching = true
+                        lastRawX = e.rawX
+                        false
+                    }
+                    MotionEvent.ACTION_MOVE -> {
+                        lastRawX = e.rawX
+                        if (view == null) false else { move(e.rawX); true }
+                    }
+                    MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                        touching = false
+                        if (view == null) false else { drop(); true }
+                    }
+                    else -> false
+                }
+            }
+            chip.setOnLongClickListener {
+                // true — вкладку взяли, и тап после отпускания не засчитываем:
+                // это было перетаскивание, а не выбор набора
+                L.safe("захват вкладки") { start(chip) } == true
+            }
+        }
+
+        private fun start(chip: TextView): Boolean {
+            // Долгое нажатие прилетает не только от пальца: его шлют TalkBack,
+            // Switch Access и DPAD_CENTER с клавиатуры. Жеста за таким нажатием
+            // нет, ACTION_UP не придёт — и перетаскивание осталось бы
+            // «включённым» навсегда: вкладка приподнятой, флаг dragging
+            // взведённым, подмотка ленты крутящейся по кадру.
+            if (!touching) return false
+            if (view != null) return false
+            val i = chips.indexOf(chip)
+            if (i < 0 || chip.width == 0) return false
+            view = chip
+            from = i
+            to = i
+            width = chip.width + gap
+            PickerUi.dragging = true
+            grab = inRow(lastRawX) - chip.left
+            // bringToFront нельзя: он меняет порядок детей, а LinearLayout
+            // раскладывает их именно по нему — вкладка прыгнула бы в конец
+            chip.translationZ = Inject.dp(ctx, 6).toFloat()
+            chip.alpha = 0.92f
+            chip.scaleX = LIFT
+            chip.scaleY = LIFT
+            (chip.background as? GradientDrawable)?.setStroke(Inject.dp(ctx, 1), Ui.ACCENT)
+            chip.performHapticFeedback(HapticFeedbackConstants.LONG_PRESS)
+            // иначе лента начнёт прокручиваться и заберёт жест себе
+            scroll.requestDisallowInterceptTouchEvent(true)
+            main.postDelayed(autoScroll, FRAME_MS)
+            return true
+        }
+
+        private fun move(rawX: Float) {
+            val v = view ?: return
+            // за пределы полосы наборов вкладку не выпускаем: соседние вкладки
+            // не наши, и меняться местами с ними нельзя
+            val lo = chips.first().left.toFloat()
+            val hi = (chips.last().left + chips.last().width - v.width).toFloat()
+            val left = (inRow(rawX) - grab).coerceIn(minOf(lo, hi), maxOf(lo, hi))
+            v.translationX = left - v.left
+            slot(left + v.width / 2f)
+        }
+
+        /**
+         * Куда вкладка встанет, если отпустить сейчас, — в ближайший по центру
+         * слот; соседей раздвигаем сразу.
+         *
+         * Сравнивать с серединами соседей нельзя: сосед слева и сосед справа
+         * стоят несимметрично относительно перетаскиваемой вкладки, и порог
+         * в одну сторону выходил в целую вкладку хода, а в другую срабатывал
+         * от первого же пикселя. Центры слотов симметричны по определению:
+         * слот [k] — это ровно [travel] от исходного места.
+         */
+        private fun slot(center: Float) {
+            val v = view ?: return
+            val base = v.left + v.width / 2f
+            var best = from
+            var least = Math.abs(center - base)
+            var d = 0f
+            for (j in from until chips.size - 1) {
+                d += other(j).width + gap
+                val dist = Math.abs(center - (base + d))
+                if (dist < least) { least = dist; best = j + 1 }
+            }
+            d = 0f
+            for (j in from - 1 downTo 0) {
+                d += other(j).width + gap
+                val dist = Math.abs(center - (base - d))
+                if (dist < least) { least = dist; best = j }
+            }
+            if (best == to) return
+            to = best
+            for (j in 0 until chips.size - 1) {
+                val shift = when {
+                    j >= from && j < best -> -width // ушёл влево, освобождая место
+                    j < from && j >= best -> width // ушёл вправо
+                    else -> 0
+                }
+                other(j).animate().translationX(shift.toFloat()).setDuration(SLIDE_MS).start()
+            }
+        }
+
+        /** Сосед [j] — то есть вкладка [j] в списке без самой перетаскиваемой. */
+        private fun other(j: Int) = chips[if (j < from) j else j + 1]
+
+        private fun drop() {
+            val v = view ?: return
+            view = null
+            main.removeCallbacks(autoScroll)
+            scroll.requestDisallowInterceptTouchEvent(false)
+            val target = to
+            v.animate().translationX(travel(target)).setDuration(SLIDE_MS).withEndAction {
+                L.safe("перестановка вкладок") {
+                    PickerUi.dragging = false
+                    unlift(v)
+                    if (target == from) {
+                        v.translationX = 0f
+                        return@safe
+                    }
+                    val order = ArrayList<Int>(chips.size)
+                    for (j in 0 until chips.size - 1) {
+                        if (j == target) order.add(from)
+                        order.add(if (j < from) j else j + 1)
+                    }
+                    if (target >= chips.size - 1) order.add(from)
+                    onDone(order)
+                }
+            }.start()
+        }
+
+        /** Сколько вкладке доехать, чтобы встать ровно в слот [target]. */
+        private fun travel(target: Int): Float {
+            var d = 0f
+            if (target > from) for (j in from until target) d += other(j).width + gap
+            if (target < from) for (j in target until from) d -= (other(j).width + gap).toFloat()
+            return d
+        }
+
+        private fun unlift(v: TextView) {
+            // UP до onTouchEvent не доехал (мы его съели) — снимаем нажатие сами
+            v.isPressed = false
+            v.translationZ = 0f
+            v.alpha = 1f
+            v.scaleX = 1f
+            v.scaleY = 1f
+            (v.background as? GradientDrawable)?.setStroke(0, 0)
+        }
+
+        /** Палец в координатах ленты: прокрутку учитывает сама getLocationOnScreen. */
+        private fun inRow(rawX: Float): Float = rawX - onScreen(scroll.getChildAt(0))
+
+        private fun onScreen(v: View): Int {
+            v.getLocationOnScreen(at)
+            return at[0]
+        }
+
+        private companion object {
+            const val FRAME_MS = 16L
+            const val SLIDE_MS = 130L
+            const val LIFT = 1.06f
+        }
+    }
 
     private class EmoteAdapter(
         val ctx: Context,

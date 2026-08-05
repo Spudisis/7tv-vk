@@ -51,6 +51,23 @@ object Inject {
 
     fun input(): EditText? = lastInput.get()
 
+    /**
+     * Наша ли это вьюха — пикер, настройки, поповер предложения. Метка стоит
+     * на корне каждого нашего окна, поэтому ищем её вверх по родителям.
+     * Дальше нескольких уровней не лезем: наши разметки неглубокие, а звать
+     * это приходится на каждое касание текста.
+     */
+    fun isOurs(v: View): Boolean {
+        var p: View? = v
+        var depth = 0
+        while (p != null && depth < 6) {
+            if (OUR_UI == p.contentDescription) return true
+            p = p.parent as? View
+            depth++
+        }
+        return false
+    }
+
     fun hook() {
         XposedHelpers.findAndHookMethod(
             TextView::class.java,

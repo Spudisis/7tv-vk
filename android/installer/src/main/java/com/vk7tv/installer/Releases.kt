@@ -10,11 +10,21 @@ import java.io.File
  *    без ручного скачивания;
  *  - свежий APK самого установщика (тег installer-v*), чтобы обновлять и его
  *    прямо из приложения.
+ *
+ * Каналов два. Обычная сборка видит только стабильные релизы; пробная
+ * (`dev`-вариант установщика) — ещё и пробные. Разделение держится на двух
+ * независимых признаках: пробные релизы помечены на GitHub как prerelease
+ * И лежат под своими тегами (`android-dev-v*`, `installer-dev-v*`). Хватило бы
+ * и одного, но забытая галочка «pre-release» в вебе не должна разом высыпать
+ * пробные сборки всем, у кого стоит обычный установщик.
  */
 object Releases {
 
     const val REPO = "Spudisis/7tv-vk"
     private const val API = "https://api.github.com/repos/$REPO/releases?per_page=40"
+
+    /** Пробный ли это установщик — задаётся вариантом сборки (stable/dev). */
+    private const val DEV = BuildConfig.DEV_CHANNEL
 
     class Found(
         val tag: String,
@@ -34,8 +44,13 @@ object Releases {
 
     fun snapshot(currentInstaller: String): Snapshot {
         val arr = JSONArray(Http.getString(API))
-        val inst = latestIn(arr, "installer")
-        val mod = latestIn(arr, "android")
+        // Себя обновляем строго внутри своего канала: у пробного установщика
+        // другое имя пакета, и «обновление» стабильным APK не встало бы поверх,
+        // а поставило бы рядом второй установщик.
+        val inst = latestIn(arr, "installer", ownChannelOnly = true)
+        // А модуль берём самый свежий из доступных: пробного релиза модуля может
+        // и не быть, и тогда пробный установщик должен взять обычный.
+        val mod = latestIn(arr, "android", ownChannelOnly = false)
         val instUpd = if (inst != null && semverGreater(inst.version, currentInstaller)) inst else null
         return Snapshot(instUpd, mod)
     }
@@ -52,16 +67,18 @@ object Releases {
      * висел 0.5.9. Поэтому перебираем все подходящие и берём наибольшую
      * версию по semver, а не по позиции в ленте.
      */
-    private fun latest(tagStartsWith: String): Found? =
-        latestIn(JSONArray(Http.getString(API)), tagStartsWith)
+    private fun latest(kind: String): Found? =
+        latestIn(JSONArray(Http.getString(API)), kind, ownChannelOnly = false)
 
-    private fun latestIn(arr: JSONArray, tagStartsWith: String): Found? {
+    private fun latestIn(arr: JSONArray, kind: String, ownChannelOnly: Boolean): Found? {
         var best: Found? = null
         for (i in 0 until arr.length()) {
             val rel = arr.optJSONObject(i) ?: continue
-            if (rel.optBoolean("draft") || rel.optBoolean("prerelease")) continue
+            if (rel.optBoolean("draft")) continue
+            // пробные релизы помечены prerelease — обычная сборка их не видит
+            if (!DEV && rel.optBoolean("prerelease")) continue
             val tag = rel.optString("tag_name")
-            if (!tag.startsWith(tagStartsWith)) continue
+            if (!ours(tag, kind, ownChannelOnly)) continue
             val assets = rel.optJSONArray("assets") ?: continue
             for (j in 0 until assets.length()) {
                 val a = assets.optJSONObject(j) ?: continue
@@ -78,7 +95,21 @@ object Releases {
         return best
     }
 
-    // "android-v0.5.3" / "installer-v0.2.0" -> "0.5.3" / "0.2.0"
+    /**
+     * Наш ли это тег. Стабильный канал берёт только `<вид>-v…`; пробный —
+     * ещё и `<вид>-dev-v…`, а с [ownChannelOnly] вообще только их.
+     *
+     * Сверяем префикс вместе с «-v», а не просто начало имени: иначе обычный
+     * установщик считал бы `installer-dev-v…` своим, и вся защита держалась бы
+     * на одной галочке «pre-release».
+     */
+    private fun ours(tag: String, kind: String, ownChannelOnly: Boolean): Boolean {
+        val dev = tag.startsWith("$kind-dev-v")
+        if (!DEV) return tag.startsWith("$kind-v")
+        return if (ownChannelOnly) dev else dev || tag.startsWith("$kind-v")
+    }
+
+    // "android-v0.5.3" / "installer-dev-v0.2.0" -> "0.5.3" / "0.2.0"
     private fun versionFromTag(tag: String): String =
         Regex("(\\d+\\.\\d+(?:\\.\\d+)?)").find(tag)?.value ?: tag
 
@@ -115,8 +146,8 @@ object Releases {
     fun isNewer(candidate: String, current: String): Boolean = semverGreater(candidate, current)
 
     private fun semverGreater(a: String, b: String): Boolean {
-        val pa = a.split('.').map { it.toIntOrNull() ?: 0 }
-        val pb = b.split('.').map { it.toIntOrNull() ?: 0 }
+        val pa = parts(a)
+        val pb = parts(b)
         for (i in 0 until maxOf(pa.size, pb.size)) {
             val x = pa.getOrElse(i) { 0 }
             val y = pb.getOrElse(i) { 0 }
@@ -124,4 +155,12 @@ object Releases {
         }
         return false
     }
+
+    /**
+     * «0.3.13» и «0.3.13-dev» -> [0, 3, 13]. Хвост после цифр отрезаем:
+     * у пробной сборки он есть в versionName, и без этого сравнение версий
+     * ломалось бы на нём (toIntOrNull вернул бы null, то есть ноль).
+     */
+    private fun parts(v: String): List<Int> =
+        v.split('.').map { p -> p.takeWhile { it.isDigit() }.toIntOrNull() ?: 0 }
 }

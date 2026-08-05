@@ -19,6 +19,11 @@ import java.util.WeakHashMap
  */
 object Replacer {
 
+    // Сколько чужих эмоутов рисовать картинками в одном сообщении. Дальше
+    // слово остаётся текстом: сообщение из полусотни незнакомых кодов не должно
+    // разом просить полсотни декодирований картинок.
+    private const val MAX_PREVIEWS = 3
+
     private val main = Handler(Looper.getMainLooper())
 
     // ждём картинку — перерисовываем вьюху один раз, а не на каждый эмоут
@@ -69,7 +74,7 @@ object Replacer {
 
         val found = scan(text)
         val hits = found.hits
-        if (hits == null && found.marks == null) return null
+        if (hits == null && found.sugs == null) return null
 
         var missing = false
         var out: SpannableStringBuilder? = null
@@ -102,18 +107,32 @@ object Replacer {
             lastStack = stack
         }
 
-        // Предложения: слово из чужого набора подсвечиваем, а подключение
-        // живёт в пикере. Делать слово нажимаемым нельзя — для этого пришлось бы
-        // подменить movementMethod у чужого TextView, а через него ВК ловит
-        // тапы по ссылкам, упоминаниям и долгие нажатия.
-        found.marks?.let { m ->
+        // Предложения: слово из чужого набора показываем картинкой с полоской
+        // снизу, а если картинки ещё нет — подсвечиваем как раньше. Поверх
+        // в обоих случаях кладём метку SuggestSpan: по ней Taps ловит тап
+        // и открывает поповер с предложением подключить набор.
+        found.sugs?.let { list ->
             val sb = out ?: SpannableStringBuilder(text).also { out = it }
-            var i = 0
-            while (i + 1 < m.size) {
-                sb.setSpan(ForegroundColorSpan(Ui.ACCENT), m[i], m[i + 1], Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
-                sb.setSpan(UnderlineSpan(), m[i], m[i + 1], Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
-                i += 2
+            var shown = 0
+            for (s in list) {
+                val d = if (Config.suggestPreview && shown < MAX_PREVIEWS) {
+                    EmoteCache.drawable(s.hit.url) { onImageReady(tv, text) }
+                } else {
+                    null
+                }
+                if (d != null) {
+                    shown++
+                    val stack = StackDrawable(d)
+                    stack.callback = cb
+                    sb.setSpan(SuggestEmoteSpan(stack), s.start, s.end, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
+                } else {
+                    if (Config.suggestPreview && shown < MAX_PREVIEWS) missing = true
+                    sb.setSpan(ForegroundColorSpan(Ui.ACCENT), s.start, s.end, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
+                    sb.setSpan(UnderlineSpan(), s.start, s.end, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
+                }
+                sb.setSpan(SuggestSpan(s.word), s.start, s.end, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
             }
+            Taps.arm()
         }
 
         // Отметку «ждём картинку» ставим ДО раннего выхода. Иначе, когда
@@ -131,8 +150,11 @@ object Replacer {
 
     private class Hit(val start: Int, val end: Int, val emote: Emote)
 
-    /** Найденное в тексте: эмоуты и границы слов-предложений (парами start, end). */
-    private class Found(var hits: ArrayList<Hit>? = null, var marks: ArrayList<Int>? = null)
+    /** Слово из набора, которого у нас нет, — и что про него известно. */
+    private class Sug(val start: Int, val end: Int, val word: String, val hit: Suggest.Hit)
+
+    /** Найденное в тексте: свои эмоуты и слова из чужих наборов. */
+    private class Found(var hits: ArrayList<Hit>? = null, var sugs: ArrayList<Sug>? = null)
 
     /** Проход по словам без регулярок: setText зовётся часто, аллокации жалко. */
     private fun scan(text: CharSequence): Found {
@@ -160,10 +182,10 @@ object Replacer {
             if (!Config.suggest) continue
             if (!Suggest.looksLike(text, start, end)) continue
             val word = text.subSequence(start, end).toString()
-            if (Suggest.ready(word)) {
-                val m = found.marks ?: ArrayList<Int>(4).also { found.marks = it }
-                m.add(start)
-                m.add(end)
+            val hit = Suggest.hitOf(word)
+            if (hit != null) {
+                (found.sugs ?: ArrayList<Sug>(4).also { found.sugs = it })
+                    .add(Sug(start, end, word, hit))
             } else {
                 Suggest.consider(word)
             }

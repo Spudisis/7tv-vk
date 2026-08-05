@@ -7,7 +7,12 @@ import java.util.concurrent.Executors
 
 class Emote(val name: String, val url: String, val zeroWidth: Boolean)
 
-class Group(val title: String, val emotes: List<Emote>)
+/**
+ * Вкладка пикера. [setId] есть только у подключённых наборов — по нему вкладку
+ * можно вернуть к её SetRef; у глобального набора и «своих эмоутов» его нет,
+ * и переставлять их нельзя.
+ */
+class Group(val title: String, val emotes: List<Emote>, val setId: String? = null)
 
 /**
  * Реестр «имя эмоута -> картинка». Собирается ровно по тем же правилам,
@@ -147,7 +152,7 @@ object Emotes {
                 }
                 bareCandidates.getOrPut(e.name) { ArrayList() }.add(slug to e)
             }
-            builtGroups.add(Group(ref.name.ifEmpty { s.name }, forPicker))
+            builtGroups.add(Group(ref.name.ifEmpty { s.name }, forPicker, ref.id))
         }
 
         for ((name, list) in bareCandidates) {
@@ -191,6 +196,30 @@ object Emotes {
         groups = builtGroups
         ready = map.isNotEmpty()
         L.i("наборы загружены: эмоутов ${map.size}, групп ${builtGroups.size}")
+    }
+
+    /**
+     * Переставить вкладки наборов под новый порядок id — без перезагрузки.
+     *
+     * Перезагружать нечего: имя -> картинка от порядка наборов не зависит
+     * (голое имя достаётся набору по алфавиту слага, см. bareCandidates выше),
+     * меняется только порядок вкладок в пикере. Так перетаскивание применяется
+     * мгновенно, а не после похода в сеть.
+     *
+     * Глобальный набор и «свои эмоуты» остаются на своих местах: у них нет
+     * setId, и переставлять их нельзя. Наборы, которых нет в [ids] (только что
+     * подключили), сортировка оставит в хвосте — она устойчивая.
+     */
+    fun reorderGroups(ids: List<String>) {
+        val cur = groups
+        val slots = cur.indices.filter { cur[it].setId != null }
+        if (slots.size < 2) return
+        val rank = HashMap<String, Int>()
+        ids.forEachIndexed { i, id -> rank[id] = i }
+        val ordered = slots.map { cur[it] }.sortedBy { rank[it.setId] ?: Int.MAX_VALUE }
+        val out = ArrayList(cur)
+        slots.forEachIndexed { n, i -> out[i] = ordered[n] }
+        groups = out
     }
 
     /** Эмоуты набора по имени — для проверки предложений. Кэш общий с загрузкой. */

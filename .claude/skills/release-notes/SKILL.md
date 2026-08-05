@@ -14,6 +14,35 @@ description: Как оформлять релизы VK7TV на GitHub — тег
 | Модуль Android | `android-vX.Y.Z` | `[android · ВК + Sova RE] X.Y.Z — суть` | `android/app/build.gradle.kts` → `versionCode`+`versionName` | `vk7tv-module-X.Y.Z.apk` |
 | Установщик Android | `installer-vX.Y.Z` | `[installer] X.Y.Z — суть` | `android/installer/build.gradle.kts` → `versionCode`+`versionName` | `vk7tv-installer-X.Y.Z.apk` |
 
+## Пробный канал (dev)
+
+Для сборок, которые надо проверить до общего релиза. Теги другие, релиз
+обязательно с `--prerelease`, версия бампится в тех же файлах.
+
+| Артефакт | Тег | Заголовок | Ассет |
+|---|---|---|---|
+| Модуль | `android-dev-vX.Y.Z` | `[android · dev] X.Y.Z — суть` | `vk7tv-module-X.Y.Z-dev.apk` |
+| Установщик | `installer-dev-vX.Y.Z` | `[installer · dev] X.Y.Z — суть` | `vk7tv-installer-X.Y.Z-dev.apk` |
+
+```bash
+gradle :installer:assembleDevDebug   # APK: installer/build/outputs/apk/dev/debug/
+gh release create android-dev-v0.6.1 dist/vk7tv-module-0.6.1-dev.apk \
+  --repo Spudisis/7tv-vk --prerelease --latest=false \
+  --title "[android · dev] 0.6.1 — суть" --notes "…"
+```
+
+Правила:
+
+- **`--prerelease` обязателен.** Обычный установщик отсеивает пробные релизы
+  и по флагу, и по тегу — но полагаться на одну защиту не надо.
+- Пробную версию держим **выше** стабильной по semver: пробный установщик
+  берёт максимальную версию, и равная стабильная его перебьёт.
+- Пробный установщик — отдельное приложение (`com.vk7tv.installer.dev`,
+  «VK7TV dev» в лаунчере), стоит рядом с обычным. Обновляет себя только
+  пробными релизами; модуль берёт свежайший из обоих каналов.
+- Обкатали — выпускаем то же самое обычным релизом под `android-v*` /
+  `installer-v*` без `--prerelease`.
+
 ## Правила версий (semver)
 
 - **patch** (`X.Y.Z+1`) — фикс, косметика, мелочь.

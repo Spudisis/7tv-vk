@@ -15,10 +15,27 @@ import java.lang.ref.WeakReference
 class Vk7tvMark(val original: CharSequence)
 
 /**
+ * Метка «за этим словом стоит чужой набор» — по ней [Taps] ловит тап и
+ * открывает поповер с предложением подключить.
+ *
+ * Держим одно только слово, а не саму находку: пока сообщение висит на экране,
+ * набор могли подключить или скрыть, и находка протухла бы. По слову находку
+ * перезапрашиваем в момент тапа ([Suggest.hitOf]). Ни вьюх, ни контекста
+ * внутри нет — метка живёт в тексте, который ВК переиспользует как хочет.
+ */
+class SuggestSpan(val word: String)
+
+/**
  * Эмоут вместо слова. Высота — от размера шрифта, чтобы картинка
  * не выбивалась из строки при любом системном масштабе текста.
  */
-class EmoteSpan(val stack: StackDrawable) : ReplacementSpan() {
+open class EmoteSpan(val stack: StackDrawable) : ReplacementSpan() {
+
+    /**
+     * Полоска под картинкой: сколько высоты забрать у самого эмоута.
+     * У обычного эмоута её нет, и вся арифметика остаётся прежней.
+     */
+    protected open fun footer(paint: Paint): Int = 0
 
     override fun getSize(
         paint: Paint,
@@ -27,7 +44,10 @@ class EmoteSpan(val stack: StackDrawable) : ReplacementSpan() {
         end: Int,
         fm: Paint.FontMetricsInt?,
     ): Int {
-        val h = (paint.textSize * HEIGHT_RATIO).toInt().coerceAtLeast(1)
+        val box = (paint.textSize * HEIGHT_RATIO).toInt().coerceAtLeast(1)
+        // место занимаем всегда одинаковое — подключишь набор, и картинка
+        // подрастёт на месте, не переливая сообщение заново
+        val h = (box - footer(paint)).coerceAtLeast(1)
         val w = stack.widthFor(h)
         stack.setBounds(0, 0, w, h)
         if (fm != null) {
@@ -35,9 +55,9 @@ class EmoteSpan(val stack: StackDrawable) : ReplacementSpan() {
             // строки наедут друг на друга
             val pm = paint.fontMetricsInt
             val center = (pm.ascent + pm.descent) / 2
-            fm.ascent = center - h / 2
+            fm.ascent = center - box / 2
             fm.top = fm.ascent
-            fm.descent = center + h / 2
+            fm.descent = center + box / 2
             fm.bottom = fm.descent
         }
         return w
@@ -56,15 +76,57 @@ class EmoteSpan(val stack: StackDrawable) : ReplacementSpan() {
     ) {
         val pm = paint.fontMetricsInt
         val center = y + (pm.ascent + pm.descent) / 2
+        val box = stack.bounds.height() + footer(paint)
+        val topY = center - box / 2f
         canvas.save()
-        canvas.translate(x, (center - stack.bounds.height() / 2f))
+        canvas.translate(x, topY)
         stack.draw(canvas)
         canvas.restore()
+        decorate(canvas, x, topY + stack.bounds.height(), stack.bounds.width().toFloat(), paint)
     }
+
+    /** Рисуется под картинкой; [y] — её нижняя граница, [w] — ширина. */
+    protected open fun decorate(canvas: Canvas, x: Float, y: Float, w: Float, paint: Paint) = Unit
 
     companion object {
         // 7TV/Twitch рисуют инлайновый эмоут примерно в 1.8 высоты шрифта
         const val HEIGHT_RATIO = 1.8f
+    }
+}
+
+/**
+ * Эмоут из набора, которого у нас нет: картинка чуть ниже обычной, а под ней —
+ * полоска цвета ссылки.
+ *
+ * Полоска, а не прозрачность или значок «+»: эмоуты 7TV сами по себе часто
+ * бледные и полупрозрачные, так что приглушённостью «чужой» не показать, а
+ * значок на картинке в палец высотой закрыл бы ровно то, что мы показываем.
+ * Зато полоска — тот же знак, что и у слова без картинки (цвет + подчёркивание),
+ * так что оба состояния читаются как одно и то же «нажми, чтобы подключить».
+ */
+class SuggestEmoteSpan(stack: StackDrawable) : EmoteSpan(stack) {
+
+    override fun footer(paint: Paint): Int =
+        (paint.textSize * FOOTER_RATIO).toInt().coerceAtLeast(3)
+
+    override fun decorate(canvas: Canvas, x: Float, y: Float, w: Float, paint: Paint) {
+        // draw зовётся из onDraw чужой вьюхи — мимо всех наших L.safe.
+        // Вылет отсюда уронил бы процесс ВК на отрисовке сообщения.
+        try {
+            val f = footer(paint)
+            val thick = (f * BAR_RATIO).coerceAtLeast(2f)
+            bar.color = Ui.ACCENT
+            canvas.drawRect(x, y + (f - thick) / 2f, x + w, y + (f + thick) / 2f, bar)
+        } catch (t: Throwable) {
+            L.e("сбой в полоске предложения", t)
+        }
+    }
+
+    private companion object {
+        // отрисовка идёт только на главном потоке — одной кисти хватает всем
+        val bar = Paint(Paint.ANTI_ALIAS_FLAG)
+        const val FOOTER_RATIO = 0.25f
+        const val BAR_RATIO = 0.4f
     }
 }
 

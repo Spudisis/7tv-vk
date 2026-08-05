@@ -1,3 +1,5 @@
 <resources>
-    <string name="app_name">VK7TV</string>
+    <!-- app_name задаёт вариант сборки (productFlavors в build.gradle.kts):
+         у пробного установщика он свой, чтобы две иконки в лаунчере
+         не путались между собой. -->
 </resources>
