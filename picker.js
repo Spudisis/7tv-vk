@@ -144,6 +144,11 @@
     });
     const local = await chrome.storage.local.get({ setEmotes: {}, globalEmotes: null });
     groups = [];
+    // «Свои» — первым разделом: их не переставишь стрелками (у них нет
+    // setId), а лезть за ними в конец списка неудобно.
+    if (Object.keys(sync.customEmotes).length) {
+      groups.push({ key: 'custom', title: 'Свои', emotes: sync.customEmotes });
+    }
     // key — по нему помнится, свёрнут ли набор; берём id набора, а не
     // название: переименованный на 7TV набор должен остаться свёрнутым
     if (sync.useGlobal) {
@@ -167,9 +172,6 @@
           suffix: s.slug || '',
         });
       }
-    }
-    if (Object.keys(sync.customEmotes).length) {
-      groups.push({ key: 'custom', title: 'Свои', emotes: sync.customEmotes });
     }
     // избранное хранит только имена — картинку берём из этого индекса,
     // а эмоуты удалённого набора просто перестают показываться
