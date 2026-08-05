@@ -85,6 +85,10 @@ object SettingsUi {
                 ),
             )
             root.addView(button(ctx, "Открыть установщик") { openInstaller(ctx) })
+            // страница релиза — там написано, что именно поменялось
+            Updates.page?.let { url ->
+                root.addView(button(ctx, "Что нового в $fresh") { openUrl(ctx, url) })
+            }
         }
 
         root.addView(switch(ctx, "Эмоуты включены", Config.enabled) {
@@ -565,8 +569,11 @@ object SettingsUi {
                 if (ok == true) return
             }
         }
-        val url = Updates.page ?: "https://github.com/Spudisis/7tv-vk/releases"
-        val opened = L.safe("открытие страницы релиза") {
+        openUrl(ctx, Updates.page ?: "https://github.com/Spudisis/7tv-vk/releases")
+    }
+
+    private fun openUrl(ctx: Context, url: String) {
+        val opened = L.safe("открытие ссылки") {
             ctx.startActivity(
                 Intent(Intent.ACTION_VIEW, Uri.parse(url)).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
             )
