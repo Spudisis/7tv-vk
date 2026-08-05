@@ -195,6 +195,9 @@
     img.title = name;
     img.draggable = false;
     img.loading = 'lazy';
+    // адрес с CDN, а не итоговый src: в src может лежать blob:, а пикер
+    // ищет набор по тому же адресу, что записан в хранилище
+    img._vk7tvUrl = url;
     const viaBackground = () => {
       img.dataset.vk7tvFallback = '1';
       resolveEmote(url).then((u) => {
@@ -214,6 +217,34 @@
     if (cdnBlocked) viaBackground();
     else img.src = url;
     return img;
+  }
+
+  // Клик по эмоуту в сообщении открывает пикер на наборе, из которого этот
+  // эмоут: увидел картинку в чате — сразу видно, откуда она и что рядом.
+  // Событие ловит picker.js — оба скрипта живут в одном isolated world.
+  //
+  // Слушаем на перехвате и гасим событие: у ВК свои обработчики и на
+  // сообщении, и на строке списка диалогов, а клик по эмоуту не должен
+  // заодно открывать переписку. Нажатие гасим тоже — строку диалога ВК
+  // открывает по нему, до click дело не доходит.
+  function onEmotePointer(e) {
+    const img = e.target;
+    if (!(img instanceof HTMLImageElement) || !img.classList.contains(EMOTE_CLASS)) return;
+    e.preventDefault(); // заодно не забираем фокус у поля ввода ВК
+    e.stopPropagation();
+    if (e.type !== 'click') return;
+    document.dispatchEvent(
+      new CustomEvent('vk7tv-reveal-emote', {
+        detail: { name: img.alt, url: img._vk7tvUrl || '' },
+      })
+    );
+  }
+  // только в основном фрейме: пикер живёт там же, и во фрейме клик было бы
+  // некому обработать — гасить его незачем
+  if (window.top === window) {
+    for (const type of ['pointerdown', 'mousedown', 'click']) {
+      document.addEventListener(type, onEmotePointer, true);
+    }
   }
 
   // Чип сразу за незнакомым словом: превью эмоута и кнопка «поставить

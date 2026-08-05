@@ -6,6 +6,7 @@ img.vk7tv-emote {
   margin: -4px 1px;
   position: relative;
   transition: transform 0.12s ease;
+  cursor: pointer; /* клик открывает пикер на наборе этого эмоута */
 }
 
 img.vk7tv-emote:not(.vk7tv-zw):hover {

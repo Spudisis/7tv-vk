@@ -28,6 +28,9 @@
   let lastRange = null;
   let flashTimer = null;
   let filterTimer = null;
+  let widgetOn = false; // кнопка спрятана настройкой — поповер не открываем
+  let collapsedKeys = new Set(); // ключи свёрнутых наборов, помнятся между сессиями
+  let pendingReveal = null; // {key, full} — доскроллить, когда набор соберётся
 
   // --- последнее поле ввода ВК: куда вставлять эмоут ---
 
@@ -117,20 +120,24 @@
     });
     const local = await chrome.storage.local.get({ setEmotes: {}, globalEmotes: null });
     groups = [];
+    // key — по нему помнится, свёрнут ли набор; берём id набора, а не
+    // название: переименованный на 7TV набор должен остаться свёрнутым
     if (sync.useGlobal) {
       const g =
         local.globalEmotes && Object.keys(local.globalEmotes).length
           ? local.globalEmotes
           : DEFAULT_EMOTES;
-      groups.push({ title: 'Глобальные 7TV', emotes: g });
+      groups.push({ key: 'global', title: 'Глобальные 7TV', emotes: g });
     }
     for (const s of sync.sets) {
       const m = local.setEmotes[s.id];
       // suffix — постфикс набора: пикер всегда вставляет имя с ним
-      if (m && Object.keys(m).length) groups.push({ title: s.name, emotes: m, suffix: s.slug || '' });
+      if (m && Object.keys(m).length) {
+        groups.push({ key: `set:${s.id}`, title: s.name, emotes: m, suffix: s.slug || '' });
+      }
     }
     if (Object.keys(sync.customEmotes).length) {
-      groups.push({ title: 'Свои', emotes: sync.customEmotes });
+      groups.push({ key: 'custom', title: 'Свои', emotes: sync.customEmotes });
     }
     // избранное хранит только имена — картинку берём из этого индекса,
     // а эмоуты удалённого набора просто перестают показываться
@@ -141,7 +148,8 @@
       }
     }
     setFavorites(sync.favorites);
-    return sync.enabled && sync.widget;
+    widgetOn = sync.enabled && sync.widget;
+    return widgetOn;
   }
 
   // вставляем всегда полное имя с постфиксом — так эмоут не спутается
@@ -360,6 +368,11 @@
         toggleFav(star.parentElement.dataset.name);
         return;
       }
+      const head = e.target.closest('.vk7tv-picker-group-title');
+      if (head) {
+        toggleGroup(head.parentElement);
+        return;
+      }
       const cell = e.target.closest('.vk7tv-picker-cell');
       if (!cell) return;
       // зажали ради превью — вставлять не надо
@@ -371,7 +384,7 @@
     });
 
     picker.addEventListener('pointerdown', (e) => {
-      if (e.target.closest('.vk7tv-fav')) {
+      if (e.target.closest('.vk7tv-fav, .vk7tv-picker-group-title')) {
         e.preventDefault(); // не забираем фокус у поля ВК
         return;
       }
@@ -480,6 +493,59 @@
   let buildToken = 0;
   let dirty = true; // данные изменились, сетку надо собрать заново
 
+  // Заголовок набора — он же кнопка сворачивания. Число рядом показывает,
+  // сколько эмоутов внутри: у свёрнутого набора это единственный признак,
+  // что находки по поиску там есть.
+  function groupTitle(text, count) {
+    const h = document.createElement('div');
+    h.className = 'vk7tv-picker-group-title';
+    h.title = 'Свернуть или развернуть набор';
+    const chevron = document.createElement('span');
+    chevron.className = 'vk7tv-picker-chevron';
+    chevron.textContent = '▾';
+    const name = document.createElement('span');
+    name.className = 'vk7tv-picker-group-name';
+    name.textContent = text;
+    const cnt = document.createElement('span');
+    cnt.className = 'vk7tv-picker-group-count';
+    cnt.textContent = count;
+    h.append(chevron, name, cnt);
+    return h;
+  }
+
+  // Ячейки наборов, порциями по кадрам. Свёрнутый набор ячеек не создаёт
+  // вовсе — они собираются при раскрытии этой же функцией.
+  function fillJobs(jobs, token) {
+    // пометка «уже собирается»: свернули набор на середине сборки и тут же
+    // раскрыли — второй сборщик на тот же набор перемешал бы ячейки
+    for (const job of jobs) job.running = true;
+    let ji = 0;
+    const step = () => {
+      if (token !== buildToken) return; // пошла новая сборка
+      let budget = CHUNK;
+      while (ji < jobs.length && budget > 0) {
+        const job = jobs[ji];
+        const frag = document.createDocumentFragment();
+        while (job.at < job.found.length && budget > 0) {
+          frag.appendChild(makeCell(job.found[job.at][0], job.found[job.at][1]));
+          job.at++;
+          budget--;
+        }
+        job.grid.appendChild(frag);
+        if (job.at >= job.found.length) {
+          job.filled = true;
+          job.running = false;
+          // набор собран целиком, и только теперь его высота окончательная —
+          // раньше прокручивать к нему бессмысленно
+          if (pendingReveal && pendingReveal.key === job.key) revealNow(job);
+          ji++;
+        }
+      }
+      if (ji < jobs.length) requestAnimationFrame(step);
+    };
+    step(); // первую порцию кладём сразу — поповер не открывается пустым
+  }
+
   // Сетка собирается только под текущий поиск: при запросе создаются
   // ячейки-находки, а не все тысячи с последующим display: none.
   function renderBody() {
@@ -498,35 +564,107 @@
       if (!found.length) continue;
       const sec = document.createElement('div');
       sec.className = 'vk7tv-picker-group';
-      const h = document.createElement('div');
-      h.className = 'vk7tv-picker-group-title';
-      h.textContent = g.title;
       const grid = document.createElement('div');
       grid.className = 'vk7tv-picker-grid';
-      sec.append(h, grid);
+      sec.append(groupTitle(g.title, found.length), grid);
+      // работа по сборке живёт на самой секции: раскрыли набор — берём её
+      // оттуда и досоздаём ячейки
+      sec._vk7tvJob = { key: g.key, sec, grid, found, at: 0, filled: false, running: false };
       body.appendChild(sec);
-      jobs.push({ grid, found, at: 0 });
+      if (collapsedKeys.has(g.key)) sec.classList.add('vk7tv-collapsed');
+      else jobs.push(sec._vk7tvJob);
     }
-
-    let ji = 0;
-    const step = () => {
-      if (token !== buildToken) return; // пошла новая сборка
-      let budget = CHUNK;
-      while (ji < jobs.length && budget > 0) {
-        const job = jobs[ji];
-        const frag = document.createDocumentFragment();
-        while (job.at < job.found.length && budget > 0) {
-          frag.appendChild(makeCell(job.found[job.at][0], job.found[job.at][1]));
-          job.at++;
-          budget--;
-        }
-        job.grid.appendChild(frag);
-        if (job.at >= job.found.length) ji++;
-      }
-      if (ji < jobs.length) requestAnimationFrame(step);
-    };
-    step(); // первую порцию кладём сразу — поповер не открывается пустым
+    fillJobs(jobs, token);
   }
+
+  function toggleGroup(sec) {
+    const job = sec._vk7tvJob;
+    if (!job) return;
+    const collapse = !sec.classList.contains('vk7tv-collapsed');
+    sec.classList.toggle('vk7tv-collapsed', collapse);
+    if (collapse) {
+      collapsedKeys.add(job.key);
+    } else {
+      collapsedKeys.delete(job.key);
+      if (!job.filled && !job.running) fillJobs([job], buildToken);
+    }
+    chrome.storage.local.set({ collapsedGroups: [...collapsedKeys] });
+  }
+
+  // --- переход к эмоуту, по которому кликнули в сообщении ---
+
+  // В чате эмоут из набора пишется голым именем (ok), а в пикере он всегда
+  // с постфиксом (ok_bratishkinoff) — поэтому сперва ищем по полному имени,
+  // а потом по адресу картинки: он у эмоута свой в любом наборе.
+  function findEmote(name, url) {
+    let byUrl = null;
+    for (const g of groups) {
+      for (const [n, v] of Object.entries(g.emotes)) {
+        const full = fullName(g, n);
+        if (full === name) return { key: g.key, full };
+        if (!byUrl && url && (typeof v === 'string' ? v : v.u) === url) {
+          byUrl = { key: g.key, full };
+        }
+      }
+    }
+    return byUrl;
+  }
+
+  let hitCell = null;
+  let hitTimer = null;
+
+  // Прокручиваем список к набору и подсвечиваем сам эмоут: в наборе на
+  // тысячу картинок иначе непонятно, о какой из них речь.
+  function revealNow(job) {
+    const full = pendingReveal.full;
+    pendingReveal = null;
+    const cell = job.grid.querySelector(
+      `.vk7tv-picker-cell[data-name="${CSS.escape(full)}"]`
+    );
+    const place = () => {
+      const br = body.getBoundingClientRect();
+      body.scrollTop += job.sec.getBoundingClientRect().top - br.top;
+      if (!cell) return;
+      const cr = cell.getBoundingClientRect();
+      // набор большой — эмоут может остаться ниже видимой части
+      if (cr.bottom > br.bottom) body.scrollTop += cr.top - br.top - body.clientHeight / 2;
+    };
+    // Наборы выше могли ещё ни разу не рисоваться (content-visibility), их
+    // высота уточняется только при отрисовке и сдвигает нужный набор —
+    // поэтому прокрутку повторяем ещё пару кадров, пока она не устоится.
+    let tries = 3;
+    const settle = () => {
+      place();
+      if (--tries > 0) requestAnimationFrame(settle);
+    };
+    settle();
+    if (!cell) return;
+    if (hitCell) hitCell.classList.remove('vk7tv-hit');
+    hitCell = cell;
+    cell.classList.add('vk7tv-hit');
+    clearTimeout(hitTimer);
+    hitTimer = setTimeout(() => cell.classList.remove('vk7tv-hit'), 2000);
+  }
+
+  function revealEmote(name, url) {
+    if (!widgetOn) return; // кнопку спрятали настройкой — не лезем на страницу
+    const hit = findEmote(name, url);
+    // набор могли отключить, пока сообщение висело на экране — тогда просто
+    // открываем поповер с поиском по имени
+    searchInput.value = hit ? '' : name || '';
+    pendingReveal = hit;
+    if (hit && collapsedKeys.delete(hit.key)) {
+      chrome.storage.local.set({ collapsedGroups: [...collapsedKeys] });
+    }
+    dirty = true; // сетку пересобираем: без фильтра и с раскрытым набором
+    setOpen(true);
+    filterFavorites();
+  }
+
+  document.addEventListener('vk7tv-reveal-emote', (e) => {
+    const d = e.detail || {};
+    revealEmote(d.name, d.url);
+  });
 
   function applyFilter() {
     filterFavorites();
@@ -668,10 +806,12 @@
 
   async function init() {
     buildUi();
-    const { widgetPos, pickerSize } = await chrome.storage.local.get({
+    const { widgetPos, pickerSize, collapsedGroups } = await chrome.storage.local.get({
       widgetPos: null,
       pickerSize: null,
+      collapsedGroups: [],
     });
+    collapsedKeys = new Set(Array.isArray(collapsedGroups) ? collapsedGroups : []);
     if (pickerSize) {
       picker.style.width = pickerSize.w + 'px';
       picker.style.height = pickerSize.h + 'px';

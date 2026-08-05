@@ -181,12 +181,16 @@
   contain-intrinsic-size: auto 200px;
 }
 
+/* заголовок набора — он же кнопка сворачивания */
 .vk7tv-picker-group-title {
   position: sticky;
   top: 0;
   /* ячейки эмоутов позиционированы (в них звёздочка), поэтому без z-index
      они рисуются поверх липкого заголовка и он выглядит «под эмоутами» */
   z-index: 2;
+  display: flex;
+  align-items: center;
+  gap: 6px;
   background: #1e1f24;
   padding: 8px 2px 4px;
   font-size: 11px;
@@ -194,6 +198,40 @@
   text-transform: uppercase;
   letter-spacing: 0.5px;
   color: #9aa0ab;
+  cursor: pointer;
+  user-select: none;
+}
+
+.vk7tv-picker-group-title:hover {
+  color: #e4e6eb;
+}
+
+.vk7tv-picker-chevron {
+  font-size: 9px;
+  line-height: 1;
+  transition: transform 0.12s ease;
+}
+
+.vk7tv-picker-group.vk7tv-collapsed .vk7tv-picker-chevron {
+  transform: rotate(-90deg);
+}
+
+/* длинное название набора не должно выдавливать число за край */
+.vk7tv-picker-group-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.vk7tv-picker-group-count {
+  margin-left: auto;
+  font-weight: 400;
+  letter-spacing: 0;
+  color: #7a8090;
+}
+
+.vk7tv-picker-group.vk7tv-collapsed .vk7tv-picker-grid {
+  display: none;
 }
 
 .vk7tv-picker-grid {
@@ -213,6 +251,12 @@
 
 .vk7tv-picker-cell:hover {
   background: #2c2e36;
+}
+
+/* эмоут, к которому перешли кликом по картинке в сообщении */
+.vk7tv-picker-cell.vk7tv-hit {
+  background: rgba(76, 139, 245, 0.24);
+  box-shadow: inset 0 0 0 2px #4c8bf5;
 }
 
 .vk7tv-picker-grid img {
