@@ -82,7 +82,7 @@ object Service {
 
     private fun hasToken(v: View, set: Set<String>): Boolean {
         val id = v.id
-        if (id == View.NO_ID) return false
+        if (!isResourceId(id)) return false
         val name = L.safe("имя ресурса") { v.resources.getResourceEntryName(id) } ?: return false
         // «messageTime» → message time, «im_mess_time» → im mess time;
         // при этом «update» словом «date» не считается — режем по границам
@@ -92,4 +92,13 @@ object Service {
         for (t in tokens) if (t in set) return true
         return false
     }
+
+    /**
+     * Настоящий ли это id из ресурсов. У id, выданных кодом
+     * (View.generateViewId), старший байт нулевой, а имени в ресурсах нет —
+     * getResourceEntryName на каждом таком бросал исключение. В клиенте их
+     * сотни, и журнал забивался строчками «сбой в имя ресурса».
+     */
+    private fun isResourceId(id: Int): Boolean = id != View.NO_ID && (id ushr 24) != 0
+
 }

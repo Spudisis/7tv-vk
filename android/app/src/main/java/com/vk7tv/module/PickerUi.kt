@@ -253,10 +253,12 @@ object PickerUi {
                     buildChips(chipScroll?.scrollX ?: 0)
                     refresh(restore = true)
                     toast(ctx, "Порядок наборов сохранён")
-                    // Голое имя достаётся набору выше по списку, так что
-                    // после перестановки реестр надо собрать заново. Сети
-                    // тут нет — наборы читаются из дискового кэша.
-                    Boot.reload(ctx)
+                    // Голое имя достаётся набору выше по списку, так что после
+                    // перестановки реестр надо собрать заново — в фоне: наборы
+                    // читаются с диска, а их бывает полсотни.
+                    Thread({
+                        L.safe("перезагрузка после перестановки") { Boot.reload(ctx) }
+                    }, "vk7tv-reorder").apply { isDaemon = true }.start()
                 },
             )
             chipScroll = row
@@ -555,9 +557,13 @@ object PickerUi {
                 val name = Config.addCustom(h.name, h.url, h.id, Shared.isZeroWidth(h.id))
                 Shared.forget(h.id)
                 onChanged()
-                // сети тут нет: картинка уже собрана из id, набор не качается
-                Boot.reload(ctx)
                 toast(ctx, "«$name» добавлен в свои")
+                // Пересборка реестра — в фоне: у человека с полусотней наборов
+                // это десятки тысяч эмоутов и чтение всех наборов с диска,
+                // на UI-потоке клиент вставал колом.
+                Thread({
+                    L.safe("перезагрузка после добавления") { Boot.reload(ctx) }
+                }, "vk7tv-add").apply { isDaemon = true }.start()
             }
         }
         return card

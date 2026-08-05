@@ -84,7 +84,7 @@ object Scope {
 
     private fun kindOf(v: View): Kind {
         val id = v.id
-        if (id == View.NO_ID) return Kind.NEITHER
+        if (!isResourceId(id)) return Kind.NEITHER
         val name = L.safe("имя ресурса") { v.resources.getResourceEntryName(id) } ?: return Kind.NEITHER
         // «vkimMsgList» → vkim msg list, «vkim_dialogs» → vkim dialogs;
         // режем по границам, чтобы «time» не считалось за «im»
@@ -143,4 +143,13 @@ object Scope {
         }
         return sb.toString()
     }
+
+    /**
+     * Настоящий ли это id из ресурсов. У id, выданных кодом
+     * (View.generateViewId), старший байт нулевой, а имени в ресурсах нет —
+     * getResourceEntryName на каждом таком бросал исключение. В клиенте их
+     * сотни, и журнал забивался строчками «сбой в имя ресурса».
+     */
+    private fun isResourceId(id: Int): Boolean = id != View.NO_ID && (id ushr 24) != 0
+
 }

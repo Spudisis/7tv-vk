@@ -135,24 +135,50 @@ object EmoteCache {
      * VPN — дальше без сети. Уже лежащие пропускаем; в память не кладём, чтобы
      * предзагрузка не вытесняла горячие картинки из LruCache.
      */
+    // Сколько картинок тянем за один заход. У человека с 58 наборами эмоутов
+    // 43 тысячи: раньше на каждую заводилась своя задача, и очередь из 43 тысяч
+    // задач вместе с проверкой файлов на месте вызова съедала клиент. Остальное
+    // догрузится при следующей перезагрузке наборов или само, когда встретится
+    // в чате.
+    private const val PRELOAD_MAX = 1500
+
+    @Volatile
+    private var preloading = false
+
+    /**
+     * Дотянуть картинки в постоянный кэш, чтобы наборы были видны офлайн.
+     * Весь обход идёт одной фоновой задачей: тысячи проверок «файл уже есть»
+     * — это тысячи обращений к диску, и на UI-потоке им делать нечего.
+     */
     fun preload(urls: Collection<String>) {
-        for (url in urls) {
-            val key = keyOf(url)
-            if (bytes.get(key) != null || File(dir, key).isFile) continue
-            preloadIo.execute {
-                L.safe("предзагрузка") {
-                    val f = File(dir, key)
-                    if (f.isFile) return@safe
-                    val data = Net.bytes(url)
-                    if (!isDecodable(data)) {
-                        L.v("битые данные при предзагрузке $url")
-                        return@safe
+        if (preloading) return // прошлый заход ещё идёт
+        preloading = true
+        preloadIo.execute {
+            L.safe("предзагрузка") {
+                var done = 0
+                var skipped = 0
+                for (url in urls) {
+                    if (done >= PRELOAD_MAX) {
+                        skipped++
+                        continue
                     }
-                    writeAtomic(key, data)
-                    accountAndTrim(data.size)
-                    wake(key) // вдруг эту картинку уже кто-то ждёт на экране
+                    val key = keyOf(url)
+                    if (bytes.get(key) != null || File(dir, key).isFile) continue
+                    L.safe("предзагрузка $key") {
+                        val data = Net.bytes(url)
+                        if (!isDecodable(data)) {
+                            L.v("битые данные при предзагрузке $url")
+                            return@safe
+                        }
+                        writeAtomic(key, data)
+                        accountAndTrim(data.size)
+                        wake(key) // вдруг эту картинку уже кто-то ждёт на экране
+                        done++
+                    }
                 }
+                if (skipped > 0) L.i("предзагрузка: взяли $done, отложили $skipped")
             }
+            preloading = false
         }
     }
 
