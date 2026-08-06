@@ -28,9 +28,9 @@ import java.util.WeakHashMap
  * всплывает строка с подходящими эмоутами; тап заменяет слово именем эмоута.
  *
  * Панель НЕ забирает фокус (PopupWindow focusable=false): иначе спряталась бы
- * клавиатура и печатать стало бы нельзя. Висит вплотную над строкой ввода —
- * это одно из мест, где нативную строку подсказок стикеров ВК (она выше)
- * не перекрываем.
+ * клавиатура и печатать стало бы нельзя. Висит над строкой ввода, а когда ВК
+ * показывает свою строку подсказок стикеров — над ней: раньше полоса вставала
+ * вплотную к полю и оказывалась под нативной строкой, перекрывая её низ.
  *
  * Вся вёрстка кодом: инфлейтить свои ресурсы в чужом процессе — отдельная
  * возня, ради одной полосы она не окупается (как и в PickerUi).
@@ -91,7 +91,7 @@ object Autocomplete {
         for (e in matches) row.addView(cell(ctx, e, input))
         (pw.contentView as? HorizontalScrollView)?.scrollTo(0, 0)
 
-        val top = inputTop(input)
+        val top = anchorTop(input)
         if (top <= 0) return hide()
         val y = (top - pw.height - Inject.dp(ctx, 4)).coerceAtLeast(0)
         if (pw.isShowing) {
@@ -186,7 +186,7 @@ object Autocomplete {
                 val pw = popup ?: return@safe
                 if (!pw.isShowing) return@safe
                 if (!input.isAttachedToWindow) return@safe hide()
-                val top = inputTop(input)
+                val top = anchorTop(input)
                 if (top <= 0) return@safe
                 val y = (top - pw.height - Inject.dp(input.context, 4)).coerceAtLeast(0)
                 pw.update(0, y, -1, -1)
@@ -209,6 +209,55 @@ object Autocomplete {
     private fun hide() {
         unfollow()
         popup?.let { pw -> L.safe("скрытие автоподсказок") { if (pw.isShowing) pw.dismiss() } }
+    }
+
+    /**
+     * Верх, над которым встаёт полоса: верх строки ввода, а если над строкой
+     * видна панель ВК (нативные подсказки стикеров, список упоминаний) — верх
+     * этой панели. Панели лежат в разметке соседями строки ввода по цепочке
+     * родителей: поднимаемся по ней и забираем видимых соседей, чей низ
+     * примыкает к текущему верху. Классов ВК не знаем (обфусцированы), поэтому
+     * панель опознаём по геометрии, а не по типу.
+     */
+    private fun anchorTop(input: EditText): Int {
+        var top = inputTop(input)
+        if (top <= 0) return top
+        val ctx = input.context
+        // зазор между низом панели и верхом строки: у панелей ВК бывают
+        // отступы в пару dp, точного примыкания требовать нельзя
+        val slack = Inject.dp(ctx, 8)
+        // потолок высоты панели: строка подсказок стикеров и список упоминаний
+        // ниже, а лента чата (её низ тоже примыкает к строке ввода) — выше
+        val maxPanel = Inject.dp(ctx, 240)
+        val row = (input.parent as? View) ?: input
+        // панель тянется на ширину строки; узкие вьюхи у нижнего края
+        // (кнопка «вниз» в чате) панелью не считаем
+        val minWidth = row.width / 2
+        val loc = IntArray(2)
+        var p = row.parent as? ViewGroup
+        var depth = 0
+        while (p != null && depth < 6) {
+            // панели могут лежать стопкой в одном родителе — после каждой
+            // находки проходим детей заново от нового верха
+            var moved = true
+            while (moved) {
+                moved = false
+                for (i in 0 until p.childCount) {
+                    val c = p.getChildAt(i)
+                    if (!c.isShown || c.height <= 0 || c.height > maxPanel) continue
+                    if (minWidth > 0 && c.width < minWidth) continue
+                    c.getLocationOnScreen(loc)
+                    val bottom = loc[1] + c.height
+                    if (bottom >= top - slack && bottom <= top + slack && loc[1] < top) {
+                        top = loc[1]
+                        moved = true
+                    }
+                }
+            }
+            p = p.parent as? ViewGroup
+            depth++
+        }
+        return top
     }
 
     /**
