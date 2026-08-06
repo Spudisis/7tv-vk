@@ -42,6 +42,9 @@ class Vk7tvModule : IXposedHookLoadPackage {
         hookApplication()
         hookSetText()
         L.safe("хук панели ввода") { Inject.hook() }
+        // окно подсказок стикеров ВК рисуется поверх полосы автоподсказок —
+        // по этому хуку полоса узнаёт о нём и встаёт выше
+        L.safe("хук окон") { Autocomplete.hookWindows() }
     }
 
     /** Контекст нужен как можно раньше: без него диагностику некуда показывать. */

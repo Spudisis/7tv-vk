@@ -2,6 +2,7 @@ package com.vk7tv.module
 
 import android.content.Context
 import android.graphics.Color
+import android.graphics.Rect
 import android.graphics.drawable.Animatable
 import android.graphics.drawable.ColorDrawable
 import android.graphics.drawable.GradientDrawable
@@ -19,6 +20,8 @@ import android.widget.HorizontalScrollView
 import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.PopupWindow
+import de.robv.android.xposed.XC_MethodHook
+import de.robv.android.xposed.XposedBridge
 import java.lang.ref.WeakReference
 import java.util.WeakHashMap
 
@@ -29,8 +32,10 @@ import java.util.WeakHashMap
  *
  * Панель НЕ забирает фокус (PopupWindow focusable=false): иначе спряталась бы
  * клавиатура и печатать стало бы нельзя. Висит над строкой ввода, а когда ВК
- * показывает свою строку подсказок стикеров — над ней: раньше полоса вставала
- * вплотную к полю и оказывалась под нативной строкой, перекрывая её низ.
+ * показывает свою строку подсказок стикеров — над ней. Строка ВК — не вьюха
+ * в разметке, а отдельное окно, которое добавляется ПОЗЖЕ нашего и рисуется
+ * поверх: просто встать вплотную к полю нельзя, полоса оказывалась под ним.
+ * Появление и уход таких окон ловит hookWindows, полоса переезжает сама.
  *
  * Вся вёрстка кодом: инфлейтить свои ресурсы в чужом процессе — отдельная
  * возня, ради одной полосы она не окупается (как и в PickerUi).
@@ -52,6 +57,69 @@ object Autocomplete {
 
     private var layout: ViewTreeObserver.OnGlobalLayoutListener? = null
     private var layoutOn = WeakReference<View>(null)
+
+    // окна процесса, добавленные после установки хука: среди них — окно
+    // подсказок стикеров ВК, над которым должна вставать полоса
+    private val windows = ArrayList<WeakReference<View>>()
+
+    /**
+     * Ловим появление и уход чужих окон. Строка подсказок стикеров ВК — не
+     * вьюха в разметке чата, а отдельное окно: обход соседей строки ввода его
+     * не видит, а добавляется оно позже нашей полосы и рисуется поверх неё.
+     * Хук на WindowManagerGlobal.addView даёт и список окон для расчёта
+     * позиции, и момент, когда полосу пора подвинуть; removeView — момент,
+     * когда можно вернуться вплотную к полю. Зовётся из handleLoadPackage.
+     */
+    fun hookWindows() {
+        val wmg = Class.forName("android.view.WindowManagerGlobal")
+        XposedBridge.hookAllMethods(
+            wmg,
+            "addView",
+            object : XC_MethodHook() {
+                override fun afterHookedMethod(param: MethodHookParam) {
+                    L.safe("новое окно") { track(param.args[0] as? View ?: return@safe) }
+                }
+            },
+        )
+        val gone = object : XC_MethodHook() {
+            override fun afterHookedMethod(param: MethodHookParam) {
+                main.post { L.safe("окно ушло") { reposition() } }
+            }
+        }
+        XposedBridge.hookAllMethods(wmg, "removeView", gone)
+        XposedBridge.hookAllMethods(wmg, "removeViewImmediate", gone)
+    }
+
+    private fun track(v: View) {
+        synchronized(windows) {
+            windows.removeAll { it.get() == null }
+            if (windows.none { it.get() === v }) windows.add(WeakReference(v))
+        }
+        // размеры окна известны только после его первой раскладки — двигаем
+        // полосу оттуда, из addView двигать рано
+        val vto = v.viewTreeObserver
+        if (!vto.isAlive) return
+        vto.addOnGlobalLayoutListener(object : ViewTreeObserver.OnGlobalLayoutListener {
+            override fun onGlobalLayout() {
+                L.safe("раскладка нового окна") {
+                    v.viewTreeObserver.removeOnGlobalLayoutListener(this)
+                    reposition()
+                }
+            }
+        })
+    }
+
+    /** Пересчитать позицию видимой полосы: разметка или набор окон изменились. */
+    private fun reposition() {
+        val pw = popup ?: return
+        if (!pw.isShowing) return
+        val input = layoutOn.get() as? EditText ?: return
+        if (!input.isAttachedToWindow) return
+        val top = anchorTop(input)
+        if (top <= 0) return
+        val y = (top - pw.height - Inject.dp(input.context, 4)).coerceAtLeast(0)
+        pw.update(0, y, -1, -1)
+    }
 
     /** Повесить наблюдатель на поле ввода ВК. Зовётся из Inject при attach. */
     fun watch(input: EditText) {
@@ -183,13 +251,8 @@ object Autocomplete {
         unfollow()
         val l = ViewTreeObserver.OnGlobalLayoutListener {
             L.safe("позиция автоподсказок") {
-                val pw = popup ?: return@safe
-                if (!pw.isShowing) return@safe
                 if (!input.isAttachedToWindow) return@safe hide()
-                val top = anchorTop(input)
-                if (top <= 0) return@safe
-                val y = (top - pw.height - Inject.dp(input.context, 4)).coerceAtLeast(0)
-                pw.update(0, y, -1, -1)
+                reposition()
             }
         }
         input.viewTreeObserver.addOnGlobalLayoutListener(l)
@@ -212,52 +275,77 @@ object Autocomplete {
     }
 
     /**
-     * Верх, над которым встаёт полоса: верх строки ввода, а если над строкой
-     * видна панель ВК (нативные подсказки стикеров, список упоминаний) — верх
-     * этой панели. Панели лежат в разметке соседями строки ввода по цепочке
-     * родителей: поднимаемся по ней и забираем видимых соседей, чей низ
-     * примыкает к текущему верху. Классов ВК не знаем (обфусцированы), поэтому
-     * панель опознаём по геометрии, а не по типу.
+     * Верх, над которым встаёт полоса. Обычно это верх строки ввода, но место
+     * над ней бывает занято панелью ВК: окном подсказок стикеров или списком
+     * упоминаний. Всё, что пересекает место полосы, поднимает её выше; панели
+     * могут стоять стопкой, поэтому подъём повторяется. Классов ВК не знаем
+     * (обфусцированы) — панель опознаём по геометрии, а не по типу.
      */
     private fun anchorTop(input: EditText): Int {
-        var top = inputTop(input)
-        if (top <= 0) return top
-        val ctx = input.context
-        // зазор между низом панели и верхом строки: у панелей ВК бывают
-        // отступы в пару dp, точного примыкания требовать нельзя
-        val slack = Inject.dp(ctx, 8)
-        // потолок высоты панели: строка подсказок стикеров и список упоминаний
-        // ниже, а лента чата (её низ тоже примыкает к строке ввода) — выше
-        val maxPanel = Inject.dp(ctx, 240)
+        val base = inputTop(input)
+        if (base <= 0) return base
+        // высота полосы плюс зазор до того, что под ней
+        val need = Inject.dp(input.context, CELL_DP + 16) + Inject.dp(input.context, 4)
+        val rects = panelRects(input)
+        var top = base
+        var guard = 0
+        while (guard++ < 4) {
+            val hit = rects.filter { it.top < top && it.bottom > top - need }
+                .minByOrNull { it.top } ?: break
+            top = hit.top
+        }
+        if (top != base) L.v("полоса поднята над панелью: $base -> $top")
+        return top
+    }
+
+    /**
+     * Прямоугольники видимых панелей, с которыми полоса не должна
+     * пересекаться: соседи строки ввода по цепочке родителей (панели в
+     * разметке чата) и чужие окна процесса (подсказки стикеров ВК — отдельное
+     * окно, в разметке чата его нет).
+     */
+    private fun panelRects(input: EditText): List<Rect> {
+        val out = ArrayList<Rect>()
+        val loc = IntArray(2)
         val row = (input.parent as? View) ?: input
+        // потолок высоты панели: подсказки стикеров и упоминания ниже, а лента
+        // чата и декоры экранов (тоже доходят до нижнего края) — выше потолка
+        val maxPanel = Inject.dp(input.context, 240)
         // панель тянется на ширину строки; узкие вьюхи у нижнего края
         // (кнопка «вниз» в чате) панелью не считаем
         val minWidth = row.width / 2
-        val loc = IntArray(2)
+
+        fun add(v: View) {
+            if (!v.isShown || v.height <= 0 || v.height > maxPanel) return
+            if (minWidth > 0 && v.width < minWidth) return
+            v.getLocationOnScreen(loc)
+            out.add(Rect(loc[0], loc[1], loc[0] + v.width, loc[1] + v.height))
+        }
+
+        // соседи по разметке; сам столб родителей пропускаем: каждый из них
+        // содержит строку ввода и пересекал бы место полосы всегда
+        var child: View = row
         var p = row.parent as? ViewGroup
         var depth = 0
         while (p != null && depth < 6) {
-            // панели могут лежать стопкой в одном родителе — после каждой
-            // находки проходим детей заново от нового верха
-            var moved = true
-            while (moved) {
-                moved = false
-                for (i in 0 until p.childCount) {
-                    val c = p.getChildAt(i)
-                    if (!c.isShown || c.height <= 0 || c.height > maxPanel) continue
-                    if (minWidth > 0 && c.width < minWidth) continue
-                    c.getLocationOnScreen(loc)
-                    val bottom = loc[1] + c.height
-                    if (bottom >= top - slack && bottom <= top + slack && loc[1] < top) {
-                        top = loc[1]
-                        moved = true
-                    }
-                }
+            for (i in 0 until p.childCount) {
+                val c = p.getChildAt(i)
+                if (c !== child) add(c)
             }
+            child = p
             p = p.parent as? ViewGroup
             depth++
         }
-        return top
+
+        // чужие окна; своё окно и окно самого чата не считаем
+        val own = popup?.contentView?.rootView
+        val host = input.rootView
+        val roots = synchronized(windows) { windows.mapNotNull { it.get() } }
+        for (w in roots) {
+            if (w === own || w === host || !w.isAttachedToWindow) continue
+            add(w)
+        }
+        return out
     }
 
     /**
