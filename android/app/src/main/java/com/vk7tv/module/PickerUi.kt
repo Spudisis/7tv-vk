@@ -33,7 +33,8 @@ import android.widget.Toast
  * Пикер эмоутов — панель снизу, по духу тот же поповер, что в браузере:
  * поиск, полоса избранного, наборы, сетка. Тап по эмоуту вставляет его
  * полное имя (с постфиксом набора) в поле ввода на позицию курсора,
- * долгий тап — в избранное и обратно.
+ * долгий тап открывает меню эмоута ([EmoteMenu]): избранное, «добавить
+ * к себе», у своих эмоутов — изменение и удаление.
  *
  * Звёздочки в углу ячейки, как в вебе, тут нет намеренно: на телефоне
  * в неё не попасть пальцем, а долгий тап — привычный жест.
@@ -179,14 +180,18 @@ object PickerUi {
         }
         rootView.addView(favBox)
 
-        val onFav = { name: String ->
+        // fun, а не val: fillFavorites получает её же, чтобы меню долгого тапа
+        // работало и в полосе избранного, — val не может ссылаться на себя
+        fun onFav(name: String) {
             val on = Config.toggleFavorite(name)
-            fillFavorites(ctx, favBox, input)
+            fillFavorites(ctx, favBox, input, ::onFav)
             toast(ctx, if (on) "$name — в избранном" else "$name убран из избранного")
         }
-        fillFavorites(ctx, favBox, input)
+        fillFavorites(ctx, favBox, input, ::onFav)
 
-        val adapter = EmoteAdapter(ctx, all, { insert(input, it) }, onFav)
+        val adapter = EmoteAdapter(ctx, all, { insert(input, it) }) { v, e ->
+            EmoteMenu.show(v, e, ::onFav)
+        }
 
         // восстанавливаем набор, на котором закрыли; исчез (набор убрали) —
         // откатываемся на «Все»
@@ -696,7 +701,12 @@ object PickerUi {
         }, "vk7tv-connect").apply { isDaemon = true }.start()
     }
 
-    private fun fillFavorites(ctx: Context, box: LinearLayout, input: EditText) {
+    private fun fillFavorites(
+        ctx: Context,
+        box: LinearLayout,
+        input: EditText,
+        onFav: (String) -> Unit,
+    ) {
         box.removeAllViews()
         // эмоуты отключённого набора просто не показываем
         val found = Config.favorites.mapNotNull { Emotes.get(it) }
@@ -710,10 +720,8 @@ object PickerUi {
         val cell = Inject.dp(ctx, CELL_DP)
         for (e in found) {
             row.addView(
-                cellView(ctx, e, cell, { insert(input, e.insertName) }) {
-                    Config.toggleFavorite(e.name)
-                    fillFavorites(ctx, box, input)
-                    toast(ctx, "${e.name} убран из избранного")
+                cellView(ctx, e, cell, { insert(input, e.insertName) }) { v ->
+                    EmoteMenu.show(v, e, onFav)
                 },
             )
         }
@@ -833,7 +841,7 @@ object PickerUi {
         e: Emote,
         size: Int,
         onTap: () -> Unit,
-        onLong: () -> Unit,
+        onLong: (View) -> Unit,
     ): ImageView {
         val iv = ImageView(ctx)
         iv.layoutParams = LinearLayout.LayoutParams(size, size)
@@ -844,13 +852,13 @@ object PickerUi {
         bind(iv, e)
         iv.setOnClickListener { onTap() }
         iv.setOnLongClickListener {
-            L.safe("избранное") { onLong() }
+            L.safe("меню эмоута") { onLong(iv) }
             true
         }
         return iv
     }
 
-    private fun bind(iv: ImageView, e: Emote) {
+    internal fun bind(iv: ImageView, e: Emote) {
         iv.setImageDrawable(null)
         val d = EmoteCache.drawable(e.url) {
             main.post { if (iv.contentDescription == e.name) bind(iv, e) }
@@ -1108,7 +1116,7 @@ object PickerUi {
         val ctx: Context,
         var items: List<Emote>,
         val onTap: (String) -> Unit,
-        val onFav: (String) -> Unit,
+        val onLong: (View, Emote) -> Unit,
     ) : BaseAdapter() {
 
         override fun getCount() = items.size
@@ -1128,7 +1136,7 @@ object PickerUi {
             bind(iv, e)
             iv.setOnClickListener { onTap(e.insertName) }
             iv.setOnLongClickListener {
-                L.safe("избранное") { onFav(e.name) }
+                L.safe("меню эмоута") { onLong(iv, e) }
                 true
             }
             return iv

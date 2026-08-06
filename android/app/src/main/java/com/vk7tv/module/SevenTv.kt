@@ -33,6 +33,9 @@ object SevenTv {
         throw RuntimeException("Вставь ссылку на набор с 7tv.app или ник стримера на Twitch")
     }
 
+    /** Id эмоута из ссылки на 7TV (страница или cdn); не нашёлся — пустая строка. */
+    fun emoteId(url: String): String = ULID.find(url)?.value?.uppercase() ?: ""
+
     /** Свой эмоут: имя с 7TV и id из ссылки. */
     class EmoteRef(
         val id: String,

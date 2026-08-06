@@ -316,6 +316,44 @@ object Config {
         return key
     }
 
+    /**
+     * Изменить свой эмоут: запись перезаписывается на своём месте в списке,
+     * а не уходит в конец. Занятое имя получает номер, как в [addCustom];
+     * возвращает имя, под которым эмоут записан. Избранное переписывается
+     * на новые имена — иначе переименованный эмоут пропадал бы из него.
+     */
+    fun editCustom(
+        oldName: String,
+        name: String,
+        url: String,
+        id: String,
+        zeroWidth: Boolean = false,
+    ): String {
+        val old = custom[oldName] ?: return addCustom(name, url, id, zeroWidth)
+        var key = name.ifEmpty { oldName }
+        if (key != oldName) {
+            val cur = custom[key]
+            if (cur != null && cur.url != url) {
+                var i = 2
+                while (custom.containsKey(key + i)) i++
+                key += i
+            }
+        }
+        val fresh = CustomEmote(url, id, zeroWidth)
+        val next = LinkedHashMap<String, CustomEmote>()
+        for ((k, v) in custom) {
+            if (k == oldName) {
+                next[key] = fresh
+            } else if (k != key) { // переименовали в имя дубля с той же картинкой — дубль уходит
+                next[k] = v
+            }
+        }
+        writeCustom(next)
+        renameFavorite(old.fullName(oldName), fresh.fullName(key))
+        renameFavorite(oldName, key)
+        return key
+    }
+
     fun removeCustom(name: String) {
         if (!custom.containsKey(name)) return
         writeCustom(custom.filterKeys { it != name })
@@ -345,12 +383,21 @@ object Config {
     /** Возвращает новое состояние: true — эмоут теперь в избранном. */
     fun toggleFavorite(name: String): Boolean {
         val on = !favorites.contains(name)
-        val list = if (on) favorites + name else favorites.filter { it != name }
+        writeFavorites(if (on) favorites + name else favorites.filter { it != name })
+        return on
+    }
+
+    /** Переписать имя в избранном после переименования своего эмоута. */
+    private fun renameFavorite(from: String, to: String) {
+        if (from == to || !favorites.contains(from)) return
+        writeFavorites(favorites.map { if (it == from) to else it })
+    }
+
+    private fun writeFavorites(list: List<String>) {
         val arr = JSONArray()
         for (n in list) arr.put(n)
         prefs?.edit()?.putString(KEY_FAVORITES, arr.toString())?.apply()
         favorites = list
-        return on
     }
 
     /**

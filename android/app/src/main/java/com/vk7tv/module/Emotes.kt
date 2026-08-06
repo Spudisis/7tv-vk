@@ -62,6 +62,9 @@ object Emotes {
 
     fun get(name: String): Emote? = map[name]
 
+    /** Голое имя без постфикса набора (ok_bratishkinoff -> ok); без постфикса — как есть. */
+    fun bareName(name: String): String = synchronized(map) { aliasOf[name] ?: name }
+
     fun size(): Int = map.size
 
     /** Все URL картинок текущих наборов — для предзагрузки в офлайн-кэш. */
