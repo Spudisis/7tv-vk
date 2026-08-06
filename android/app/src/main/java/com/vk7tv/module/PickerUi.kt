@@ -485,7 +485,7 @@ object PickerUi {
         box.visibility = View.VISIBLE
         box.addView(label(ctx, "МОЖНО ДОБАВИТЬ СЕБЕ"))
         val row = LinearLayout(ctx).apply { orientation = LinearLayout.HORIZONTAL }
-        for (h in hits) row.addView(sharedCard(ctx, h, Inject.dp(ctx, 130)) { fillShared(ctx, box) })
+        for (h in hits) row.addView(sharedCard(ctx, h) { fillShared(ctx, box) })
         box.addView(
             HorizontalScrollView(ctx).apply {
                 isHorizontalScrollBarEnabled = false
@@ -497,52 +497,55 @@ object PickerUi {
     private fun sharedCard(
         ctx: Context,
         h: Shared.Hit,
-        width: Int,
         onChanged: () -> Unit,
     ): View {
         val card = LinearLayout(ctx).apply {
-            orientation = LinearLayout.VERTICAL
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
             setPadding(Inject.dp(ctx, 8), Inject.dp(ctx, 6), Inject.dp(ctx, 8), Inject.dp(ctx, 6))
             background = GradientDrawable().apply {
                 setColor(Ui.BG2)
                 cornerRadius = Inject.dp(ctx, 8).toFloat()
                 setStroke(Inject.dp(ctx, 1), Ui.BORDER)
             }
-            val lp = LinearLayout.LayoutParams(width, ViewGroup.LayoutParams.WRAP_CONTENT)
+            val lp = LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT,
+            )
             lp.rightMargin = Inject.dp(ctx, 8)
             layoutParams = lp
         }
 
-        val top = LinearLayout(ctx).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER_VERTICAL
-        }
         val iv = ImageView(ctx)
         iv.layoutParams = LinearLayout.LayoutParams(Inject.dp(ctx, 32), Inject.dp(ctx, 32))
         iv.scaleType = ImageView.ScaleType.FIT_CENTER
         iv.contentDescription = h.name
         bind(iv, Emote(h.name, h.url, false))
-        top.addView(iv)
-        top.addView(
+        card.addView(iv)
+        card.addView(
             TextView(ctx).apply {
-                text = h.name
+                // имя режем до 10 символов: ширина карточки — по содержимому,
+                // длинное имя растянуло бы её на всю ленту
+                text = h.name.take(10)
                 setTextColor(Ui.TEXT)
                 textSize = 12f
                 isSingleLine = true
-                ellipsize = TextUtils.TruncateAt.END
             },
-            LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply {
-                leftMargin = Inject.dp(ctx, 8)
-            },
+            LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT,
+            ).apply { leftMargin = Inject.dp(ctx, 8) },
         )
         // крестик со своим обработчиком: тап по нему тратится на скрытие и не
         // всплывает к карточке, поэтому эмоут не добавится по ошибке
-        top.addView(
+        card.addView(
             TextView(ctx).apply {
                 text = "✕"
                 setTextColor(Ui.MUTED)
-                textSize = 13f
-                setPadding(Inject.dp(ctx, 6), Inject.dp(ctx, 2), Inject.dp(ctx, 2), Inject.dp(ctx, 2))
+                textSize = 16f
+                // отступы расширяют область тапа: сам знак мелкий, в него
+                // сложно попасть пальцем
+                setPadding(Inject.dp(ctx, 8), Inject.dp(ctx, 6), Inject.dp(ctx, 4), Inject.dp(ctx, 6))
                 setOnClickListener {
                     L.safe("скрытие чужого эмоута") {
                         Shared.dismiss(h.id)
@@ -550,22 +553,6 @@ object PickerUi {
                         toast(ctx, "Скрыл «${h.name}»")
                     }
                 }
-            },
-        )
-        card.addView(top)
-
-        card.addView(
-            TextView(ctx).apply {
-                text = "+ себе"
-                setTextColor(Ui.ACCENT)
-                textSize = 12f
-                typeface = Typeface.DEFAULT_BOLD
-                val lp = LinearLayout.LayoutParams(
-                    ViewGroup.LayoutParams.MATCH_PARENT,
-                    ViewGroup.LayoutParams.WRAP_CONTENT,
-                )
-                lp.topMargin = Inject.dp(ctx, 4)
-                layoutParams = lp
             },
         )
 
