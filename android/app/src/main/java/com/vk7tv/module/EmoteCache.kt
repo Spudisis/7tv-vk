@@ -33,12 +33,40 @@ object EmoteCache {
         Thread(r, "vk7tv-preload").apply { isDaemon = true; priority = Thread.MIN_PRIORITY }
     }
 
-    // Картинки лежат в постоянной папке (filesDir) — переживают офлайн и очистку
-    // кэша ВК. Чтобы папка не разрослась бесконтрольно, держим свой потолок из
-    // настроек (Config.cacheCapMb): как вышли за него — вытесняем давно не
-    // тронутые файлы (LRU по времени файла) до 80 % потолка.
-    private fun capBytes() = Config.cacheCapMb.toLong() * 1024 * 1024
-    private fun trimToBytes() = capBytes() * 4 / 5
+    // Какую часть раздела держим свободной. Android считает место «на исходе»
+    // при 5 % свободного и тогда вычищает cacheDir приложений — в том числе
+    // копию оригинального APK, из которой запускается пропатченный клиент
+    // (см. LsPatch). Сами картинки лежат в filesDir и от этой чистки не
+    // страдают, но занятым местом подводят раздел к её границе, поэтому
+    // оставляем вдвое больший запас.
+    private const val FREE_RESERVE_PART = 10
+
+    // Ниже этого потолок не опускаем даже на забитом телефоне: иначе картинки
+    // вытесняются быстрее, чем успевают пригодиться. Совпадает с нижней
+    // границей значения в настройках.
+    private const val MIN_CAP_BYTES = 64L * 1024 * 1024
+
+    /**
+     * Потолок кэша картинок: настроенный (Config.cacheCapMb), но не такой,
+     * чтобы после нас на разделе осталось меньше [FREE_RESERVE_PART]-й части.
+     * Считаем каждый раз: свободное место меняется и без нас.
+     *
+     * Картинки лежат в постоянной папке (filesDir) — переживают офлайн и
+     * очистку кэша ВК. Как вышли за потолок — вытесняем давно не тронутые
+     * файлы (LRU по времени файла) до 80 % потолка.
+     */
+    private fun capBytes(): Long {
+        val configured = Config.cacheCapMb.toLong() * 1024 * 1024
+        val room = L.safe("свободное место") {
+            val st = android.os.StatFs(dir.path)
+            val free = st.availableBlocksLong * st.blockSizeLong
+            val reserve = st.blockCountLong * st.blockSizeLong / FREE_RESERVE_PART
+            // сколько можем занимать: то, что уже заняли, плюс свободное,
+            // минус запас, который обязаны оставить
+            maxOf(diskBytes, 0L) + free - reserve
+        } ?: configured
+        return minOf(configured, room).coerceAtLeast(MIN_CAP_BYTES)
+    }
 
     private val diskLock = Any()
 
@@ -211,7 +239,9 @@ object EmoteCache {
         if (diskBytes <= cap) return
         synchronized(diskLock) {
             if (diskBytes <= cap) return
-            val target = trimToBytes()
+            // от уже посчитанного потолка: свободное место читается системным
+            // вызовом, и второй раз спрашивать его незачем
+            val target = cap * 4 / 5
             val files = dir.listFiles() ?: return
             val own = ownKeys()
             // время и «своё ли» считаем по разу на файл: в компараторе это были
