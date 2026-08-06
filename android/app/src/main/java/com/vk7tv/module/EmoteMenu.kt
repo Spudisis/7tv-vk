@@ -232,7 +232,12 @@ object EmoteMenu {
             },
         )
 
-        pw.showAtLocation(anchor, Gravity.CENTER, 0, 0)
+        // Якорь окна — поле ввода клиента, а не ячейка пикера: showAtLocation
+        // берёт токен окна якоря, ячейка живёт в окне самого пикера
+        // (PopupWindow), а окно-панель поверх другой панели система не
+        // добавляет — BadTokenException, и форма молча не открывалась.
+        // showAsDropDown в menu() не задет: он берёт токен окна приложения.
+        pw.showAtLocation(Inject.input() ?: anchor, Gravity.CENTER, 0, 0)
     }
 
     private fun field(ctx: Context, hint: String) = EditText(ctx).apply {
