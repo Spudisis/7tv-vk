@@ -26,6 +26,12 @@ class CustomEmote(val url: String, val id: String, val zeroWidth: Boolean = fals
  * хранится в процессе ВК. Побочная польза: хранилище стало доступно
  * на запись, так что наборы и избранное правятся прямо из пикера,
  * а отдельное приложение-настройка больше не нужно.
+ *
+ * SharedPreferences межпроцессными не бывают: каждый процесс держит свою копию
+ * карты и при записи переписывает файл целиком, затирая чужие правки своим
+ * снимком. У клиента процессов несколько, поэтому модуль поднимается только
+ * там, где есть интерфейс (см. Boot.ensure), а служебные счётчики держит
+ * отдельными файлами (см. Startup).
  */
 object Config {
 
@@ -45,7 +51,6 @@ object Config {
     const val KEY_DISMISSED = "dismissedSuggests"
     const val KEY_DISMISSED_EMOTES = "dismissedEmotes"
     const val KEY_CACHE_MB = "cacheCapMb"
-    const val KEY_START_ATTEMPTS = "startAttempts"
     const val KEY_UPD_CHECKED = "updateCheckedAt"
     const val KEY_UPD_VERSION = "updateVersion"
     const val KEY_UPD_TOLD = "updateTold"
@@ -53,12 +58,6 @@ object Config {
     // Потолок кэша картинок, МБ. По умолчанию 1 ГБ — паки большие, а память
     // на телефонах давно не 8 ГБ; человек может поменять в настройках.
     const val CACHE_MB_DEFAULT = 1024
-
-    // После скольких вылетов старта подряд уходить в аварийный режим. 1 —
-    // хватает одного: клиент-«кирпич» мучительнее, чем разово выключенные
-    // эмоуты. Нативный вылет (напр. в декодере картинок) не ловится ни L.safe,
-    // ни ловушкой вылетов — процесс просто умирает, и клиент нельзя открыть.
-    const val SAFE_MODE_AFTER = 1
 
     @Volatile
     var enabled = true
@@ -100,13 +99,6 @@ object Config {
 
     @Volatile
     var cacheCapMb = CACHE_MB_DEFAULT
-        private set
-
-    // Аварийный режим: подмена, картинки, автоподсказки и пикер выключены,
-    // чтобы клиент, падавший на старте, всё-таки открылся. Считается при
-    // запуске (beginStartup), сбрасывается временем без вылета или вручную.
-    @Volatile
-    var safeMode = false
         private set
 
     @Volatile
@@ -188,29 +180,6 @@ object Config {
         }
     }
 
-    /**
-     * Отметить начало запуска и решить, не пора ли в аварийный режим.
-     * Счётчик пишем ДО рискованной работы и синхронно (commit): нативный вылет
-     * не даст выполнить apply() позже, а нам важно, чтобы попытка сохранилась.
-     * Возвращает true, если модуль уже ронял старт [SAFE_MODE_AFTER] раз подряд.
-     */
-    fun beginStartup(): Boolean {
-        val p = prefs ?: return false
-        val old = p.getInt(KEY_START_ATTEMPTS, 0)
-        if (old >= SAFE_MODE_AFTER) {
-            safeMode = true // остаёмся в аварийном режиме, пока не переживём старт
-            return true
-        }
-        p.edit().putInt(KEY_START_ATTEMPTS, old + 1).commit()
-        safeMode = false
-        return false
-    }
-
-    /** Старт пережили без вылета — обнуляем счётчик неудачных попыток. */
-    fun startupSurvived() {
-        prefs?.edit()?.putInt(KEY_START_ATTEMPTS, 0)?.apply()
-    }
-
     // --- обновления модуля ---
 
     /** Когда последний раз спрашивали GitHub про релизы. */
@@ -231,12 +200,6 @@ object Config {
 
     fun rememberUpdateTold(version: String) {
         prefs?.edit()?.putString(KEY_UPD_TOLD, version)?.apply()
-    }
-
-    /** Ручной выход из аварийного режима (кнопка в настройках). */
-    fun exitSafeMode() {
-        safeMode = false
-        startupSurvived()
     }
 
     /** Сменить потолок кэша картинок (МБ). Подрезку запускает вызывающий. */

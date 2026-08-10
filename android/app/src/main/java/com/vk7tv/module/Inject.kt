@@ -80,7 +80,7 @@ object Inject {
                         // автоподсказки эмоутов при вводе — как в вебе и как
                         // нативные подсказки стикеров ВК. В аварийном режиме не
                         // трогаем: они тоже декодируют картинки.
-                        if (!Config.safeMode) Autocomplete.watch(v)
+                        if (!Startup.safeMode) Autocomplete.watch(v)
                         // на момент attach разметка ещё не разложена — ждём кадр
                         v.post { L.safe("установка кнопки") { attach(v) } }
                     }
@@ -242,7 +242,7 @@ object Inject {
         box.setOnClickListener {
             // В аварийном режиме пикер тоже декодирует картинки — уводим тап в
             // настройки, чтобы дать выключить режим, а не уронить клиент снова.
-            if (Config.safeMode) {
+            if (Startup.safeMode) {
                 L.safe("настройки (аварийный режим)") { SettingsUi.show(box) }
             } else {
                 L.safe("открытие пикера") { PickerUi.toggle(box, lastInput.get() ?: input) }
@@ -272,7 +272,7 @@ object Inject {
     private fun applyState(box: ViewGroup) {
         if (box.childCount < 2) return
         // в аварийном режиме наборы не грузятся — не крутим индикатор вечно
-        val ready = Emotes.ready || Config.safeMode
+        val ready = Emotes.ready || Startup.safeMode
         box.getChildAt(0).visibility = if (ready) View.VISIBLE else View.INVISIBLE
         box.getChildAt(1).visibility = if (ready) View.GONE else View.VISIBLE
     }

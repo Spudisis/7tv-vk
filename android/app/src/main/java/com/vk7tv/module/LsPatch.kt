@@ -42,9 +42,13 @@ internal object LsPatch {
     private const val ORIGIN_DIR = "cache/lspatch/origin"
 
     // Файл, который прямо сейчас пишет другой процесс клиента, тоже выглядит
-    // обрезанным. Свежие не трогаем: запись обновляет время файла, поэтому
-    // идущая распаковка всегда выглядит свежей, а оборванная — нет.
-    private const val FRESH_MS = 60_000L
+    // обрезанным. Отличаем по росту длины: идущая распаковка пишет сотни
+    // мегабайт и за эту паузу заметно прибавляет, оборванная стоит на месте.
+    //
+    // Раньше вместо этого пропускали всё, что моложе минуты, — и человек,
+    // который жмёт по иконке ВК раз за разом, каждый раз попадал в это окно.
+    // Клиент падал заново, а лечением оставалась ручная очистка кэша.
+    private const val GROWTH_MS = 300L
 
     /**
      * Снести битые и лишние копии оригинального APK. [info] — appInfo из
@@ -63,13 +67,18 @@ internal object LsPatch {
         if (!inUse.startsWith(dir.path + "/")) return
 
         val files = dir.listFiles() ?: return
-        val now = System.currentTimeMillis()
         for (f in files) {
             if (!f.isFile) continue
-            if (now - f.lastModified() < FRESH_MS) continue
             val current = f.path == inUse
-            if (current && isWholeZip(f)) {
+            val whole = isWholeZip(f)
+            if (current && whole) {
                 L.v("копия оригинального APK цела, ${f.length() / (1024 * 1024)} МБ")
+                continue
+            }
+            // Целую проверять на рост незачем — пауза стоила бы времени запуска
+            // на каждой лишней копии.
+            if (!whole && growing(f)) {
+                L.i("копию оригинального APK ${f.name} прямо сейчас распаковывают, не трогаю")
                 continue
             }
             // Лишние копии — обрывки .tmp и копии от прошлых версий клиента.
@@ -86,6 +95,13 @@ internal object LsPatch {
             )
         }
     }
+
+    /** Пишет ли файл прямо сейчас другой процесс клиента. */
+    private fun growing(f: File): Boolean = L.safe("рост копии APK") {
+        val before = f.length()
+        Thread.sleep(GROWTH_MS)
+        f.length() != before
+    } ?: false
 
     // Запись конца центрального каталога: сигнатура, дальше 18 байт полей.
     // Лежит в самом хвосте файла, поэтому у обрезанной копии её нет.

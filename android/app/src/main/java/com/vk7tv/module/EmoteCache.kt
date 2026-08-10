@@ -328,6 +328,10 @@ object EmoteCache {
     }
 
     private fun decode(data: ByteArray): Drawable? = L.safe("декод картинки") {
+        // Единственное место, где модуль может умереть молча: ImageDecoder на
+        // битых данных роняет процесс, поймать нечем. Отсюда и взводится
+        // счётчик запуска — до вызова, а не после.
+        Startup.arm()
         val src = ImageDecoder.createSource(ByteBuffer.wrap(data))
         val d = ImageDecoder.decodeDrawable(src) { dec, _, _ ->
             dec.isMutableRequired = false
