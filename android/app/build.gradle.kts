@@ -13,8 +13,8 @@ android {
         // с 7TV декодируются системой, свой GIF-декодер не нужен
         minSdk = 28
         targetSdk = 34
-        versionCode = 61
-        versionName = "0.12.0"
+        versionCode = 62
+        versionName = "0.12.1"
     }
 
     buildFeatures {
@@ -22,9 +22,22 @@ android {
         buildConfig = true
     }
 
+    // Ключ тот же, которым подписывались прошлые сборки модуля (debug-ключ
+    // машины): APK модуля вшивается установщиком в APK клиента, и менять его
+    // подпись незачем.
+    signingConfigs {
+        create("module") {
+            storeFile = File(System.getProperty("user.home"), ".android/debug.keystore")
+            storePassword = "android"
+            keyAlias = "androiddebugkey"
+            keyPassword = "android"
+        }
+    }
+
     buildTypes {
         release {
             isMinifyEnabled = false
+            signingConfig = signingConfigs.getByName("module")
         }
     }
 

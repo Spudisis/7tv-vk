@@ -111,9 +111,13 @@ dependencies {
 
 // Кладём свежесобранный APK модуля в assets под именем module.apk.
 // Это запасной вариант; штатно установщик тянет последний релиз с GitHub.
+// Модуль берём release-сборкой: debug-вариант AGP оставляет классы в трёх
+// dex-файлах, а загрузчик LSPatch читает модуль из распакованной копии в кэше
+// клиента и на таком APK через раз падает с NoClassDefFoundError ещё до
+// handleLoadPackage. Release кладёт всё в один classes.dex.
 val bundleModule by tasks.registering(Copy::class) {
-    dependsOn(":app:assembleDebug")
-    from(project(":app").layout.buildDirectory.file("outputs/apk/debug/app-debug.apk"))
+    dependsOn(":app:assembleRelease")
+    from(project(":app").layout.buildDirectory.file("outputs/apk/release/app-release.apk"))
     into(layout.buildDirectory.dir("bundledModule/module"))
     rename { "module.apk" }
 }
