@@ -1,0 +1,132 @@
+<!doctype html>
+<meta charset="utf-8" />
+<title>VK7TV — стенд попапа</title>
+<link rel="stylesheet" href="../popup/popup.css" />
+<link rel="stylesheet" href="../scrollbar.css" />
+<body>
+  <script src="harness.js"></script>
+  <script>
+    const T = window.VK7TV_TEST;
+    const em = (w, h, extra) => ({
+      u: T.png(w, h),
+      z: 0,
+      r: Math.round((w / h) * 100) / 100,
+      ...(extra || {}),
+    });
+
+    // Наборы: у первого и второго общий код «dup» — голое имя должно достаться
+    // первому по списку, у второго остаётся только имя_постфикс.
+    T.install({
+      sync: {
+        enabled: true,
+        useGlobal: true,
+        widget: true,
+        suggest: true,
+        everywhere: false,
+        sets: [
+          { id: 'S0', name: 'первый', slug: 'one', count: 2 },
+          { id: 'S1', name: 'второй', slug: 'two', count: 1 },
+          { id: 'S2', name: 'без кэша', slug: 'three', count: 5 },
+        ],
+        customEmotes: { mine: em(64, 64, { id: '01MINE0000000000000000MINE' }), broken: null },
+        favorites: [],
+      },
+      local: {
+        setEmotes: {
+          S0: { wide: em(128, 64), dup: em(64, 64) },
+          S1: { dup: em(64, 64) },
+        },
+        globalEmotes: { glob: em(64, 64) },
+      },
+      // Обновление наборов «не дотянулось» до одного набора: попап обязан
+      // сказать это, а не отчитаться «наборы обновлены».
+      respond: (msg) =>
+        msg.type === 'refresh-sets'
+          ? {
+              sets: 3,
+              failed: ['без кэша'],
+              stale: [],
+              cause: 'Не удаётся связаться с 7tv.io — похоже, без VPN он недоступен',
+            }
+          : {},
+    });
+  </script>
+  <script src="../default-emotes.js"></script>
+  <script src="../emotes.js"></script>
+  <script>
+    // Разметка попапа стенду не нужна целиком — только то, к чему тянется
+    // popup.js. Заводим её до подключения скрипта.
+    const IDS = [
+      'toast', 'enabled', 'useGlobal', 'widgetOn', 'suggestOn', 'everywhere', 'globalCount',
+      'setList', 'customList', 'gridNote', 'grid', 'search', 'totalCount', 'setInput',
+      'setStatus', 'addSet', 'refreshSets', 'exportSettings', 'importSettings', 'importFile',
+      'backupStatus', 'addCustom', 'customName', 'customUrl', 'customStatus', 'version',
+    ];
+    for (const id of IDS) {
+      const tag = ['enabled', 'useGlobal', 'widgetOn', 'suggestOn', 'everywhere', 'search',
+        'setInput', 'customName', 'customUrl'].includes(id) ? 'input'
+        : ['setList', 'customList'].includes(id) ? 'ul'
+        : ['addSet', 'refreshSets', 'exportSettings', 'importSettings', 'addCustom'].includes(id) ? 'button'
+        : 'div';
+      const el = document.createElement(tag);
+      el.id = id;
+      if (tag === 'input') el.type = id === 'importFile' ? 'file' : 'text';
+      if (id === 'grid') el.className = 'vk7tv-scroll';
+      document.body.appendChild(el);
+    }
+    const importFile = document.createElement('input');
+    importFile.type = 'file';
+    importFile.id = 'importFile';
+  </script>
+  <script src="../popup/popup.js"></script>
+  <script>
+    const sel = (s) => [...document.querySelectorAll(s)];
+
+    T.run(async () => {
+      await T.waitFor('сетка отрисовалась', () => sel('#grid img').length);
+      const names = sel('#grid img').map((i) => i.alt);
+
+      // Правила коллизий должны совпадать с чатом: голое имя — первому набору
+      // по списку, у второго только с постфиксом, свои перебивают всех.
+      T.check('голое имя досталось первому набору', names.includes('dup'), names.join(','));
+      T.check('второе имя с постфиксом есть', names.includes('dup_two'), names.join(','));
+      T.check('глобальный эмоут в сетке', names.includes('glob'), 'есть');
+      T.check('свой эмоут в сетке', names.includes('mine'), 'есть');
+      T.check('свой эмоут со вторым именем по id', names.includes('mine_01MINE0000000000000000MINE'), 'есть');
+      T.check('битое значение не попало в сетку', !names.includes('broken'), 'нет');
+
+      // Порядок — по размеру, как в поповере.
+      const widths = sel('#grid img').map((i) => Math.round(i.offsetWidth));
+      T.check(
+        'порядок по размеру',
+        widths.every((w, i) => i === 0 || widths[i - 1] <= w),
+        widths.join(',')
+      );
+
+      // Место под картинку занято заранее: ширина до и после загрузки одна.
+      const before = sel('#grid img').map((i) => i.offsetWidth).join(',');
+      await T.waitFor('картинки загрузились', () => sel('#grid img').every((i) => i.naturalWidth));
+      T.eq('ячейки не прыгают после загрузки', sel('#grid img').map((i) => i.offsetWidth).join(','), before);
+
+      // Набор без кэша: попап обязан об этом сказать, а не молчать.
+      T.check('попап говорит про набор без эмоутов',
+        document.getElementById('gridNote').textContent.includes('1'),
+        JSON.stringify(document.getElementById('gridNote').textContent));
+
+      T.eq('в списке наборов все три', sel('#setList li').length, 3);
+      T.eq('в списке своих только годный', sel('#customList li').length, 1);
+
+      // Обновление наборов не должно врать про успех.
+      document.getElementById('refreshSets').click();
+      await T.waitFor('обновление отчиталось', () =>
+        !document.getElementById('setStatus').textContent.includes('Обновляю')
+      );
+      const st = document.getElementById('setStatus');
+      T.check('неудача обновления названа', st.textContent.includes('без кэша'), JSON.stringify(st.textContent));
+      T.check('причина неудачи показана', st.textContent.includes('7tv.io'), JSON.stringify(st.textContent));
+      T.check('строка отмечена как ошибка', st.classList.contains('error'), st.className);
+
+      T.report();
+    });
+  </script>
+</body>

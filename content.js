@@ -26,16 +26,6 @@
     );
   }
 
-  // старый кэш и «свои» эмоуты хранят просто строку-URL
-  function normEmote(v) {
-    return typeof v === 'string' ? { u: v, z: 0 } : v;
-  }
-
-  // Негодное значение в кэше (битая запись, чужой формат) пропускаем:
-  // иначе исключение на нём обрывало загрузку состояния целиком, и
-  // расширение не подменяло вообще ничего — ни в чате, ни в пикере.
-  const usable = (em) => !!(em && typeof em.u === 'string' && em.u);
-
   // Расширение могли обновить или переустановить, пока страница висела
   // открытой: chrome.runtime в таком контент-скрипте пропадает, и любой
   // запрос к фону падает исключением посреди разбора страницы. Отвечаем
@@ -139,68 +129,13 @@
   }
 
   async function loadState() {
-    const sync = await chrome.storage.sync.get({
-      enabled: true,
-      useGlobal: true,
-      suggest: true,
-      everywhere: false,
-      sets: [],
-      customEmotes: {},
-    });
-    const local = await chrome.storage.local.get({ setEmotes: {}, globalEmotes: null });
-    // Список наборов мог оказаться битым — например, файл настроек правили
-    // руками. Пустые записи выкидываем здесь, чтобы дальше на них не падать.
-    const sets = Array.isArray(sync.sets) ? sync.sets.filter((s) => s && s.id) : [];
-
-    enabled = sync.enabled;
-    suggestOn = sync.suggest;
-    everywhere = sync.everywhere;
-    emoteMap = new Map();
-    if (sync.useGlobal) {
-      const g =
-        local.globalEmotes && Object.keys(local.globalEmotes).length
-          ? local.globalEmotes
-          : DEFAULT_EMOTES;
-      for (const [n, v] of Object.entries(g)) {
-        const em = normEmote(v);
-        if (usable(em)) emoteMap.set(n, em);
-      }
-    }
-    // У эмоута из набора есть второе имя — с постфиксом набора:
-    // ok_bratishkinoff. Голое имя остаётся за глобальным набором и «своими»,
-    // а набору стримера достаётся: если код есть в одном наборе — ему, а при
-    // коллизии (код в нескольких наборах) — набору, который выше в списке.
-    // «67» покажет «67» из него, а конкретный «67_stream» доступен явно.
-    // Раньше решал первый по алфавиту слаг, но тогда перестановка наборов
-    // ни на что не влияла и выбрать картинку было нельзя.
-    // a — голое имя эмоута, пометка «это алиас» для автозаполнения.
-    const fromSets = new Map(); // голое имя -> [{slug, em}] из наборов с этим кодом
-    for (const s of sets) {
-      const m = local.setEmotes[s.id];
-      if (!m || typeof m !== 'object') continue;
-      for (const [n, v] of Object.entries(m)) {
-        const em = normEmote(v);
-        if (!usable(em)) continue;
-        if (s.slug) emoteMap.set(`${n}_${s.slug}`, { u: em.u, z: em.z, a: n });
-        const cand = { slug: s.slug || '', em };
-        const list = fromSets.get(n);
-        if (list) list.push(cand);
-        else fromSets.set(n, [cand]);
-      }
-    }
-    for (const [n, list] of fromSets) {
-      if (emoteMap.has(n)) continue; // занято глобальным или своими
-      emoteMap.set(n, list[0].em); // кандидаты складывались в порядке sync.sets
-    }
-    // Свои эмоуты перебивают наборы и глобальные: их добавил сам
-    // пользователь. Второе имя — с id эмоута на 7TV: по нему свой эмоут
-    // узнаёт чужое расширение, у которого этого эмоута нет.
-    for (const [n, v] of Object.entries(sync.customEmotes)) {
-      const em = normEmote(v);
-      if (!usable(em)) continue;
-      emoteMap.set(n, em);
-      if (em.id) emoteMap.set(`${n}_${em.id}`, { u: em.u, z: em.z, a: n });
-    }
+    // Разделы, приведение значений и правила коллизий кодов — в emotes.js:
+    // те же самые нужны пикеру и попапу, и расходиться им нельзя.
+    const { settings, groups } = await VK7TV.load();
+    enabled = settings.enabled;
+    suggestOn = settings.suggest;
+    everywhere = settings.everywhere;
+    emoteMap = VK7TV.flatten(groups);
 
     // Префильтр строим по голым именам: имя с постфиксом содержит голое
     // как подстроку, поэтому такой текст регексп поймает и без него. Голое
@@ -251,9 +186,9 @@
       enabled,
       suggestOn,
       everywhere,
-      sync.useGlobal,
+      settings.useGlobal,
       emoteMap.size,
-      sets.map((s) => `${s.id}:${s.count}`).join(','),
+      settings.sets.map((s) => `${s.id}:${s.count}`).join(','),
     ].join('|');
     const changed = sig !== stateSig;
     stateSig = sig;

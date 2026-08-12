@@ -33,6 +33,7 @@
   let widgetOn = false; // кнопка спрятана настройкой — поповер не открываем
   let collapsedKeys = new Set(); // ключи свёрнутых наборов, помнятся между сессиями
   let pendingReveal = null; // {key, full} — доскроллить, когда набор соберётся
+  let missingSets = 0; // наборы подключены, но их эмоуты не скачались
   let nearObserver = null; // следит, какой набор подошёл к видимой части списка
 
   // --- последнее поле ввода ВК: куда вставлять эмоут ---
@@ -134,49 +135,12 @@
 
   // --- данные ---
 
+  // Разделы, порядок и приведение значений — в emotes.js: их же читают
+  // чат и попап, и расходиться им нельзя.
   async function loadGroups() {
-    const sync = await chrome.storage.sync.get({
-      enabled: true,
-      useGlobal: true,
-      sets: [],
-      customEmotes: {},
-      favorites: [],
-      widget: true,
-    });
-    const local = await chrome.storage.local.get({ setEmotes: {}, globalEmotes: null });
-    groups = [];
-    // «Свои» — первым разделом: их не переставишь стрелками (у них нет
-    // setId), а лезть за ними в конец списка неудобно.
-    const custom = cleanEmotes(sync.customEmotes);
-    if (Object.keys(custom).length) {
-      groups.push({ key: 'custom', title: 'Свои', emotes: custom });
-    }
-    // key — по нему помнится, свёрнут ли набор; берём id набора, а не
-    // название: переименованный на 7TV набор должен остаться свёрнутым
-    if (sync.useGlobal) {
-      const g =
-        local.globalEmotes && Object.keys(local.globalEmotes).length
-          ? local.globalEmotes
-          : DEFAULT_EMOTES;
-      groups.push({ key: 'global', title: 'Глобальные 7TV', emotes: cleanEmotes(g) });
-    }
-    // битые записи в списке наборов (правили файл настроек руками) выкидываем
-    const sets = Array.isArray(sync.sets) ? sync.sets.filter((s) => s && s.id) : [];
-    for (const s of sets) {
-      const m = cleanEmotes(local.setEmotes[s.id]);
-      // suffix — постфикс набора: пикер всегда вставляет имя с ним
-      // setId — по нему набор двигается по списку; у глобального и «своих»
-      // его нет, они всегда с краю
-      if (Object.keys(m).length) {
-        groups.push({
-          key: `set:${s.id}`,
-          setId: s.id,
-          title: s.name,
-          emotes: m,
-          suffix: s.slug || '',
-        });
-      }
-    }
+    const { settings, groups: loaded, missing } = await VK7TV.load();
+    groups = loaded;
+    missingSets = missing;
     // избранное хранит только имена — сам эмоут берём из этого индекса,
     // а эмоуты удалённого набора просто перестают показываться
     emoteIndex = new Map();
@@ -185,33 +149,14 @@
         emoteIndex.set(fullName(g, name, em), em);
       }
     }
-    setFavorites(sync.favorites);
-    widgetOn = sync.enabled && sync.widget;
+    setFavorites(settings.favorites);
+    widgetOn = settings.enabled && settings.widget;
     return widgetOn;
   }
 
   // Вставляем всегда полное имя: у эмоута набора это постфикс набора,
   // у своего — id эмоута на 7TV, по которому его узнаёт чужое расширение.
-  // Так эмоут не спутается с одноимённым из другого набора и с обычным словом.
-  const fullName = (g, name, em) =>
-    em && em.id ? `${name}_${em.id}` : g.suffix ? `${name}_${g.suffix}` : name;
-
-  // старый кэш и часть своих эмоутов хранят просто строку-URL
-  const normEmote = (v) => (typeof v === 'string' ? { u: v, z: 0 } : v);
-
-  // Приводим значения к одному виду один раз — на загрузке, а негодные
-  // отбрасываем. Иначе одна битая запись в кэше рвала сборку сетки
-  // исключением, и поповер оставался с заголовками наборов и без единого
-  // эмоута — во всех разделах сразу, а не только в своём.
-  function cleanEmotes(map) {
-    const out = {};
-    if (!map || typeof map !== 'object') return out;
-    for (const [name, v] of Object.entries(map)) {
-      const em = normEmote(v);
-      if (em && typeof em.u === 'string' && em.u) out[name] = em;
-    }
-    return out;
-  }
+  const fullName = VK7TV.fullName;
 
   function setFavorites(list) {
     favorites = Array.isArray(list) ? list : [];
@@ -877,13 +822,17 @@
   }
 
   // Пустой список: без пояснения непонятно, то ли не нашлось, то ли
-  // расширение не загрузило наборы.
+  // расширение не загрузило наборы. Причины разные, и действия тоже:
+  // набор ещё не добавлен — идти в настройки; набор добавлен, а эмоуты
+  // не скачались (7tv.io был недоступен) — нажать «↻ Обновить наборы».
   function emptyNote(q) {
     const el = document.createElement('div');
     el.className = 'vk7tv-picker-empty';
     el.textContent = q
       ? 'Ничего не найдено'
-      : 'Наборы не подключены — открой настройки расширения и добавь набор 7TV';
+      : missingSets
+        ? `Эмоуты не скачались (наборов без эмоутов: ${missingSets}) — открой настройки расширения и нажми «↻ Обновить наборы»`
+        : 'Наборы не подключены — открой настройки расширения и добавь набор 7TV';
     return el;
   }
 

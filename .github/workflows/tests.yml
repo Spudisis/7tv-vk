@@ -1,0 +1,26 @@
+# Прогон стендов на каждый пуш в main и на каждый PR.
+# Стенды гоняют настоящие скрипты расширения в headless Chrome (он есть
+# в образе ubuntu-latest), сеть им не нужна.
+name: Стенды
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Синтаксис скриптов
+        run: |
+          for f in *.js popup/*.js tests/*.js; do node --check "$f"; done
+          python3 -c 'import json; json.load(open("manifest.json"))'
+
+      - name: Стенды
+        run: ./run-tests.sh
+
+      - name: Сборка пакета
+        run: ./build.sh

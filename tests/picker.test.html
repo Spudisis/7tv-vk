@@ -1,0 +1,120 @@
+<!doctype html>
+<meta charset="utf-8" />
+<title>VK7TV — стенд пикера</title>
+<link rel="stylesheet" href="../picker.css" />
+<body style="margin: 0; background: #141519">
+  <script src="harness.js"></script>
+  <script>
+    const T = window.VK7TV_TEST;
+    const png = T.png;
+
+    // Наборы разных форм: нынешняя запись, старая строка-URL, запись без
+    // пропорций (кэш до 0.22) и битые значения — на них пикер падал целиком,
+    // и сетка оставалась пустой во всех разделах сразу.
+    const em = (w, h) => ({ u: png(w, h), z: 0, r: Math.round((w / h) * 100) / 100 });
+    const CASES = [
+      ['обычный', { wide: em(128, 64), sq1: em(64, 64), tall: em(44, 64), sq2: em(64, 64) }],
+      ['строки', { str1: png(64, 64), str2: png(128, 64) }],
+      ['без пропорций', { c1: { u: png(64, 64), z: 0 }, c2: { u: png(128, 64), z: 0 } }],
+      ['битые', { d1: null, d2: em(64, 64), d3: { z: 0 }, d4: 42 }],
+    ];
+    const sets = CASES.map(([name], i) => ({
+      id: 'SET' + i,
+      name,
+      slug: 's' + i,
+      count: Object.keys(CASES[i][1]).length,
+    }));
+    sets.push(null); // битая запись в списке наборов
+    const setEmotes = {};
+    CASES.forEach(([, map], i) => (setEmotes['SET' + i] = map));
+
+    T.install({
+      sync: {
+        enabled: true,
+        useGlobal: false,
+        widget: true,
+        sets,
+        customEmotes: { mine: em(64, 64) },
+        favorites: ['sq1_s0'],
+      },
+      local: { setEmotes, globalEmotes: null, recent: ['wide_s0'], collapsedGroups: [], stripTab: 'recent' },
+      respond: () => ({}),
+    });
+  </script>
+  <script src="../default-emotes.js"></script>
+  <script src="../emotes.js"></script>
+  <script src="../picker.js"></script>
+  <script>
+    const sel = (s) => [...document.querySelectorAll(s)];
+    const secByName = (name) =>
+      sel('.vk7tv-picker-group').find(
+        (s) => s.querySelector('.vk7tv-picker-group-name').textContent === name
+      );
+
+    T.run(async () => {
+      await T.waitFor('виджет появился', () => document.querySelector('.vk7tv-widget'));
+      // открываем поповер тем же путём, что и пользователь с клавиатуры
+      document.dispatchEvent(
+        new KeyboardEvent('keydown', { code: 'KeyE', ctrlKey: true, shiftKey: true, bubbles: true })
+      );
+      // Ячейки набор создаёт, когда подходит к видимой части списка, поэтому
+      // ждём именно ячейки последнего раздела, а не появление заголовков.
+      await T.waitFor(
+        'сетка собралась',
+        () => secByName('битые') && secByName('битые').querySelector('.vk7tv-picker-cell')
+      );
+
+      // Битое значение не должно уносить с собой остальные разделы.
+      T.eq('разделов в сетке', sel('.vk7tv-picker-group').length, 5); // «Свои» + 4 набора
+      T.eq('ячеек в обычном наборе', secByName('обычный').querySelectorAll('.vk7tv-picker-cell').length, 4);
+      T.eq('старый формат-строка рисуется', secByName('строки').querySelectorAll('.vk7tv-picker-cell').length, 2);
+      T.eq('кэш без пропорций рисуется', secByName('без пропорций').querySelectorAll('.vk7tv-picker-cell').length, 2);
+      T.eq('битые значения выброшены', secByName('битые').querySelectorAll('.vk7tv-picker-cell').length, 1);
+      T.check('битая запись в списке наборов пропущена', !secByName('undefined'), 'нет раздела-пустышки');
+
+      // Порядок — по ширине ячейки, от узких к широким.
+      const cells = [...secByName('обычный').querySelectorAll('.vk7tv-picker-cell')];
+      T.eq(
+        'порядок по размеру',
+        cells.map((c) => c.dataset.name).join(','),
+        'tall_s0,sq1_s0,sq2_s0,wide_s0'
+      );
+
+      // Место под картинку занято до её загрузки: размеры ячейки не меняются.
+      const before = cells.map((c) => c.offsetWidth + 'x' + c.offsetHeight).join(' ');
+      await T.waitFor('картинки загрузились', () =>
+        cells.every((c) => c.querySelector('img').naturalWidth)
+      );
+      T.eq('ячейки не прыгают после загрузки', cells.map((c) => c.offsetWidth + 'x' + c.offsetHeight).join(' '), before);
+      T.eq('ширина широкого эмоута', cells[3].offsetWidth, 70); // 32*2 + отбивка 6
+      T.eq('ширина квадратного', cells[1].offsetWidth, 38); // 32 + отбивка 6
+
+      // Полоса «Недавние» живёт своим порядком и не пересортировывается.
+      T.eq('в полосе недавний эмоут', sel('.vk7tv-picker-fav .vk7tv-picker-cell').length, 1);
+
+      // Своё звёздочка/избранное: имя из sync.favorites нашлось в индексе.
+      T.check(
+        'избранное находит эмоут по имени',
+        !!sel('.vk7tv-picker-cell[data-name="sq1_s0"]').length,
+        'нашлось'
+      );
+
+      T.eq('подвал в обычном состоянии', document.querySelector('.vk7tv-picker-foot').textContent,
+        'Вставить — клик или Enter, выбор — стрелками');
+
+      // Вкладка отвалилась от расширения: поповер должен сказать это, а не
+      // молча стоять с пустыми разделами.
+      delete window.chrome.runtime;
+      document.dispatchEvent(
+        new KeyboardEvent('keydown', { code: 'KeyE', ctrlKey: true, shiftKey: true, bubbles: true })
+      );
+      document.dispatchEvent(
+        new KeyboardEvent('keydown', { code: 'KeyE', ctrlKey: true, shiftKey: true, bubbles: true })
+      );
+      await T.waitFor('поповер пожаловался на отвалившуюся вкладку', () =>
+        document.querySelector('.vk7tv-picker-foot').textContent.includes('обнови страницу')
+      );
+
+    });
+  </script>
+</body>

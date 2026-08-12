@@ -56,7 +56,9 @@ mkdir -p "$STAGE"
 # служебные файлы сборки, картинки для README, модуль для Android и папку
 # .claude (внутренние скиллы) расширению не нужны — у модуля своя сборка
 # в android/, а .claude в публичном расширении лежать не должна
-git ls-files -z | grep -zv -e '^build\.sh$' -e '^\.gitignore$' -e '^\.claude/' -e '^docs/' -e '^android/' | while IFS= read -r -d '' f; do
+git ls-files -z | grep -zv -e '^build\.sh$' -e '^run-tests\.sh$' -e '^\.gitignore$' \
+  -e '^\.claude/' -e '^\.github/' -e '^docs/' -e '^android/' -e '^tests/' |
+  while IFS= read -r -d '' f; do
   mkdir -p "$STAGE/$(dirname "$f")"
   cp "$f" "$STAGE/$f"
 done

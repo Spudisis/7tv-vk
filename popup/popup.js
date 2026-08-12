@@ -15,77 +15,14 @@ function sendMessage(msg) {
   return new Promise((resolve) => chrome.runtime.sendMessage(msg, resolve));
 }
 
-async function getState() {
-  const sync = await chrome.storage.sync.get({
-    enabled: true,
-    useGlobal: true,
-    widget: true,
-    suggest: true,
-    everywhere: false,
-    sets: [],
-    customEmotes: {},
-  });
-  const local = await chrome.storage.local.get({ setEmotes: {}, globalEmotes: null });
-  // битые записи в списке наборов выкидываем сразу: иначе на них падает
-  // и список наборов, и сетка всех эмоутов
-  sync.sets = Array.isArray(sync.sets) ? sync.sets.filter((s) => s && s.id) : [];
-  return { sync, local };
-}
-
-// значение эмоута: {u: url, z: zero-width, r: пропорции}; старый кэш
-// и «свои» — просто строка
-const normEmote = (v) => (typeof v === 'string' ? { u: v, z: 0 } : v);
-
-// битую запись в кэше пропускаем: одна такая иначе рвала показ всего списка
-const usable = (em) => !!(em && typeof em.u === 'string' && em.u);
-
-function activeEmotes({ sync, local }) {
-  const map = new Map();
-  if (sync.useGlobal) {
-    const g =
-      local.globalEmotes && Object.keys(local.globalEmotes).length
-        ? local.globalEmotes
-        : DEFAULT_EMOTES;
-    for (const [n, v] of Object.entries(g)) {
-      const em = normEmote(v);
-      if (usable(em)) map.set(n, em);
-    }
-  }
-  // Так же, как content.js: у эмоута набора есть имя с постфиксом (имя_slug),
-  // а при коллизии голое имя достаётся набору выше в списке — иначе список
-  // в попапе расходится с тем, что реально рендерится в чате.
-  const fromSets = new Map(); // голое имя -> [{slug, em}]
-  for (const s of sync.sets) {
-    const m = local.setEmotes[s.id];
-    if (!m || typeof m !== 'object') continue;
-    for (const [n, v] of Object.entries(m)) {
-      const em = normEmote(v);
-      if (!usable(em)) continue;
-      if (s.slug) map.set(`${n}_${s.slug}`, em);
-      const cand = { slug: s.slug || '', em };
-      const list = fromSets.get(n);
-      if (list) list.push(cand);
-      else fromSets.set(n, [cand]);
-    }
-  }
-  for (const [n, list] of fromSets) {
-    if (map.has(n)) continue; // занято глобальным
-    map.set(n, list[0].em); // кандидаты складывались в порядке sync.sets
-  }
-  // у своего эмоута второе имя — с id эмоута на 7TV: по нему его узнаёт
-  // чужое расширение (см. content.js)
-  for (const [n, v] of Object.entries(sync.customEmotes)) {
-    const em = normEmote(v);
-    if (!usable(em)) continue;
-    map.set(n, em);
-    if (em.id) map.set(`${n}_${em.id}`, em);
-  }
-  return map;
-}
+// Настройки, разделы и правила коллизий читает emotes.js — тот же самый
+// код, что работает в чате и в поповере. Иначе список «Все эмоуты»
+// расходился бы с тем, что реально рендерится на странице.
+const normEmote = VK7TV.normEmote;
+const usable = VK7TV.usable;
 
 async function render() {
-  const state = await getState();
-  const { sync } = state;
+  const { settings: sync, groups, missing } = await VK7TV.load();
 
   $('#enabled').checked = sync.enabled;
   $('#useGlobal').checked = sync.useGlobal;
@@ -161,7 +98,15 @@ async function render() {
     customList.appendChild(li);
   }
 
-  renderGrid(activeEmotes(state));
+  // Наборы, у которых нет эмоутов, — отдельная строка: без неё непонятно,
+  // почему набор в списке есть, а в сетке его эмоутов нет.
+  const note = $('#gridNote');
+  note.textContent = missing
+    ? `Наборов без эмоутов: ${missing} — нажми «↻ Обновить наборы»`
+    : '';
+  note.style.display = missing ? '' : 'none';
+
+  renderGrid(VK7TV.flatten(groups));
 }
 
 // --- перетаскивание наборов в списке ---
@@ -204,6 +149,10 @@ $('#setList').addEventListener('dragend', async () => {
   render();
 });
 
+// высота ячейки в сетке — та же, что в popup.css
+const GRID_PX = 28;
+const cellWidth = (em) => Math.round(GRID_PX * (em.r || 1));
+
 let gridEmotes = new Map();
 function renderGrid(map) {
   gridEmotes = map;
@@ -211,10 +160,18 @@ function renderGrid(map) {
   const grid = $('#grid');
   grid.innerHTML = '';
   let shown = 0;
-  for (const [name, v] of map) {
+  // Порядок и место под картинку — как в поповере: от узких к широким,
+  // ширина ячейки известна заранее по пропорциям, поэтому сетка не скачет,
+  // пока грузятся картинки. При поиске порядок не меняем: там важнее,
+  // в каком порядке имена совпали.
+  const items = [...map];
+  if (!query) items.sort((a, b) => cellWidth(a[1]) - cellWidth(b[1]));
+  for (const [name, v] of items) {
     if (query && !name.toLowerCase().includes(query)) continue;
     const img = document.createElement('img');
     img.src = v.u;
+    if (v.r) img.style.aspectRatio = String(v.r);
+    else img.style.minWidth = GRID_PX + 'px';
     img.alt = name;
     img.title = name;
     img.loading = 'lazy';
@@ -266,18 +223,36 @@ $('#addSet').addEventListener('click', async () => {
   render();
 });
 
+// Длинный список имён в строке статуса не читается — показываем три и число
+// остальных.
+const listNames = (a) => (a.length > 3 ? `${a.slice(0, 3).join(', ')} и ещё ${a.length - 3}` : a.join(', '));
+
+// Что на самом деле вышло из обновления наборов. Раньше здесь всегда было
+// «наборы обновлены»: ошибки по каждому набору оставались в фоне, и человек
+// не понимал, почему эмоутов нет.
+function refreshOutcome(resp) {
+  if (!resp) return { ok: false, text: 'Фоновый скрипт не ответил — попробуй ещё раз' };
+  if (resp.error) return { ok: false, text: resp.error };
+  const failed = resp.failed || [];
+  const stale = resp.stale || [];
+  if (failed.length) {
+    return { ok: false, text: `Эмоуты не скачались: ${listNames(failed)} — ${resp.cause}` };
+  }
+  if (stale.length) {
+    // эмоуты есть, но старые: набор показываем из кэша
+    return { ok: true, text: `Обновлено, кроме: ${listNames(stale)} — ${resp.cause}` };
+  }
+  return { ok: true, text: '' };
+}
+
 $('#refreshSets').addEventListener('click', async () => {
   const status = $('#setStatus');
   status.classList.remove('error');
   status.textContent = 'Обновляю…';
   // по кнопке — принудительно, иначе сеть не трогается и кэш остаётся как есть
-  const resp = await sendMessage({ type: 'refresh-sets', force: true });
-  if (resp && resp.error) {
-    status.classList.add('error');
-    status.textContent = resp.error;
-    return;
-  }
-  status.textContent = 'Наборы обновлены';
+  const out = refreshOutcome(await sendMessage({ type: 'refresh-sets', force: true }));
+  status.classList.toggle('error', !out.ok);
+  status.textContent = out.text || 'Наборы обновлены';
   render();
 });
 
@@ -350,18 +325,21 @@ $('#importFile').addEventListener('change', async (e) => {
       sets: merged,
       customEmotes: { ...cur.customEmotes, ...(data.customEmotes || {}) },
       favorites: [...new Set([...cur.favorites, ...favorites])],
-      // набор по умолчанию не должен вернуться поверх восстановленного списка
-      seeded: true,
     });
     status.textContent = `Восстановлено наборов: ${merged.length}. Качаю эмоуты…`;
     render();
-    const resp = await sendMessage({ type: 'refresh-sets' });
-    if (resp && resp.error) throw new Error(resp.error);
-    status.textContent = 'Готово, эмоуты загружены';
+    const out = refreshOutcome(await sendMessage({ type: 'refresh-sets' }));
+    if (!out.ok) throw new Error(out.text);
+    status.textContent = out.text || 'Готово, эмоуты загружены';
     render();
   } catch (err) {
     status.classList.add('error');
-    status.textContent = String((err && err.message) || err);
+    // Переполнение хранилища браузер отдаёт как «QUOTA_BYTES_PER_ITEM quota
+    // exceeded» — тут это самая вероятная неудача записи, объясняем словами.
+    const msg = String((err && err.message) || err);
+    status.textContent = /QUOTA_BYTES|quota exceeded/i.test(msg)
+      ? 'Настройки не поместились в хранилище браузера — в файле слишком много своих эмоутов или наборов'
+      : msg;
   }
 });
 

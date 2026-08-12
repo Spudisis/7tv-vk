@@ -65,6 +65,11 @@ function humanError(e) {
     return 'Не удаётся связаться с 7tv.io — похоже, без VPN он недоступен';
   }
   if (/\bHTTP\s+\d{3}\b/.test(msg)) return '7TV сейчас недоступен, попробуй позже';
+  // Потолок chrome.storage.sync — 8 КБ на запись; браузер отдаёт про это
+  // «QUOTA_BYTES_PER_ITEM quota exceeded», человеку это ни о чём
+  if (/QUOTA_BYTES|quota exceeded/i.test(msg)) {
+    return 'Настройки не поместились в хранилище браузера — удали часть своих эмоутов или наборов';
+  }
   return msg || 'Что-то пошло не так';
 }
 
@@ -181,6 +186,12 @@ async function refreshAll(force = false) {
   });
   const setEmotes = {};
   const nextSets = [];
+  // Неудачи по каждому набору собираем и отдаём наверх: раньше они молча
+  // тонули в catch, и попап писал «Готово, эмоуты загружены», даже когда
+  // не скачалось ни одного набора.
+  const failed = []; // эмоутов нет вовсе — набор в поповере не появится
+  const stale = []; // обновить не удалось, показываем прошлый кэш
+  let lastError = null;
   for (const s of sets) {
     if (!force && oldCache[s.id] && hasRatios(oldCache[s.id])) {
       setEmotes[s.id] = oldCache[s.id];
@@ -199,7 +210,13 @@ async function refreshAll(force = false) {
       });
     } catch (e) {
       // API недоступен — оставляем прошлый кэш этого набора
-      if (oldCache[s.id]) setEmotes[s.id] = oldCache[s.id];
+      lastError = e;
+      if (oldCache[s.id]) {
+        setEmotes[s.id] = oldCache[s.id];
+        stale.push(s.name || s.id);
+      } else {
+        failed.push(s.name || s.id);
+      }
       nextSets.push(s);
     }
   }
@@ -214,7 +231,13 @@ async function refreshAll(force = false) {
   }
   await chrome.storage.local.set(localPatch);
   await chrome.storage.sync.set({ sets: nextSets });
-  return { sets: nextSets.length };
+  return {
+    sets: nextSets.length,
+    failed,
+    stale,
+    // причина одна на всех: если 7tv.io недоступен, он недоступен для всего
+    cause: failed.length || stale.length ? humanError(lastError) : '',
+  };
 }
 
 // --- предложение подключить набор стримера ---

@@ -1,0 +1,92 @@
+<!doctype html>
+<meta charset="utf-8" />
+<!-- Такой же запрет, как у ВК: картинки с cdn.7tv.app не загружаются, и путь
+     через фоновый скрипт проверяется без сети и без зависимости от 7TV. -->
+<meta http-equiv="Content-Security-Policy" content="img-src 'self' data: blob:" />
+<title>VK7TV — стенд контент-скрипта</title>
+<link rel="stylesheet" href="../content.css" />
+<body style="margin: 0; background: #191a1c; color: #e1e3e6; font: 15px sans-serif">
+  <!-- разметка сообщения ВК: подмена работает внутри текста сообщения -->
+  <div class="im-mess-stack"><div class="MessageText" id="msg1">привет sq1 и wide тут</div></div>
+  <div class="im-mess-stack"><div class="MessageText" id="msg2">снова sq1 и мимо dead</div></div>
+
+  <script src="harness.js"></script>
+  <script>
+    const T = window.VK7TV_TEST;
+    const CDN = {
+      sq1: 'https://cdn.7tv.app/emote/01AAA00000000000000000AAAA/2x.webp',
+      wide: 'https://cdn.7tv.app/emote/01BBB00000000000000000BBBB/2x.webp',
+      dead: 'https://cdn.7tv.app/emote/01CCC00000000000000000CCCC/2x.webp',
+    };
+
+    // Фон отвечает не сразу и не на всё: так проверяются и заглушка загрузки,
+    // и возврат к тексту, когда картинку достать не удалось.
+    const asked = [];
+    let release = null;
+    const slow = new Promise((r) => (release = r));
+
+    T.install({
+      sync: {
+        enabled: true,
+        useGlobal: false,
+        suggest: false,
+        everywhere: true,
+        sets: [{ id: 'S0', name: 't', slug: '', count: 3 }],
+        customEmotes: { broken: null }, // битое значение не должно ронять загрузку
+      },
+      local: {
+        setEmotes: {
+          S0: {
+            sq1: { u: CDN.sq1, z: 0, r: 1 },
+            wide: { u: CDN.wide, z: 0, r: 2 },
+            dead: { u: CDN.dead, z: 0, r: 1 },
+          },
+        },
+        globalEmotes: null,
+      },
+      respond: (msg) => {
+        if (msg.type !== 'fetch-emote') return {};
+        asked.push(msg.url);
+        // dead не отдаём вовсе — этот эмоут должен вернуться текстом
+        if (msg.url === CDN.dead) return slow.then(() => ({}));
+        return slow.then(() => ({ dataUrl: T.pngB64(msg.url === CDN.wide ? 128 : 64, 64) }));
+      },
+    });
+  </script>
+  <script src="../default-emotes.js"></script>
+  <script src="../emotes.js"></script>
+  <script src="../content.js"></script>
+  <script>
+    const sel = (s) => [...document.querySelectorAll(s)];
+    const rendered = () => sel('span.vk7tv-text').map((s) => s.textContent).join(' | ');
+
+    T.run(async () => {
+      await T.waitFor('состояние загрузилось', () => window.__vk7tv);
+      T.eq('битое значение среди своих не сорвало загрузку', window.__vk7tv.emoteMap.size, 3);
+
+      await T.waitFor('заглушки встали в сообщения', () => sel('.vk7tv-loading').length >= 4);
+      const holds = sel('.vk7tv-loading');
+      T.eq('заглушек по числу эмоутов', holds.length, 4); // sq1, wide, dead и sq1 во втором
+      T.eq('в заглушке имя эмоута', holds[0].textContent, 'sq1');
+      T.check('в заглушке есть крутилка', !!holds[0].querySelector('i'), 'есть');
+      T.eq('высота заглушки как у картинки эмоута', holds[0].offsetHeight, 31);
+      T.check('текст сообщения читается целиком', rendered().includes('привет sq1 и wide тут'), rendered());
+
+      // Один и тот же эмоут не качается дважды.
+      T.eq('уникальных запросов к фону', new Set(asked).size, 3);
+      T.eq('лишних запросов нет', asked.length, 3);
+
+      release();
+      await T.waitFor('картинки заменили заглушки', () => sel('img.vk7tv-emote').length >= 3);
+      T.eq('картинок в сообщениях', sel('img.vk7tv-emote').length, 3);
+      T.eq('квадратный эмоут', sel('img.vk7tv-emote')[0].offsetWidth, 31);
+      T.eq('широкий эмоут вдвое шире', sel('img.vk7tv-emote')[1].offsetWidth, 62);
+      T.check('картинка приехала через фон', sel('img.vk7tv-emote')[0].src.startsWith('blob:'),
+        sel('img.vk7tv-emote')[0].src.slice(0, 16));
+
+      await T.waitFor('эмоут без картинки вернулся текстом', () => rendered().includes('dead'));
+      T.eq('заглушек не осталось', sel('.vk7tv-loading').length, 0);
+
+    });
+  </script>
+</body>

@@ -288,17 +288,23 @@ details .row {
 #grid {
   display: flex;
   flex-wrap: wrap;
-  gap: 4px;
+  gap: 6px;
   max-height: 180px;
   overflow-y: auto;
   padding: 2px;
 }
 
+/* Ширину задаёт inline-стиль aspect-ratio: место под эмоут занято до того,
+   как картинка загрузится, иначе сетка расползается на глазах. Отбивки
+   у картинки нет — иначе при border-box заданные пропорции считались бы
+   вместе с ней и не совпали с загруженной картинкой; расстояние между
+   эмоутами держит gap самой сетки. */
 #grid img {
   height: 28px;
+  width: auto;
+  object-fit: contain;
   cursor: pointer;
   border-radius: 4px;
-  padding: 2px;
 }
 
 #grid img:hover {
