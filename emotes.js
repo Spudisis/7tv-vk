@@ -38,6 +38,13 @@ const VK7TV = (() => {
   const fullName = (g, name, em) =>
     em && em.id ? `${name}_${em.id}` : g.suffix ? `${name}_${g.suffix}` : name;
 
+  // Пропорции для сетки. У растяжек и баннеров бывает 10:1 и шире — такая
+  // ячейка занимала всю строку и вылезала за попап. Ширину ограничиваем,
+  // а картинка масштабируется внутрь ячейки целиком (object-fit: contain):
+  // обрезать нельзя, по половине растяжки её не узнать.
+  const MAX_RATIO = 4;
+  const displayRatio = (em) => Math.min(Math.max((em && em.r) || 1, 0.1), MAX_RATIO);
+
   const DEFAULTS = {
     enabled: true,
     useGlobal: true,
@@ -145,5 +152,5 @@ const VK7TV = (() => {
     return map;
   }
 
-  return { load, flatten, fullName, normEmote, usable, cleanEmotes, cleanSets };
+  return { load, flatten, fullName, displayRatio, normEmote, usable, cleanEmotes, cleanSets };
 })();

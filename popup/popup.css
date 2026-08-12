@@ -302,6 +302,9 @@ details .row {
 #grid img {
   height: 28px;
   width: auto;
+  /* страховка на случай эмоута с неизвестными пропорциями: такой узнаёт
+     свою ширину только при загрузке и мог бы вылезти за попап */
+  max-width: 100%;
   object-fit: contain;
   cursor: pointer;
   border-radius: 4px;

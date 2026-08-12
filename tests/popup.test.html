@@ -33,7 +33,7 @@
       },
       local: {
         setEmotes: {
-          S0: { wide: em(128, 64), dup: em(64, 64) },
+          S0: { wide: em(128, 64), dup: em(64, 64), banner: em(640, 64) },
           S1: { dup: em(64, 64) },
         },
         globalEmotes: { glob: em(64, 64) },
@@ -112,6 +112,10 @@
       T.check('попап говорит про набор без эмоутов',
         document.getElementById('gridNote').textContent.includes('1'),
         JSON.stringify(document.getElementById('gridNote').textContent));
+
+      // растяжка 10:1 не должна вылезать за попап (340px)
+      const banner = sel('#grid img').find((i) => i.alt.startsWith('banner'));
+      T.eq('растяжка ограничена по ширине', banner.offsetWidth, 112); // 28*4
 
       T.eq('в списке наборов все три', sel('#setList li').length, 3);
       T.eq('в списке своих только годный', sel('#customList li').length, 1);

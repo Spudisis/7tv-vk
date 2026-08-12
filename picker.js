@@ -401,8 +401,10 @@
 
   // Высота эмоута в сетке — та же, что в picker.css. Вместе с пропорциями
   // она даёт ширину ячейки: по ней эмоуты выстраиваются по размеру.
+  // Пропорции берём ограниченные (см. displayRatio): растяжка 10:1 иначе
+  // занимала бы всю строку.
   const CELL_PX = 32;
-  const cellWidth = (em) => Math.round(CELL_PX * (em.r || 1));
+  const cellWidth = (em) => Math.round(CELL_PX * VK7TV.displayRatio(em));
 
   // Ячейка — только разметка, без своих слушателей: в наборах бывают тысячи
   // эмоутов, и пять обработчиков на ячейку складывались в десятки тысяч.
@@ -423,7 +425,7 @@
     // размеров у неё нет, ячейка была шириной в отбивку, а после загрузки
     // сетка расползалась. Пропорции пришли из API вместе с адресом;
     // у своей картинки не с 7TV их нет — там место под квадрат.
-    if (em.r) img.style.aspectRatio = String(em.r);
+    if (em.r) img.style.aspectRatio = String(VK7TV.displayRatio(em));
     else img.style.minWidth = CELL_PX + 'px';
     img.alt = name;
     img.title = name;

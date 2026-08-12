@@ -149,9 +149,10 @@ $('#setList').addEventListener('dragend', async () => {
   render();
 });
 
-// высота ячейки в сетке — та же, что в popup.css
+// высота ячейки в сетке — та же, что в popup.css; пропорции ограничены,
+// иначе растяжка 10:1 вылезает за попап (см. displayRatio в emotes.js)
 const GRID_PX = 28;
-const cellWidth = (em) => Math.round(GRID_PX * (em.r || 1));
+const cellWidth = (em) => Math.round(GRID_PX * VK7TV.displayRatio(em));
 
 let gridEmotes = new Map();
 function renderGrid(map) {
@@ -170,7 +171,7 @@ function renderGrid(map) {
     if (query && !name.toLowerCase().includes(query)) continue;
     const img = document.createElement('img');
     img.src = v.u;
-    if (v.r) img.style.aspectRatio = String(v.r);
+    if (v.r) img.style.aspectRatio = String(VK7TV.displayRatio(v));
     else img.style.minWidth = GRID_PX + 'px';
     img.alt = name;
     img.title = name;

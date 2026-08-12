@@ -13,7 +13,7 @@
     // и сетка оставалась пустой во всех разделах сразу.
     const em = (w, h) => ({ u: png(w, h), z: 0, r: Math.round((w / h) * 100) / 100 });
     const CASES = [
-      ['обычный', { wide: em(128, 64), sq1: em(64, 64), tall: em(44, 64), sq2: em(64, 64) }],
+      ['обычный', { wide: em(128, 64), sq1: em(64, 64), tall: em(44, 64), sq2: em(64, 64), banner: em(640, 64) }],
       ['строки', { str1: png(64, 64), str2: png(128, 64) }],
       ['без пропорций', { c1: { u: png(64, 64), z: 0 }, c2: { u: png(128, 64), z: 0 } }],
       ['битые', { d1: null, d2: em(64, 64), d3: { z: 0 }, d4: 42 }],
@@ -66,7 +66,7 @@
 
       // Битое значение не должно уносить с собой остальные разделы.
       T.eq('разделов в сетке', sel('.vk7tv-picker-group').length, 5); // «Свои» + 4 набора
-      T.eq('ячеек в обычном наборе', secByName('обычный').querySelectorAll('.vk7tv-picker-cell').length, 4);
+      T.eq('ячеек в обычном наборе', secByName('обычный').querySelectorAll('.vk7tv-picker-cell').length, 5);
       T.eq('старый формат-строка рисуется', secByName('строки').querySelectorAll('.vk7tv-picker-cell').length, 2);
       T.eq('кэш без пропорций рисуется', secByName('без пропорций').querySelectorAll('.vk7tv-picker-cell').length, 2);
       T.eq('битые значения выброшены', secByName('битые').querySelectorAll('.vk7tv-picker-cell').length, 1);
@@ -77,7 +77,7 @@
       T.eq(
         'порядок по размеру',
         cells.map((c) => c.dataset.name).join(','),
-        'tall_s0,sq1_s0,sq2_s0,wide_s0'
+        'tall_s0,sq1_s0,sq2_s0,wide_s0,banner_s0'
       );
 
       // Место под картинку занято до её загрузки: размеры ячейки не меняются.
@@ -88,6 +88,9 @@
       T.eq('ячейки не прыгают после загрузки', cells.map((c) => c.offsetWidth + 'x' + c.offsetHeight).join(' '), before);
       T.eq('ширина широкого эмоута', cells[3].offsetWidth, 70); // 32*2 + отбивка 6
       T.eq('ширина квадратного', cells[1].offsetWidth, 38); // 32 + отбивка 6
+      // растяжка 10:1 ограничена по ширине, иначе занимала бы всю строку
+      T.eq('растяжка обрезана по ширине', cells[4].offsetWidth, 134); // 32*4 + отбивка 6
+      T.check('растяжка не шире сетки', cells[4].offsetWidth < 310, cells[4].offsetWidth + 'px');
 
       // Полоса «Недавние» живёт своим порядком и не пересортировывается.
       T.eq('в полосе недавний эмоут', sel('.vk7tv-picker-fav .vk7tv-picker-cell').length, 1);
