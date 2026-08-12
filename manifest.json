@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "VK7TV — эмоуты 7TV во ВКонтакте",
-  "version": "0.19.1",
+  "version": "0.20.0",
   "description": "Прослойка над 7TV: заменяет слова-коды на анимированные эмоуты из наборов 7TV в сообщениях и ленте ВКонтакте.",
   "icons": {
     "16": "icons/icon-16.png",
@@ -33,7 +33,7 @@
         "*://web.vk.me/*",
         "*://*.vk.me/*"
       ],
-      "js": ["default-emotes.js", "content.js", "autocomplete.js", "picker.js"],
+      "js": ["default-emotes.js", "content.js", "autocomplete.js", "picker.js", "composer.js"],
       "css": ["scrollbar.css", "content.css", "picker.css"],
       "run_at": "document_idle",
       "all_frames": true

@@ -29,6 +29,43 @@ img.vk7tv-emote.vk7tv-zw {
   pointer-events: none;
 }
 
+/* Спойлер: [spoiler]текст[/spoiler] — блюр до первого клика. Элемент
+   остаётся строчным: с display: inline-block длинный спойлер перестал бы
+   переноситься по строкам. */
+.vk7tv-spoiler {
+  filter: blur(5px);
+}
+
+/* [spoiler/] — блюр всего сообщения, вместе с вложениями */
+.vk7tv-spoiler-all {
+  filter: blur(14px);
+}
+
+.vk7tv-spoiler,
+.vk7tv-spoiler-all {
+  transition: filter 0.15s ease;
+  cursor: pointer;
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+.vk7tv-spoiler.vk7tv-open,
+.vk7tv-spoiler-all.vk7tv-open {
+  filter: none;
+  cursor: auto;
+  -webkit-user-select: auto;
+  user-select: auto;
+}
+
+/* кнопка «спойлер» в панели форматирования ВК: классы ей достаются
+   от соседней кнопки ВК, здесь — только выравнивание иконки на случай,
+   если у соседа оно держится не на классе */
+.vk7tv-fmt {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
 /* чип «поставить набор стримера» — сразу правее незнакомого слова;
    у ВК свои стили для button, поэтому всё прописано явно */
 button.vk7tv-suggest {

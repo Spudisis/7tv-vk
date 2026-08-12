@@ -257,7 +257,30 @@
   // сообщении, и на строке списка диалогов, а клик по эмоуту не должен
   // заодно открывать переписку. Нажатие гасим тоже — строку диалога ВК
   // открывает по нему, до click дело не доходит.
-  function onEmotePointer(e) {
+  // Закрытый спойлер забирает нажатие себе: иначе ВК откроет фото из
+  // вложения, а клик по эмоуту внутри — пикер. Раскрываем все закрытые
+  // спойлеры над точкой нажатия: текстовый спойлер бывает и внутри
+  // сообщения, закрытого целиком.
+  const CLOSED_SPOILER = '.vk7tv-spoiler:not(.vk7tv-open),.vk7tv-spoiler-all:not(.vk7tv-open)';
+
+  function closedSpoiler(el) {
+    return el && el.closest ? el.closest(CLOSED_SPOILER) : null;
+  }
+
+  function onPointer(e) {
+    if (closedSpoiler(e.target)) {
+      e.preventDefault();
+      e.stopPropagation();
+      if (e.type !== 'click') return;
+      for (let n = closedSpoiler(e.target); n; n = closedSpoiler(n.parentElement)) {
+        n.classList.add('vk7tv-open');
+      }
+      return;
+    }
+    // пикер живёт в основном фрейме: во фрейме клик по эмоуту было бы
+    // некому обработать, и гасить его незачем. Спойлер выше — наоборот,
+    // раскрывается в любом фрейме, обработчик там свой.
+    if (window.top !== window) return;
     const img = e.target;
     if (!(img instanceof HTMLImageElement) || !img.classList.contains(EMOTE_CLASS)) return;
     e.preventDefault(); // заодно не забираем фокус у поля ввода ВК
@@ -269,12 +292,8 @@
       })
     );
   }
-  // только в основном фрейме: пикер живёт там же, и во фрейме клик было бы
-  // некому обработать — гасить его незачем
-  if (window.top === window) {
-    for (const type of ['pointerdown', 'mousedown', 'click']) {
-      document.addEventListener(type, onEmotePointer, true);
-    }
+  for (const type of ['pointerdown', 'mousedown', 'click']) {
+    document.addEventListener(type, onPointer, true);
   }
 
   // Чип сразу за незнакомым словом: превью эмоута и кнопка «поставить
@@ -491,17 +510,31 @@
     return false;
   }
 
-  // Текст сообщения ВК разбивает на куски (ссылки, упоминания, переносы),
-  // поэтому идём вверх: сам контейнер бывает и через несколько уровней.
-  // Кто встретился первым, тот и решает: превью в непрочитанном диалоге
-  // подменяем (MessagePreview ближе, чем строка с «unread» в классе),
-  // а число в счётчике — нет.
-  function inMessenger(el) {
-    for (let n = el, depth = 0; n && n !== document.body && depth < 12; n = n.parentElement, depth++) {
-      if (isCounter(n)) return false;
-      if (isMessageText(n)) return true;
-    }
+  // Превью последнего сообщения в списке диалогов. Отличаем его от текста
+  // в открытом диалоге ради [spoiler/]: закрывать блюром строку диалога
+  // вместе с аватаром, именем и временем незачем — вложений в ней всё
+  // равно нет, и блюр остаётся на самом тексте.
+  const PREVIEW_TOKENS = new Set(['preview', 'previews', 'snippet']);
+
+  function isPreview(el) {
+    const tokens = tokensOf(el);
+    if (!tokens) return false;
+    for (const t of tokens) if (PREVIEW_TOKENS.has(t)) return true;
     return false;
+  }
+
+  // Контейнер текста сообщения, в котором лежит узел, или null, если узел
+  // вне переписки. Текст сообщения ВК разбивает на куски (ссылки,
+  // упоминания, переносы), поэтому идём вверх: сам контейнер бывает
+  // и через несколько уровней. Кто встретился первым, тот и решает:
+  // превью в непрочитанном диалоге подменяем (MessagePreview ближе, чем
+  // строка с «unread» в классе), а число в счётчике — нет.
+  function messageTextBox(el) {
+    for (let n = el, depth = 0; n && n !== document.body && depth < 12; n = n.parentElement, depth++) {
+      if (isCounter(n)) return null;
+      if (isMessageText(n)) return n;
+    }
+    return null;
   }
 
   // Диагностика области: в инспекторе выбрать узел и позвать в консоли
@@ -532,52 +565,175 @@
     return false;
   }
 
-  function processTextNode(node) {
-    if (!enabled) return;
-    if (node._vk7tv) return; // уже отрендерен, текст занулён нами
-    const text = node.nodeValue;
-    if (!text) return;
-    // префильтр: эмоут в тексте или хотя бы слово с разделителем — из него
-    // может выйти чужой свой эмоут (имя_id) или предложение поставить набор
-    if (!(testRegex && testRegex.test(text)) && !text.includes('_')) return;
+  // --- спойлеры ---
+  // [spoiler]текст[/spoiler] прячет под блюром текст, [spoiler/] — всё
+  // сообщение вместе с вложениями. На сервере ВК остаётся сам тег обычным
+  // текстом, как и коды эмоутов: у кого расширения нет, тот видит тег.
+  const SPOILER_ALL = '[spoiler/]';
+  const SPOILER_OPEN = '[spoiler]';
+  const SPOILER_CLOSE = '[/spoiler]';
+  // Префильтр текстового узла. Должен ловить ровно то же, что разбирает
+  // parseSpoilers: узел с тегом уходит на разбор всего сообщения, и если
+  // разбор тега там не найдёт, эмоуты в сообщении останутся текстом.
+  const SPOILER_HINT = /\[spoiler\]|\[\/spoiler\]|\[spoiler\/\]/i;
+  const hasSpoilerTag = (t) => t.includes('[') && SPOILER_HINT.test(t);
 
+  // Сравнение без учёта регистра и без создания строк: разбор идёт
+  // на каждом сообщении, где встретился тег.
+  function isTagAt(text, i, tag) {
+    if (i + tag.length > text.length) return false;
+    for (let k = 0; k < tag.length; k++) {
+      let c = text.charCodeAt(i + k);
+      if (c >= 65 && c <= 90) c += 32;
+      if (c !== tag.charCodeAt(k)) return false;
+    }
+    return true;
+  }
+
+  // Разбор тегов по тексту сообщения. Возвращает куски видимого текста
+  // (сами теги вырезаны) с пометкой «под блюром» и флаг «закрыть сообщение
+  // целиком». Незакрытый [spoiler] прячет текст до конца сообщения, лишний
+  // [/spoiler] выбрасывается.
+  function parseSpoilers(text) {
+    const parts = [];
+    let all = false;
+    let found = false;
+    let pos = 0; // начало ещё не разобранного текста
+    let open = false;
+    for (let i = text.indexOf('['); i >= 0; i = text.indexOf('[', i)) {
+      const tag = isTagAt(text, i, SPOILER_ALL)
+        ? SPOILER_ALL
+        : isTagAt(text, i, SPOILER_OPEN)
+          ? SPOILER_OPEN
+          : isTagAt(text, i, SPOILER_CLOSE)
+            ? SPOILER_CLOSE
+            : null;
+      if (!tag) {
+        i++;
+        continue;
+      }
+      found = true;
+      if (i > pos) parts.push({ from: pos, to: i, spoiler: open });
+      pos = i + tag.length;
+      i = pos;
+      if (tag === SPOILER_ALL) all = true;
+      else open = tag === SPOILER_OPEN;
+    }
+    if (!found) return null;
+    if (pos < text.length) parts.push({ from: pos, to: text.length, spoiler: open });
+    return { parts, all };
+  }
+
+  // Куски текста сообщения, попавшие в узел [base, base+len), —
+  // в координатах самого узла.
+  function segmentsIn(parts, base, len) {
+    const out = [];
+    const end = base + len;
+    for (const p of parts) {
+      if (p.to <= base) continue;
+      if (p.from >= end) break;
+      out.push({
+        from: Math.max(p.from, base) - base,
+        to: Math.min(p.to, end) - base,
+        spoiler: p.spoiler,
+      });
+    }
+    return out;
+  }
+
+  // Сколько уровней над контейнером текста разрешено закрыть блюром
+  // по [spoiler/]. Подниматься надо: вложения лежат не внутри текста,
+  // а рядом с ним. Потолок — на случай, когда «другого сообщения» выше
+  // не найдётся вообще (в диалоге одно сообщение).
+  const SPOILER_BOX_DEPTH = 4;
+  // Потолок обхода поддерева: выше сообщения лежит вся история переписки,
+  // перебирать её целиком незачем. Чужое сообщение находится в первых же
+  // узлах, а если не нашлось — поддерево для одного сообщения слишком велико.
+  const SPOILER_SCAN_LIMIT = 2000;
+
+  function hasOtherMessage(root, textBox) {
+    const walker = document.createTreeWalker(root, NodeFilter.SHOW_ELEMENT);
+    let seen = 0;
+    while (walker.nextNode()) {
+      if (++seen > SPOILER_SCAN_LIMIT) return true;
+      const el = walker.currentNode;
+      if (el !== textBox && isMessageText(el)) return true;
+    }
+    return false;
+  }
+
+  // Вложение рядом с текстом сообщения. Свои картинки не считаем: эмоут
+  // и превью набора — это сам текст, подниматься над ним ради них незачем.
+  function hasAttachment(box, textBox) {
+    for (const m of box.querySelectorAll('img,video,canvas')) {
+      if (textBox.contains(m)) continue;
+      if (m.classList.contains(EMOTE_CLASS) || m.classList.contains('vk7tv-suggest-img')) continue;
+      return true;
+    }
+    return false;
+  }
+
+  // Что закрывать блюром по [spoiler/]: от контейнера текста вверх, пока
+  // в поддереве остаётся одно сообщение. Останавливаемся на первом уровне,
+  // где рядом с текстом нашлось вложение, — ради него и поднимались, а выше
+  // лежит обвязка ВК (аватар, имя, время). У сообщения без вложений
+  // такого уровня нет, и блюр достаётся всей строке.
+  function spoilerBox(textBox) {
+    let box = textBox;
+    let depth = 0;
+    for (let n = textBox.parentElement; n && n !== document.body && depth < SPOILER_BOX_DEPTH; n = n.parentElement, depth++) {
+      if (hasOtherMessage(n, textBox)) break;
+      box = n;
+      if (hasAttachment(n, textBox)) break;
+    }
+    return box;
+  }
+
+  // --- рендер ---
+
+  // Общие запреты: поле ввода, служебные теги и собственный UI расширения;
+  // .vk7tv-text — наш же рендер: без него слово, оставшееся в нём текстом,
+  // обрабатывалось бы заново и обрастало чипами до бесконечности.
+  // Возвращает родителя узла, если узел трогать можно.
+  function renderable(node) {
     const parent = node.parentElement;
-    if (!parent) return;
-    // не трогаем поле ввода, служебные теги и собственный UI расширения;
-    // .vk7tv-text — наш же рендер: без него слово, оставшееся в нём текстом,
-    // обрабатывалось бы заново и обрастало чипами до бесконечности
-    if (parent.isContentEditable) return;
-    if (parent.closest('script,style,textarea,input,title,svg,noscript,template,.vk7tv-ac,.vk7tv-picker,.vk7tv-preview,.vk7tv-widget,.vk7tv-text')) return;
+    if (!parent) return null;
+    if (parent.isContentEditable) return null;
+    if (parent.closest('script,style,textarea,input,title,svg,noscript,template,.vk7tv-ac,.vk7tv-picker,.vk7tv-preview,.vk7tv-widget,.vk7tv-text')) return null;
     // подпись ВК, а не текст сообщения — не трогаем ни её саму, ни скобки вокруг
-    if (SERVICE_TEXT.test(text.trim())) return;
-    if (isServiceText(parent, 3)) return;
-    if (isServiceLabel(parent)) return;
+    const text = node.nodeValue || '';
+    if (SERVICE_TEXT.test(text.trim())) return null;
+    if (isServiceText(parent, 3)) return null;
+    if (isServiceLabel(parent)) return null;
     // включён режим «только мессенджер» — вне текста сообщения не трогаем.
     // Счётчики, меню и шапка отсекаются этой же проверкой: они лежат вне
     // контейнера сообщения.
-    if (!everywhere && !inMessenger(parent)) return;
+    if (!everywhere && !messageTextBox(parent)) return null;
+    return parent;
+  }
 
-    // Эмоут — это отдельное «слово», разделённое пробелами (как в 7TV);
-    // zero-width эмоут после обычного накладывается поверх него, пробел
-    // между ними при рендере съедается.
-    //
-    // Идём по словам сами, а не через split: фрагмент создаётся только
-    // с первой находки, а текст до неё переносится одним куском (flushed —
-    // граница уже перенесённого). Слова без находок не стоят ни одной
-    // аллокации.
-    const n = text.length;
-    const frag = document.createDocumentFragment();
+  // Рендер куска текста [from, to) в узел target: слова-коды становятся
+  // картинками, остальное переносится текстом. Возвращает true, если хоть
+  // одно слово заменили.
+  //
+  // Эмоут — это отдельное «слово», разделённое пробелами (как в 7TV);
+  // zero-width эмоут после обычного накладывается поверх него, пробел
+  // между ними при рендере съедается.
+  //
+  // Идём по словам сами, а не через split: текст между находками
+  // переносится одним куском (flushed — граница уже перенесённого).
+  // Слова без находок не стоят ни одной аллокации.
+  function renderRange(target, text, from, to, seen) {
     let changed = false;
-    let flushed = 0;
+    let flushed = from;
     let lastStack = null;
-    let seen = null; // одно и то же слово в сообщении — один чип
-    let i = 0;
-    while (i < n) {
-      while (i < n && isWs(text.charCodeAt(i))) i++;
-      if (i >= n) break;
+    let i = from;
+    while (i < to) {
+      while (i < to && isWs(text.charCodeAt(i))) i++;
+      if (i >= to) break;
       const start = i;
       let underscore = false;
-      while (i < n) {
+      while (i < to) {
         const c = text.charCodeAt(i);
         if (isWs(c)) break;
         if (c === 95) underscore = true;
@@ -593,11 +749,11 @@
           changed = true;
           continue;
         }
-        if (start > flushed) frag.appendChild(document.createTextNode(text.slice(flushed, start)));
+        if (start > flushed) target.appendChild(document.createTextNode(text.slice(flushed, start)));
         lastStack = document.createElement('span');
         lastStack.className = 'vk7tv-stack';
         lastStack.appendChild(makeEmote(text.slice(start, end), em.u, false));
-        frag.appendChild(lastStack);
+        target.appendChild(lastStack);
         flushed = end;
         changed = true;
         continue;
@@ -621,16 +777,15 @@
           // пробел между ними во фрагмент не попадает
           lastStack.appendChild(makeEmote(emName, cdnUrl(emId), true));
         } else {
-          if (start > flushed) frag.appendChild(document.createTextNode(text.slice(flushed, start)));
+          if (start > flushed) target.appendChild(document.createTextNode(text.slice(flushed, start)));
           lastStack = document.createElement('span');
           lastStack.className = 'vk7tv-stack';
           lastStack.appendChild(makeEmote(emName, cdnUrl(emId), false));
-          frag.appendChild(lastStack);
+          target.appendChild(lastStack);
         }
-        if (!seen) seen = new Set();
         if (!seen.has(word)) {
           seen.add(word); // одно и то же слово в сообщении — один чип
-          frag.appendChild(makeAddCustom(emName, emId));
+          target.appendChild(makeAddCustom(emName, emId));
         }
         flushed = end;
         changed = true;
@@ -640,30 +795,162 @@
       // эмоута нет — может, он из набора, который у нас не подключён
       lastStack = null;
       if (!suggestOn) continue;
-      if (!seen) seen = new Set();
       const chip = suggestFor(word, seen);
       if (!chip) continue;
-      frag.appendChild(document.createTextNode(text.slice(flushed, end)));
-      frag.appendChild(chip);
+      target.appendChild(document.createTextNode(text.slice(flushed, end)));
+      target.appendChild(chip);
       flushed = end;
       changed = true;
     }
-    if (!changed) return;
-    if (flushed < n) frag.appendChild(document.createTextNode(text.slice(flushed)));
+    if (flushed < to) target.appendChild(document.createTextNode(text.slice(flushed, to)));
+    return changed;
+  }
 
-    // ВК — React-приложение: удалять текстовый узел из-под него нельзя,
-    // React упадёт на следующей перерисовке (removeChild) и уронит кусок
-    // интерфейса. Поэтому узел остаётся на месте с пустым текстом,
-    // а рендер вставляется соседним span'ом. Перерисовал React текст
-    // обратно — обработчик characterData уберёт span и отрендерит заново.
+  // ВК — React-приложение: удалять текстовый узел из-под него нельзя,
+  // React упадёт на следующей перерисовке (removeChild) и уронит кусок
+  // интерфейса. Поэтому узел остаётся на месте с пустым текстом,
+  // а рендер вставляется соседним span'ом. Перерисовал React текст
+  // обратно — обработчик characterData уберёт span и отрендерит заново.
+  //
+  // box — сообщение, которому этот рендер поставил блюр по [spoiler/]:
+  // рендер снимается вместе с блюром, иначе закрытым останется чужое
+  // сообщение, которое ВК положит в переиспользованную разметку.
+  function mount(node, frag, box) {
     const span = document.createElement('span');
     span.className = 'vk7tv-text';
     span.appendChild(frag);
     span._vk7tvSrc = node;
-    span._vk7tvText = text;
+    span._vk7tvText = node.nodeValue;
+    span._vk7tvBox = box || null;
     node._vk7tv = span;
     node.parentNode.insertBefore(span, node.nextSibling);
     node.nodeValue = '';
+  }
+
+  function clearBox(span) {
+    const box = span._vk7tvBox;
+    if (box) box.classList.remove('vk7tv-spoiler-all', 'vk7tv-open');
+  }
+
+  function dropSpan(span) {
+    clearBox(span);
+    span.remove();
+  }
+
+  /** Снять наш рендер с узла и вернуть ему исходный текст. */
+  function undo(node) {
+    const span = node._vk7tv;
+    node._vk7tv = null;
+    if (!span) return;
+    if (span._vk7tvText != null) node.nodeValue = span._vk7tvText;
+    dropSpan(span);
+  }
+
+  function renderPlain(node) {
+    const text = node.nodeValue;
+    const frag = document.createDocumentFragment();
+    if (!renderRange(frag, text, 0, text.length, new Set())) return;
+    mount(node, frag, null);
+  }
+
+  // Спойлер разрывается разметкой ВК: перенос строки, ссылка, упоминание —
+  // каждый кусок текста лежит в своём узле, и [spoiler] с [/spoiler]
+  // попадают в разные. Поэтому теги ищем не в одном узле, а по тексту
+  // сообщения целиком, а найденные диапазоны раздаём обратно по узлам.
+  function renderMessage(node, parent) {
+    const textBox = messageTextBox(parent);
+    const root = textBox || parent;
+    // Прежний рендер разбираем: соседние куски сообщения могли отрисоваться
+    // раньше, чем в него доехал узел с закрывающим тегом.
+    for (const t of textNodes(root)) undo(t);
+
+    const nodes = [];
+    for (const t of textNodes(root)) if (renderable(t)) nodes.push(t);
+    if (!nodes.length) return;
+
+    let full = '';
+    const bases = [];
+    for (const t of nodes) {
+      bases.push(full.length);
+      full += t.nodeValue;
+    }
+    const parsed = parseSpoilers(full);
+    if (!parsed) {
+      // тег был в узле, но в тексте сообщения не нашёлся — рисуем как обычно
+      for (const t of nodes) renderPlain(t);
+      return;
+    }
+
+    let box = null;
+    if (parsed.all && textBox && !isPreview(textBox)) {
+      box = spoilerBox(textBox);
+      box.classList.add('vk7tv-spoiler-all');
+    }
+    // Вне переписки контейнер сообщения не опознаётся (галка «показывать
+    // везде»), а у превью в списке диалогов его и не ищем: закрываем хотя
+    // бы сам текст, вложения ВК рядом с ним остаются видимыми.
+    const textOnly = parsed.all && !box;
+
+    const seen = new Set(); // одно и то же слово в сообщении — один чип
+    for (let k = 0; k < nodes.length; k++) {
+      const t = nodes[k];
+      const text = t.nodeValue;
+      const segs = segmentsIn(parsed.parts, bases[k], text.length);
+      // узел целиком вне спойлера и без тегов — обычный путь, без обёртки
+      const plain =
+        !textOnly &&
+        segs.length === 1 &&
+        !segs[0].spoiler &&
+        segs[0].from === 0 &&
+        segs[0].to === text.length;
+      const frag = document.createDocumentFragment();
+      let changed = !plain; // теги вырезаны или текст ушёл под блюр
+      // Между двумя скрытыми кусками стоял вырезанный тег, и в готовом
+      // тексте они идут подряд: держим их в одном span, иначе на стыке
+      // двух блюров видна полоса.
+      let blurred = null;
+      for (const s of segs) {
+        if (!(s.spoiler || textOnly)) {
+          blurred = null;
+          if (renderRange(frag, text, s.from, s.to, seen)) changed = true;
+          continue;
+        }
+        if (!blurred) {
+          blurred = document.createElement('span');
+          blurred.className = 'vk7tv-spoiler';
+          blurred.title = 'Спойлер — нажми, чтобы открыть';
+          frag.appendChild(blurred);
+        }
+        renderRange(blurred, text, s.from, s.to, seen);
+      }
+      if (!changed) continue;
+      mount(t, frag, box);
+      box = null; // блюр снимет тот рендер, который его поставил
+    }
+  }
+
+  function processTextNode(node) {
+    if (!enabled) return;
+    if (node._vk7tv) return; // уже отрендерен, текст занулён нами
+    const text = node.nodeValue;
+    if (!text) return;
+    // префильтр: эмоут в тексте, тег спойлера или хотя бы слово
+    // с разделителем — из него может выйти чужой свой эмоут (имя_id)
+    // или предложение поставить набор
+    const spoiler = hasSpoilerTag(text);
+    if (!spoiler && !(testRegex && testRegex.test(text)) && !text.includes('_')) return;
+
+    const parent = renderable(node);
+    if (!parent) return;
+    if (spoiler) renderMessage(node, parent);
+    else renderPlain(node);
+  }
+
+  function textNodes(root) {
+    const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+    const nodes = [];
+    while (walker.nextNode()) nodes.push(walker.currentNode);
+    return nodes;
   }
 
   function scan(root) {
@@ -675,10 +962,7 @@
     if (root.nodeType !== Node.ELEMENT_NODE && root.nodeType !== Node.DOCUMENT_FRAGMENT_NODE) {
       return;
     }
-    const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
-    const nodes = [];
-    while (walker.nextNode()) nodes.push(walker.currentNode);
-    for (const n of nodes) processTextNode(n);
+    for (const n of textNodes(root)) processTextNode(n);
   }
 
   function unrender() {
@@ -687,8 +971,9 @@
       if (src && src.parentNode) {
         src._vk7tv = null;
         src.nodeValue = span._vk7tvText;
-        span.remove();
+        dropSpan(span);
       } else {
+        clearBox(span);
         span.replaceWith(document.createTextNode(span._vk7tvText || span.textContent));
       }
     }
@@ -702,7 +987,7 @@
         if (t._vk7tv) {
           if (t.nodeValue === '') continue; // это мы сами и занулили
           // React вернул тексту значение — перерисовываем заново
-          t._vk7tv.remove();
+          dropSpan(t._vk7tv);
           t._vk7tv = null;
         }
         processTextNode(t);
@@ -710,7 +995,7 @@
         for (const n of m.removedNodes) {
           // React убрал текстовый узел — подчищаем наш span-рендер
           if (n.nodeType === Node.TEXT_NODE && n._vk7tv) {
-            n._vk7tv.remove();
+            dropSpan(n._vk7tv);
             n._vk7tv = null;
           }
         }
