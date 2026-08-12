@@ -587,11 +587,17 @@
   const SPOILER_ALL = '[spoiler/]';
   const SPOILER_OPEN = '[spoiler]';
   const SPOILER_CLOSE = '[/spoiler]';
+  // Сообщение целиком из слова «spoiler», без скобок, — то же самое, что
+  // [spoiler/]. Работает только когда в сообщении больше ничего нет:
+  // иначе слово в обычной фразе прятало бы её целиком.
+  const SPOILER_WORD = /^\s*spoiler\s*$/i;
+
   // Префильтр текстового узла. Должен ловить ровно то же, что разбирает
   // parseSpoilers: узел с тегом уходит на разбор всего сообщения, и если
   // разбор тега там не найдёт, эмоуты в сообщении останутся текстом.
   const SPOILER_HINT = /\[spoiler\]|\[\/spoiler\]|\[spoiler\/\]/i;
-  const hasSpoilerTag = (t) => t.includes('[') && SPOILER_HINT.test(t);
+  const hasSpoilerTag = (t) =>
+    (t.includes('[') && SPOILER_HINT.test(t)) || SPOILER_WORD.test(t);
 
   // Сравнение без учёта регистра и без создания строк: разбор идёт
   // на каждом сообщении, где встретился тег.
@@ -610,6 +616,8 @@
   // целиком». Незакрытый [spoiler] прячет текст до конца сообщения, лишний
   // [/spoiler] выбрасывается.
   function parseSpoilers(text) {
+    // всё сообщение — одно слово «spoiler»: прячем содержимое, слово убираем
+    if (SPOILER_WORD.test(text)) return { parts: [], all: true };
     const parts = [];
     let all = false;
     let found = false;
