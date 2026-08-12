@@ -121,29 +121,30 @@ async function render() {
   for (const [n, v] of Object.entries(sync.customEmotes)) {
     const em = normEmote(v);
     const li = document.createElement('li');
+    // Полное имя с id — то, что уезжает в сообщение и работает у собеседника.
+    // В ячейку сетки такая строка не влезает, поэтому живёт в подсказке;
+    // эмоут не с 7TV помечен пунктиром (класс local).
+    li.title = em.id
+      ? `Полное имя: ${n}_${em.id} — по нему эмоут увидит собеседник с расширением`
+      : `${n} — картинка не с 7TV: у собеседника останется текстом`;
+    if (!em.id) li.className = 'local';
     const img = document.createElement('img');
     img.src = em.u;
     img.alt = n;
     const name = document.createElement('span');
     name.className = 'name';
     name.textContent = n;
-    // полное имя с id — то, что уезжает в сообщение и работает у собеседника
-    const idTag = document.createElement('span');
-    idTag.className = 'muted';
-    idTag.textContent = em.id ? '_' + em.id : 'только у тебя';
-    idTag.title = em.id
-      ? `Полное имя: ${n}_${em.id} — по нему эмоут увидит собеседник с расширением`
-      : 'Картинка не с 7TV: у собеседника останется текстом';
     const del = document.createElement('button');
     del.className = 'del';
     del.textContent = '✕';
+    del.title = 'Удалить эмоут';
     del.addEventListener('click', async () => {
       const { customEmotes } = await chrome.storage.sync.get({ customEmotes: {} });
       delete customEmotes[n];
       await chrome.storage.sync.set({ customEmotes });
       render();
     });
-    li.append(img, name, idTag, del);
+    li.append(img, name, del);
     customList.appendChild(li);
   }
 

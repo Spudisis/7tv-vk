@@ -195,6 +195,66 @@ ul li .del:hover {
   background: none;
 }
 
+/* Свои эмоуты — сеткой с ячейкой одного размера. В вертикальном списке
+   ширину строке задавала сама картинка, а у эмоутов пропорции разные:
+   имя и кнопка удаления у каждой строки стояли на своём месте. */
+#customList {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(68px, 1fr));
+  gap: 6px;
+}
+
+#customList li {
+  position: relative;
+  flex-direction: column;
+  gap: 4px;
+  padding: 6px 4px;
+  background: #1e1f24;
+  border: 1px solid transparent;
+}
+
+/* Эмоут не с 7TV: у собеседника он останется текстом. Пунктир вместо
+   подписи — в ячейку такой ширины она не помещается, объяснение
+   в подсказке ячейки. */
+#customList li.local {
+  border-color: #34363f;
+  border-style: dashed;
+}
+
+/* Бокс под картинку у всех один: широкие эмоуты вписываются по ширине,
+   высокие — по высоте, сетка от этого не разъезжается. */
+#customList li img {
+  height: 40px;
+  width: 100%;
+  object-fit: contain;
+}
+
+#customList li .name {
+  flex: none;
+  max-width: 100%;
+  font-size: 11px;
+  text-align: center;
+}
+
+/* Крестик стоит поверх картинки, поэтому с подложкой: на светлом эмоуте
+   он иначе не виден. */
+#customList li .del {
+  position: absolute;
+  top: 0;
+  right: 0;
+  padding: 1px 4px;
+  font-size: 12px;
+  line-height: 1;
+  background: rgba(23, 24, 28, 0.72);
+  border-radius: 0 6px 0 6px;
+  opacity: 0.6;
+}
+
+#customList li .del:hover {
+  background: rgba(23, 24, 28, 0.9);
+  opacity: 1;
+}
+
 /* порядок наборов: он же порядок разделов в пикере и приоритет кодов */
 #setList li {
   cursor: grab;
