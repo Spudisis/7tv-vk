@@ -26,11 +26,18 @@ async function getState() {
     customEmotes: {},
   });
   const local = await chrome.storage.local.get({ setEmotes: {}, globalEmotes: null });
+  // битые записи в списке наборов выкидываем сразу: иначе на них падает
+  // и список наборов, и сетка всех эмоутов
+  sync.sets = Array.isArray(sync.sets) ? sync.sets.filter((s) => s && s.id) : [];
   return { sync, local };
 }
 
-// значение эмоута: {u: url, z: zero-width}; старый кэш и «свои» — просто строка
+// значение эмоута: {u: url, z: zero-width, r: пропорции}; старый кэш
+// и «свои» — просто строка
 const normEmote = (v) => (typeof v === 'string' ? { u: v, z: 0 } : v);
+
+// битую запись в кэше пропускаем: одна такая иначе рвала показ всего списка
+const usable = (em) => !!(em && typeof em.u === 'string' && em.u);
 
 function activeEmotes({ sync, local }) {
   const map = new Map();
@@ -39,7 +46,10 @@ function activeEmotes({ sync, local }) {
       local.globalEmotes && Object.keys(local.globalEmotes).length
         ? local.globalEmotes
         : DEFAULT_EMOTES;
-    for (const [n, v] of Object.entries(g)) map.set(n, normEmote(v));
+    for (const [n, v] of Object.entries(g)) {
+      const em = normEmote(v);
+      if (usable(em)) map.set(n, em);
+    }
   }
   // Так же, как content.js: у эмоута набора есть имя с постфиксом (имя_slug),
   // а при коллизии голое имя достаётся набору выше в списке — иначе список
@@ -47,9 +57,10 @@ function activeEmotes({ sync, local }) {
   const fromSets = new Map(); // голое имя -> [{slug, em}]
   for (const s of sync.sets) {
     const m = local.setEmotes[s.id];
-    if (!m) continue;
+    if (!m || typeof m !== 'object') continue;
     for (const [n, v] of Object.entries(m)) {
       const em = normEmote(v);
+      if (!usable(em)) continue;
       if (s.slug) map.set(`${n}_${s.slug}`, em);
       const cand = { slug: s.slug || '', em };
       const list = fromSets.get(n);
@@ -65,6 +76,7 @@ function activeEmotes({ sync, local }) {
   // чужое расширение (см. content.js)
   for (const [n, v] of Object.entries(sync.customEmotes)) {
     const em = normEmote(v);
+    if (!usable(em)) continue;
     map.set(n, em);
     if (em.id) map.set(`${n}_${em.id}`, em);
   }
@@ -120,6 +132,7 @@ async function render() {
   customList.innerHTML = '';
   for (const [n, v] of Object.entries(sync.customEmotes)) {
     const em = normEmote(v);
+    if (!usable(em)) continue;
     const li = document.createElement('li');
     // Полное имя с id — то, что уезжает в сообщение и работает у собеседника.
     // В ячейку сетки такая строка не влезает, поэтому живёт в подсказке;

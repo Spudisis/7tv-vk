@@ -31,6 +31,33 @@
     return typeof v === 'string' ? { u: v, z: 0 } : v;
   }
 
+  // Негодное значение в кэше (битая запись, чужой формат) пропускаем:
+  // иначе исключение на нём обрывало загрузку состояния целиком, и
+  // расширение не подменяло вообще ничего — ни в чате, ни в пикере.
+  const usable = (em) => !!(em && typeof em.u === 'string' && em.u);
+
+  // Расширение могли обновить или переустановить, пока страница висела
+  // открытой: chrome.runtime в таком контент-скрипте пропадает, и любой
+  // запрос к фону падает исключением посреди разбора страницы. Отвечаем
+  // за фон сами — пустым ответом; чинит это только перезагрузка страницы,
+  // о ней говорит пикер (см. detached в picker.js).
+  function detached() {
+    try {
+      return !chrome.runtime || !chrome.runtime.id;
+    } catch (e) {
+      return true;
+    }
+  }
+
+  function ask(msg, cb) {
+    if (detached()) return cb(null);
+    try {
+      chrome.runtime.sendMessage(msg, cb);
+    } catch (e) {
+      cb(null);
+    }
+  }
+
   // CSP ВК не пускает картинки с cdn.7tv.app, но разрешает blob: и data:.
   // Фоновый скрипт качает картинку, здесь она превращается в blob:-URL;
   // кэш по URL — повторные эмоуты в чате не ходят в сеть.
@@ -41,7 +68,7 @@
   function resolveEmote(url) {
     if (blobCache.has(url)) return blobCache.get(url);
     const p = new Promise((resolve) => {
-      chrome.runtime.sendMessage({ type: 'fetch-emote', url }, (resp) => {
+      ask({ type: 'fetch-emote', url }, (resp) => {
         if (!resp || !resp.dataUrl) return resolve(null);
         try {
           const comma = resp.dataUrl.indexOf(',');
@@ -85,7 +112,7 @@
     if (probes >= MAX_PROBES) return;
     probes++;
     suggestCache.set(word, PENDING);
-    chrome.runtime.sendMessage({ type: 'probe-set', word }, (resp) => {
+    ask({ type: 'probe-set', word }, (resp) => {
       const hit = resp && resp.found ? resp : null;
       suggestCache.set(word, hit);
       // Слово могло встретиться в десятке сообщений, а ответ пришёл уже
@@ -114,6 +141,9 @@
       customEmotes: {},
     });
     const local = await chrome.storage.local.get({ setEmotes: {}, globalEmotes: null });
+    // Список наборов мог оказаться битым — например, файл настроек правили
+    // руками. Пустые записи выкидываем здесь, чтобы дальше на них не падать.
+    const sets = Array.isArray(sync.sets) ? sync.sets.filter((s) => s && s.id) : [];
 
     enabled = sync.enabled;
     suggestOn = sync.suggest;
@@ -124,7 +154,10 @@
         local.globalEmotes && Object.keys(local.globalEmotes).length
           ? local.globalEmotes
           : DEFAULT_EMOTES;
-      for (const [n, v] of Object.entries(g)) emoteMap.set(n, normEmote(v));
+      for (const [n, v] of Object.entries(g)) {
+        const em = normEmote(v);
+        if (usable(em)) emoteMap.set(n, em);
+      }
     }
     // У эмоута из набора есть второе имя — с постфиксом набора:
     // ok_bratishkinoff. Голое имя остаётся за глобальным набором и «своими»,
@@ -135,11 +168,12 @@
     // ни на что не влияла и выбрать картинку было нельзя.
     // a — голое имя эмоута, пометка «это алиас» для автозаполнения.
     const fromSets = new Map(); // голое имя -> [{slug, em}] из наборов с этим кодом
-    for (const s of sync.sets) {
+    for (const s of sets) {
       const m = local.setEmotes[s.id];
-      if (!m) continue;
+      if (!m || typeof m !== 'object') continue;
       for (const [n, v] of Object.entries(m)) {
         const em = normEmote(v);
+        if (!usable(em)) continue;
         if (s.slug) emoteMap.set(`${n}_${s.slug}`, { u: em.u, z: em.z, a: n });
         const cand = { slug: s.slug || '', em };
         const list = fromSets.get(n);
@@ -156,6 +190,7 @@
     // узнаёт чужое расширение, у которого этого эмоута нет.
     for (const [n, v] of Object.entries(sync.customEmotes)) {
       const em = normEmote(v);
+      if (!usable(em)) continue;
       emoteMap.set(n, em);
       if (em.id) emoteMap.set(`${n}_${em.id}`, { u: em.u, z: em.z, a: n });
     }
@@ -211,7 +246,7 @@
       everywhere,
       sync.useGlobal,
       emoteMap.size,
-      sync.sets.map((s) => `${s.id}:${s.count}`).join(','),
+      sets.map((s) => `${s.id}:${s.count}`).join(','),
     ].join('|');
     const changed = sig !== stateSig;
     stateSig = sig;
@@ -348,7 +383,7 @@
       if (btn.disabled) return;
       btn.disabled = true;
       label.textContent = 'ставлю…';
-      chrome.runtime.sendMessage({ type: 'add-set', input: hit.slug }, (resp) => {
+      ask({ type: 'add-set', input: hit.slug }, (resp) => {
         if (!resp || resp.error) {
           btn.disabled = false;
           label.textContent = '+ ' + hit.slug;
@@ -379,7 +414,7 @@
     const known = idZero.get(id);
     if (known !== undefined) return known === PENDING ? 0 : known;
     idZero.set(id, PENDING);
-    chrome.runtime.sendMessage({ type: 'emote-info', id }, (resp) => {
+    ask({ type: 'emote-info', id }, (resp) => {
       const z = resp && resp.z ? 1 : 0;
       idZero.set(id, z);
       if (z) scheduleRerender();
@@ -404,7 +439,7 @@
       if (btn.disabled) return;
       btn.disabled = true;
       label.textContent = 'добавляю…';
-      chrome.runtime.sendMessage({ type: 'add-custom', input: id, name }, (resp) => {
+      ask({ type: 'add-custom', input: id, name }, (resp) => {
         if (!resp || resp.error) {
           btn.disabled = false;
           label.textContent = '+ себе';

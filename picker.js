@@ -25,7 +25,7 @@
   let favSet = new Set();
   let recent = []; // последние вставленные, свежие первыми
   let stripTab = 'recent';
-  let emoteIndex = new Map(); // полное имя -> url, чтобы найти картинку избранного
+  let emoteIndex = new Map(); // полное имя -> эмоут, чтобы найти картинку избранного
   let lastInput = null;
   let lastRange = null;
   let flashTimer = null;
@@ -121,6 +121,7 @@
 
   function flash(text) {
     foot.textContent = text;
+    foot.title = '';
     foot.classList.add('vk7tv-flash');
     clearTimeout(flashTimer);
     flashTimer = setTimeout(() => {
@@ -146,8 +147,9 @@
     groups = [];
     // «Свои» — первым разделом: их не переставишь стрелками (у них нет
     // setId), а лезть за ними в конец списка неудобно.
-    if (Object.keys(sync.customEmotes).length) {
-      groups.push({ key: 'custom', title: 'Свои', emotes: sync.customEmotes });
+    const custom = cleanEmotes(sync.customEmotes);
+    if (Object.keys(custom).length) {
+      groups.push({ key: 'custom', title: 'Свои', emotes: custom });
     }
     // key — по нему помнится, свёрнут ли набор; берём id набора, а не
     // название: переименованный на 7TV набор должен остаться свёрнутым
@@ -156,14 +158,16 @@
         local.globalEmotes && Object.keys(local.globalEmotes).length
           ? local.globalEmotes
           : DEFAULT_EMOTES;
-      groups.push({ key: 'global', title: 'Глобальные 7TV', emotes: g });
+      groups.push({ key: 'global', title: 'Глобальные 7TV', emotes: cleanEmotes(g) });
     }
-    for (const s of sync.sets) {
-      const m = local.setEmotes[s.id];
+    // битые записи в списке наборов (правили файл настроек руками) выкидываем
+    const sets = Array.isArray(sync.sets) ? sync.sets.filter((s) => s && s.id) : [];
+    for (const s of sets) {
+      const m = cleanEmotes(local.setEmotes[s.id]);
       // suffix — постфикс набора: пикер всегда вставляет имя с ним
       // setId — по нему набор двигается по списку; у глобального и «своих»
       // его нет, они всегда с краю
-      if (m && Object.keys(m).length) {
+      if (Object.keys(m).length) {
         groups.push({
           key: `set:${s.id}`,
           setId: s.id,
@@ -173,13 +177,12 @@
         });
       }
     }
-    // избранное хранит только имена — картинку берём из этого индекса,
+    // избранное хранит только имена — сам эмоут берём из этого индекса,
     // а эмоуты удалённого набора просто перестают показываться
     emoteIndex = new Map();
     for (const g of groups) {
-      for (const [name, v] of Object.entries(g.emotes)) {
-        const em = normEmote(v);
-        emoteIndex.set(fullName(g, name, em), em.u);
+      for (const [name, em] of Object.entries(g.emotes)) {
+        emoteIndex.set(fullName(g, name, em), em);
       }
     }
     setFavorites(sync.favorites);
@@ -195,6 +198,20 @@
 
   // старый кэш и часть своих эмоутов хранят просто строку-URL
   const normEmote = (v) => (typeof v === 'string' ? { u: v, z: 0 } : v);
+
+  // Приводим значения к одному виду один раз — на загрузке, а негодные
+  // отбрасываем. Иначе одна битая запись в кэше рвала сборку сетки
+  // исключением, и поповер оставался с заголовками наборов и без единого
+  // эмоута — во всех разделах сразу, а не только в своём.
+  function cleanEmotes(map) {
+    const out = {};
+    if (!map || typeof map !== 'object') return out;
+    for (const [name, v] of Object.entries(map)) {
+      const em = normEmote(v);
+      if (em && typeof em.u === 'string' && em.u) out[name] = em;
+    }
+    return out;
+  }
 
   function setFavorites(list) {
     favorites = Array.isArray(list) ? list : [];
@@ -437,19 +454,32 @@
   // элемент в видимую часть, и превью из-за этого не открывалось.
   // Отпускания кнопки достаточно — превью живёт ровно пока держишь.
 
+  // Высота эмоута в сетке — та же, что в picker.css. Вместе с пропорциями
+  // она даёт ширину ячейки: по ней эмоуты выстраиваются по размеру.
+  const CELL_PX = 32;
+  const cellWidth = (em) => Math.round(CELL_PX * (em.r || 1));
+
   // Ячейка — только разметка, без своих слушателей: в наборах бывают тысячи
   // эмоутов, и пять обработчиков на ячейку складывались в десятки тысяч.
   // Нажатия разбирает один общий обработчик на поповере (bindGrid).
-  function makeCell(name, url) {
+  function makeCell(name, em) {
     const cell = document.createElement('span');
     cell.className = 'vk7tv-picker-cell';
     cell.dataset.name = name;
     // оригинал с CDN нужен, чтобы достать версию 4x для превью;
-    // в url к этому моменту может лежать уже blob:
-    if (/^https:\/\/cdn\.7tv\.app\//.test(url)) cell.dataset.cdn = url;
+    // в em.u к этому моменту может лежать уже blob: — тогда адрес на CDN
+    // лежит в em.cdn (см. обработчик error в bindGrid)
+    const cdn = em.cdn || em.u;
+    if (/^https:\/\/cdn\.7tv\.app\//.test(cdn)) cell.dataset.cdn = cdn;
 
     const img = document.createElement('img');
-    img.src = url;
+    img.src = em.u;
+    // Место под картинку держим заранее: пока она не загрузилась, своих
+    // размеров у неё нет, ячейка была шириной в отбивку, а после загрузки
+    // сетка расползалась. Пропорции пришли из API вместе с адресом;
+    // у своей картинки не с 7TV их нет — там место под квадрат.
+    if (em.r) img.style.aspectRatio = String(em.r);
+    else img.style.minWidth = CELL_PX + 'px';
     img.alt = name;
     img.title = name;
     img.loading = 'lazy';
@@ -545,14 +575,25 @@
         if (img.dataset.fb) return cell.remove();
         img.dataset.fb = '1';
         const st = window.__vk7tv;
-        if (!st || !st.resolveEmote) return cell.remove();
+        if (!st || !st.resolveEmote) {
+          // на загрузке страницы контент-скрипт мог ещё не выложить состояние —
+          // жалуемся только на честно отвалившуюся вкладку
+          if (detached()) staleNote();
+          return cell.remove();
+        }
         const url = img.src;
         const name = cell.dataset.name;
         st.resolveEmote(url).then((u) => {
           if (!u) return cell.remove();
           img.src = u;
-          // запоминаем рабочий blob: — копия в избранном не пойдёт за ним заново
-          if (emoteIndex.get(name) === url) emoteIndex.set(name, u);
+          // Запоминаем рабочий blob: — и полоса, и пересобранная сетка возьмут
+          // его сразу, без заведомо мёртвого запроса к CDN. Адрес на CDN
+          // оставляем рядом: из него берётся версия 4x для превью.
+          const em = emoteIndex.get(name);
+          if (em && em.u === url) {
+            em.cdn = url;
+            em.u = u;
+          }
         });
       },
       true
@@ -615,10 +656,12 @@
     stripBox.classList.toggle('vk7tv-tab-fav', stripTab === 'fav');
     stripGrid.innerHTML = '';
     let shown = 0;
+    // порядок здесь свой — свежесть вставки и порядок добавления в избранное,
+    // по размеру полосу не пересортировываем
     for (const name of stripTab === 'fav' ? favorites : recent) {
-      const url = emoteIndex.get(name);
-      if (!url) continue; // набор отключили — эмоут просто не показываем
-      stripGrid.appendChild(makeCell(name, url));
+      const em = emoteIndex.get(name);
+      if (!em) continue; // набор отключили — эмоут просто не показываем
+      stripGrid.appendChild(makeCell(name, em));
       shown++;
     }
     stripEmpty.textContent = STRIP_EMPTY[stripTab];
@@ -780,12 +823,11 @@
     let reached = false; // набор, к которому ведём прокрутку, уже встретился
     for (const g of groups) {
       const found = [];
-      for (const [name, v] of Object.entries(g.emotes)) {
-        const em = normEmote(v);
+      for (const [name, em] of Object.entries(g.emotes)) {
         const full = fullName(g, name, em);
         const low = full.toLowerCase();
         if (q && !low.includes(q)) continue;
-        found.push([full, em.u, low]);
+        found.push([full, em, low, cellWidth(em)]);
       }
       if (!found.length) continue;
       // при поиске сперва совпадения с начала имени, потом короткие:
@@ -798,6 +840,13 @@
           if (a[0].length !== b[0].length) return a[0].length - b[0].length;
           return a[0].localeCompare(b[0]);
         });
+      } else {
+        // Порядок как в 7TV на твиче: по ширине ячейки, от узких к широким —
+        // сперва квадратные, потом растяжки. В строке тогда стоят эмоуты
+        // одного размера, а не квадраты вперемешку с растяжками, после
+        // которых справа остаётся пустое место.
+        // Сортировка устойчивая — внутри одной ширины порядок набора цел.
+        found.sort((a, b) => a[3] - b[3]);
       }
       const sec = document.createElement('div');
       sec.className = 'vk7tv-picker-group';
@@ -939,8 +988,7 @@
   function findEmote(name, url) {
     let byUrl = null;
     for (const g of groups) {
-      for (const [n, v] of Object.entries(g.emotes)) {
-        const em = normEmote(v);
+      for (const [n, em] of Object.entries(g.emotes)) {
         const full = fullName(g, n, em);
         if (full === name) return { key: g.key, full };
         if (!byUrl && url && em.u === url) byUrl = { key: g.key, full };
@@ -1082,7 +1130,59 @@
       }
       positionPicker();
       searchInput.focus();
+      revalidate();
     }
+  }
+
+  // Наборы могли измениться, пока страница висела открытой, а вкладка об этом
+  // не узнала: событие хранилища до неё не дошло. Так бывает после
+  // переустановки или обновления расширения — старый контент-скрипт от него
+  // уже отключён, onChanged в нём молчит навсегда, и поповер показывает
+  // наборы, которых в хранилище давно нет (или наоборот). Поэтому на каждое
+  // открытие перечитываем хранилище и, если список разошёлся с показанным,
+  // собираем сетку заново.
+  function groupsSignature() {
+    return groups.map((g) => `${g.key}:${Object.keys(g.emotes).length}`).join('|');
+  }
+
+  // Вкладка осталась от прошлой версии расширения: расширение обновили или
+  // переустановили, пока страница висела открытой. В таком контент-скрипте
+  // chrome.runtime пропадает — картинки эмоутов через фон уже не приходят,
+  // а без них обработчик error убирает ячейку за ячейкой, и поповер стоит
+  // с заголовками наборов и без единого эмоута. Само это не лечится, поэтому
+  // не молчим, а просим перезагрузить страницу.
+  function detached() {
+    try {
+      return !chrome.runtime || !chrome.runtime.id;
+    } catch (e) {
+      return true;
+    }
+  }
+
+  function staleNote() {
+    clearTimeout(flashTimer);
+    foot.textContent = 'Расширение обновилось — обнови страницу ВК (F5)';
+    // в подвал влезает одна строка, поэтому подробности — в подсказке
+    foot.title =
+      'Расширение обновили или переустановили, пока страница была открыта: эта ' +
+      'вкладка с ним больше не связана. Если после F5 сообщение осталось — ' +
+      'значит расширение выключено или сломано, проверь его на chrome://extensions.';
+    foot.classList.add('vk7tv-flash');
+  }
+
+  async function revalidate() {
+    if (detached()) return staleNote();
+    const before = groupsSignature();
+    let show;
+    try {
+      show = await loadGroups();
+    } catch (e) {
+      staleNote(); // «Extension context invalidated» — то же самое
+      return;
+    }
+    widget.style.display = show ? 'flex' : 'none';
+    if (!show) return setOpen(false);
+    if (groupsSignature() !== before) refreshGrid();
   }
 
   // Данные изменились: закрытый пикер соберётся при открытии, открытый — сразу.

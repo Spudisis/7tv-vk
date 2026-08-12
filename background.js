@@ -10,7 +10,18 @@ const ULID_RE = /[0-9A-HJKMNP-TV-Z]{26}/i;
 
 const imgCache = new Map();
 
-// Формат значения: {u: url картинки, z: 1 если zero-width}.
+// Пропорции картинки (ширина/высота) — их знает только API, а пикеру они
+// нужны заранее: по ним он держит место под эмоут до того, как картинка
+// загрузится, иначе сетка после загрузки прыгает. Берём файл 2x — тот
+// самый, что показываем.
+function ratioOf(host) {
+  const files = (host && host.files) || [];
+  const f = files.find((x) => x.name === '2x.webp') || files.find((x) => x.width && x.height);
+  if (!f || !f.width || !f.height) return 1;
+  return Math.round((f.width / f.height) * 100) / 100;
+}
+
+// Формат значения: {u: url картинки, z: 1 если zero-width, r: пропорции}.
 // Флаг 1 у активного эмоута в 7TV — ZERO_WIDTH: эмоут не занимает
 // место, а накладывается поверх предыдущего.
 function emoteMapFromSet(setJson) {
@@ -20,10 +31,18 @@ function emoteMapFromSet(setJson) {
       map[e.name] = {
         u: `https://cdn.7tv.app/emote/${e.id}/2x.webp`,
         z: (e.flags || 0) & 1 ? 1 : 0,
+        r: ratioOf(e.data && e.data.host),
       };
     }
   }
   return map;
+}
+
+// Кэш, снятый до появления пропорций, для сетки бесполезен — такой набор
+// перекачиваем, даже когда полного обновления не просили.
+function hasRatios(map) {
+  for (const v of Object.values(map)) return !!(v && v.r);
+  return true; // пустой набор перекачивать незачем
 }
 
 // Постфикс набора: из него получается второе имя эмоута — ok_bratishkinoff.
@@ -163,7 +182,7 @@ async function refreshAll(force = false) {
   const setEmotes = {};
   const nextSets = [];
   for (const s of sets) {
-    if (!force && oldCache[s.id]) {
+    if (!force && oldCache[s.id] && hasRatios(oldCache[s.id])) {
       setEmotes[s.id] = oldCache[s.id];
       nextSets.push(s);
       continue;
@@ -185,7 +204,7 @@ async function refreshAll(force = false) {
     }
   }
   const localPatch = { setEmotes };
-  if (force || !globalEmotes || !Object.keys(globalEmotes).length) {
+  if (force || !globalEmotes || !Object.keys(globalEmotes).length || !hasRatios(globalEmotes)) {
     try {
       const g = await fetchSet('global');
       if (Object.keys(g.emotes).length) localPatch.globalEmotes = g.emotes;
@@ -275,7 +294,11 @@ function fetchEmoteInfo(id) {
       if (resp.status === 404) throw new Error('Эмоута с таким id на 7TV нет — проверь ссылку');
       if (!resp.ok) throw new Error('7TV API: HTTP ' + resp.status);
       const json = await resp.json();
-      return { name: json.name || id, z: (json.flags || 0) & ZERO_WIDTH ? 1 : 0 };
+      return {
+        name: json.name || id,
+        z: (json.flags || 0) & ZERO_WIDTH ? 1 : 0,
+        r: ratioOf(json.host),
+      };
     })();
     emoteInfo.set(id, p);
     p.catch(() => emoteInfo.delete(id)); // не запоминаем неудачу навсегда
@@ -291,7 +314,7 @@ async function addCustom(input, wanted) {
   if (m) {
     const id = m[0].toUpperCase();
     const info = await fetchEmoteInfo(id);
-    em = { u: `https://cdn.7tv.app/emote/${id}/2x.webp`, z: info.z, id };
+    em = { u: `https://cdn.7tv.app/emote/${id}/2x.webp`, z: info.z, r: info.r, id };
     if (!name) name = info.name;
   } else {
     if (!/^https?:\/\//i.test(raw)) {
