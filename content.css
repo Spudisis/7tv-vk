@@ -31,15 +31,29 @@ img.vk7tv-emote.vk7tv-zw {
 
 /* Спойлер: [spoiler]текст[/spoiler] — блюр до первого клика. Элемент
    остаётся строчным: с display: inline-block длинный спойлер перестал бы
-   переноситься по строкам. */
+   переноситься по строкам.
+
+   Подложка нужна из-за силы блюра: короткое слово на 9px размывается
+   до полной невидимости, и было бы не видно, что там вообще спойлер. */
 .vk7tv-spoiler {
-  filter: blur(5px);
+  filter: blur(9px);
+  background: rgba(127, 127, 127, 0.22);
+  border-radius: 3px;
 }
 
 /* [spoiler/] — блюр на самих вложениях. Имя отправителя, время и аватар
-   лежат в той же части разметки, поэтому закрывать её целиком нельзя. */
+   лежат в той же части разметки, поэтому закрывать её целиком нельзя.
+
+   Одного размывания мало: сквозь него читаются пятна и общая композиция
+   кадра. contrast и saturate добивают их до ровной заливки, по которой
+   содержимое не угадывается.
+
+   clip-path обрезает размывание по границе картинки. Без него блюр
+   такого радиуса вылезает наружу и пачкает соседние сообщения:
+   у filter результат выходит за пределы элемента. */
 .vk7tv-spoiler-media {
-  filter: blur(18px);
+  filter: blur(32px) contrast(0.25) saturate(0.35);
+  clip-path: inset(0);
 }
 
 .vk7tv-spoiler,
@@ -53,6 +67,8 @@ img.vk7tv-emote.vk7tv-zw {
 .vk7tv-spoiler.vk7tv-open,
 .vk7tv-spoiler-media.vk7tv-open {
   filter: none;
+  background: none;
+  clip-path: none;
   cursor: auto;
   -webkit-user-select: auto;
   user-select: auto;
