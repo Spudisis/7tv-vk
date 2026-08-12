@@ -643,23 +643,47 @@
 
   // Сколько уровней над контейнером текста разрешено закрыть блюром
   // по [spoiler/]. Подниматься надо: вложения лежат не внутри текста,
-  // а рядом с ним. Потолок — на случай, когда «другого сообщения» выше
-  // не найдётся вообще (в диалоге одно сообщение). По имени компонента
-  // подниматься можно дальше: там границу задаёт сама разметка.
-  const SPOILER_BOX_DEPTH = 4;
-  const SPOILER_COMPONENT_DEPTH = 8;
+  // а рядом с ним — <div class="ConvoMessageWithoutBubble__mediaAttachments">
+  // сосед текста, а не его родитель.
+  const SPOILER_BOX_DEPTH = 8;
   // Потолок обхода поддерева: выше сообщения лежит вся история переписки,
-  // перебирать её целиком незачем. Чужое сообщение находится в первых же
-  // узлах, а если не нашлось — поддерево для одного сообщения слишком велико.
+  // перебирать её целиком незачем. Чужой текст находится в первых же узлах,
+  // а если не нашёлся — поддерево для одного сообщения слишком велико.
   const SPOILER_SCAN_LIMIT = 2000;
 
-  function hasOtherMessage(root, textBox) {
-    const walker = document.createTreeWalker(root, NodeFilter.SHOW_ELEMENT);
+  // Имя автора над сообщением — не чужой текст, а часть той же строки:
+  // в беседах оно стоит рядом с сообщением, и подъём об него спотыкался бы
+  // ровно там, где рядом лежит вложение.
+  const NAME_TOKENS = new Set([
+    'name', 'names', 'author', 'sender', 'nick', 'nickname', 'title', 'from',
+  ]);
+
+  function isName(el) {
+    const tokens = tokensOf(el);
+    if (!tokens) return false;
+    for (const t of tokens) if (NAME_TOKENS.has(t)) return true;
+    return false;
+  }
+
+  // Текст, которого нет в нашем сообщении: по нему видно, что подъём вышел
+  // за его пределы. Подписи ВК (время, «ред.»), счётчики и имя автора
+  // не в счёт — они стоят при том же сообщении.
+  //
+  // Границу ищем именно так, а не по классам: у ВК текст и вложения
+  // сообщения лежат соседями под родителем с другим именем компонента,
+  // и по именам граница сообщения не читается.
+  function hasForeignText(box, textRoot) {
+    const walker = document.createTreeWalker(box, NodeFilter.SHOW_TEXT);
     let seen = 0;
     while (walker.nextNode()) {
       if (++seen > SPOILER_SCAN_LIMIT) return true;
-      const el = walker.currentNode;
-      if (el !== textBox && isMessageText(el)) return true;
+      const t = walker.currentNode;
+      if (textRoot.contains(t)) continue;
+      const v = (t.nodeValue || '').trim();
+      if (!v || SERVICE_TEXT.test(v)) continue;
+      const p = t.parentElement;
+      if (p && (isServiceLabel(p) || isCounter(p) || isName(p))) continue;
+      return true;
     }
     return false;
   }
@@ -675,66 +699,21 @@
     return false;
   }
 
-  // «ConvoMessageWithoutBubble_mediaAttachments» → convomessagewithoutbubble.
-  // Разметка ВК именует все части одного сообщения общим префиксом
-  // компонента: текст, вложения и обвязка отличаются только хвостом после
-  // «_». По префиксу и видно, где сообщение кончается.
+  // Что закрывать блюром по [spoiler/]: от контейнера текста вверх, пока
+  // в коробку не попадёт вложение — ради него и поднимаемся. Дошли до
+  // чужого текста, не найдя вложения, — откатываемся на уровень назад:
+  // соседнее сообщение закрывать нельзя. У сообщения без вложений подъём
+  // так и останавливается на границе сообщения.
   //
-  // Берём только тот префикс, который сам говорит про переписку: рядом
-  // в классе лежат общие (vkuiTypography_root), и по ним подъём ушёл бы
-  // куда угодно. Хэшированные классы ВК начинаются с «_» — у них префикса
-  // нет, i > 0 их и отсекает.
-  function messageComponent(el) {
-    const cls = el.getAttribute && el.getAttribute('class');
-    if (!cls) return '';
-    for (const c of cls.split(/\s+/)) {
-      const i = c.indexOf('_');
-      if (i <= 0) continue;
-      const name = c.slice(0, i);
-      const tokens = name.replace(/([a-z0-9])([A-Z])/g, '$1 $2').toLowerCase().split(/[^a-z0-9]+/);
-      for (const t of tokens) if (MSG_TOKENS.has(t)) return name.toLowerCase();
-    }
-    return '';
-  }
-
-  function hasComponent(el, comp) {
-    const cls = el.getAttribute && el.getAttribute('class');
-    if (!cls) return false;
-    for (const c of cls.split(/\s+/)) {
-      const low = c.toLowerCase();
-      if (low === comp) return true; // корень компонента бывает без хвоста
-      const i = c.indexOf('_');
-      if (i > 0 && low.slice(0, i) === comp) return true;
-    }
-    return false;
-  }
-
-  // Что закрывать блюром по [spoiler/]. Если у текста опознан компонент
-  // сообщения — поднимаемся, пока части несут то же имя: так в коробку
-  // попадают и вложения, и ничего чужого.
-  //
-  // Проверку «выше уже другое сообщение» на этом пути не применяем:
-  // при таком именовании соседний ConvoMessageWithoutBubble_content
-  // выглядит контейнером текста, и подъём останавливался на первом же
-  // уровне — блюр доставался тексту, а фото рядом оставалось открытым.
-  function spoilerBox(start) {
-    const comp = messageComponent(start);
-    let box = start;
+  // Порядок проверок важен: чужой текст смотрим первым. Иначе на уровне
+  // списка сообщений нашлось бы фото соседа, и блюр накрыл бы переписку.
+  function spoilerBox(textRoot) {
+    let box = textRoot;
     let depth = 0;
-    const limit = comp ? SPOILER_COMPONENT_DEPTH : SPOILER_BOX_DEPTH;
-    for (let n = start.parentElement; n && n !== document.body && depth < limit; n = n.parentElement, depth++) {
-      if (comp) {
-        if (!hasComponent(n, comp)) break;
-        box = n;
-        continue;
-      }
-      // Имя компонента не опознано (старая разметка ВК: im-mess--text):
-      // поднимаемся, пока в поддереве одно сообщение, и останавливаемся
-      // там, где рядом с текстом нашлось вложение — ради него и шли,
-      // а выше лежит обвязка (аватар, имя, время).
-      if (hasOtherMessage(n, start)) break;
+    for (let n = textRoot.parentElement; n && n !== document.body && depth < SPOILER_BOX_DEPTH; n = n.parentElement, depth++) {
+      if (hasForeignText(n, textRoot)) break;
       box = n;
-      if (hasAttachment(n, start)) break;
+      if (hasAttachment(n, textRoot)) break;
     }
     return box;
   }
