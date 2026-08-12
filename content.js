@@ -644,8 +644,10 @@
   // Сколько уровней над контейнером текста разрешено закрыть блюром
   // по [spoiler/]. Подниматься надо: вложения лежат не внутри текста,
   // а рядом с ним. Потолок — на случай, когда «другого сообщения» выше
-  // не найдётся вообще (в диалоге одно сообщение).
+  // не найдётся вообще (в диалоге одно сообщение). По имени компонента
+  // подниматься можно дальше: там границу задаёт сама разметка.
   const SPOILER_BOX_DEPTH = 4;
+  const SPOILER_COMPONENT_DEPTH = 8;
   // Потолок обхода поддерева: выше сообщения лежит вся история переписки,
   // перебирать её целиком незачем. Чужое сообщение находится в первых же
   // узлах, а если не нашлось — поддерево для одного сообщения слишком велико.
@@ -673,18 +675,66 @@
     return false;
   }
 
-  // Что закрывать блюром по [spoiler/]: от контейнера текста вверх, пока
-  // в поддереве остаётся одно сообщение. Останавливаемся на первом уровне,
-  // где рядом с текстом нашлось вложение, — ради него и поднимались, а выше
-  // лежит обвязка ВК (аватар, имя, время). У сообщения без вложений
-  // такого уровня нет, и блюр достаётся всей строке.
-  function spoilerBox(textBox) {
-    let box = textBox;
+  // «ConvoMessageWithoutBubble_mediaAttachments» → convomessagewithoutbubble.
+  // Разметка ВК именует все части одного сообщения общим префиксом
+  // компонента: текст, вложения и обвязка отличаются только хвостом после
+  // «_». По префиксу и видно, где сообщение кончается.
+  //
+  // Берём только тот префикс, который сам говорит про переписку: рядом
+  // в классе лежат общие (vkuiTypography_root), и по ним подъём ушёл бы
+  // куда угодно. Хэшированные классы ВК начинаются с «_» — у них префикса
+  // нет, i > 0 их и отсекает.
+  function messageComponent(el) {
+    const cls = el.getAttribute && el.getAttribute('class');
+    if (!cls) return '';
+    for (const c of cls.split(/\s+/)) {
+      const i = c.indexOf('_');
+      if (i <= 0) continue;
+      const name = c.slice(0, i);
+      const tokens = name.replace(/([a-z0-9])([A-Z])/g, '$1 $2').toLowerCase().split(/[^a-z0-9]+/);
+      for (const t of tokens) if (MSG_TOKENS.has(t)) return name.toLowerCase();
+    }
+    return '';
+  }
+
+  function hasComponent(el, comp) {
+    const cls = el.getAttribute && el.getAttribute('class');
+    if (!cls) return false;
+    for (const c of cls.split(/\s+/)) {
+      const low = c.toLowerCase();
+      if (low === comp) return true; // корень компонента бывает без хвоста
+      const i = c.indexOf('_');
+      if (i > 0 && low.slice(0, i) === comp) return true;
+    }
+    return false;
+  }
+
+  // Что закрывать блюром по [spoiler/]. Если у текста опознан компонент
+  // сообщения — поднимаемся, пока части несут то же имя: так в коробку
+  // попадают и вложения, и ничего чужого.
+  //
+  // Проверку «выше уже другое сообщение» на этом пути не применяем:
+  // при таком именовании соседний ConvoMessageWithoutBubble_content
+  // выглядит контейнером текста, и подъём останавливался на первом же
+  // уровне — блюр доставался тексту, а фото рядом оставалось открытым.
+  function spoilerBox(start) {
+    const comp = messageComponent(start);
+    let box = start;
     let depth = 0;
-    for (let n = textBox.parentElement; n && n !== document.body && depth < SPOILER_BOX_DEPTH; n = n.parentElement, depth++) {
-      if (hasOtherMessage(n, textBox)) break;
+    const limit = comp ? SPOILER_COMPONENT_DEPTH : SPOILER_BOX_DEPTH;
+    for (let n = start.parentElement; n && n !== document.body && depth < limit; n = n.parentElement, depth++) {
+      if (comp) {
+        if (!hasComponent(n, comp)) break;
+        box = n;
+        continue;
+      }
+      // Имя компонента не опознано (старая разметка ВК: im-mess--text):
+      // поднимаемся, пока в поддереве одно сообщение, и останавливаемся
+      // там, где рядом с текстом нашлось вложение — ради него и шли,
+      // а выше лежит обвязка (аватар, имя, время).
+      if (hasOtherMessage(n, start)) break;
       box = n;
-      if (hasAttachment(n, textBox)) break;
+      if (hasAttachment(n, start)) break;
     }
     return box;
   }
