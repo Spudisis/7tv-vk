@@ -36,13 +36,14 @@ img.vk7tv-emote.vk7tv-zw {
   filter: blur(5px);
 }
 
-/* [spoiler/] — блюр всего сообщения, вместе с вложениями */
-.vk7tv-spoiler-all {
-  filter: blur(14px);
+/* [spoiler/] — блюр на самих вложениях. Имя отправителя, время и аватар
+   лежат в той же части разметки, поэтому закрывать её целиком нельзя. */
+.vk7tv-spoiler-media {
+  filter: blur(18px);
 }
 
 .vk7tv-spoiler,
-.vk7tv-spoiler-all {
+.vk7tv-spoiler-media {
   transition: filter 0.15s ease;
   cursor: pointer;
   -webkit-user-select: none;
@@ -50,7 +51,7 @@ img.vk7tv-emote.vk7tv-zw {
 }
 
 .vk7tv-spoiler.vk7tv-open,
-.vk7tv-spoiler-all.vk7tv-open {
+.vk7tv-spoiler-media.vk7tv-open {
   filter: none;
   cursor: auto;
   -webkit-user-select: auto;

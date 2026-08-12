@@ -261,10 +261,25 @@
   // вложения, а клик по эмоуту внутри — пикер. Раскрываем все закрытые
   // спойлеры над точкой нажатия: текстовый спойлер бывает и внутри
   // сообщения, закрытого целиком.
-  const CLOSED_SPOILER = '.vk7tv-spoiler:not(.vk7tv-open),.vk7tv-spoiler-all:not(.vk7tv-open)';
+  const CLOSED_SPOILER =
+    '.vk7tv-spoiler:not(.vk7tv-open),.vk7tv-spoiler-media:not(.vk7tv-open)';
 
   function closedSpoiler(el) {
     return el && el.closest ? el.closest(CLOSED_SPOILER) : null;
+  }
+
+  // Сообщение под [spoiler/] открывается целиком: нажал на картинку —
+  // открылся и текст, и остальные вложения.
+  function openSpoiler(el) {
+    el.classList.add('vk7tv-open');
+    el._vk7tvOpen = true;
+    const rec = el._vk7tvSpoiler;
+    if (!rec) return;
+    for (const m of rec.media) {
+      m.classList.add('vk7tv-open');
+      m._vk7tvOpen = true;
+    }
+    for (const s of rec.spans) s.classList.add('vk7tv-open');
   }
 
   function onPointer(e) {
@@ -273,7 +288,7 @@
       e.stopPropagation();
       if (e.type !== 'click') return;
       for (let n = closedSpoiler(e.target); n; n = closedSpoiler(n.parentElement)) {
-        n.classList.add('vk7tv-open');
+        openSpoiler(n);
       }
       return;
     }
@@ -641,11 +656,14 @@
     return out;
   }
 
-  // Сколько уровней над контейнером текста разрешено закрыть блюром
-  // по [spoiler/]. Подниматься надо: вложения лежат не внутри текста,
-  // а рядом с ним — <div class="ConvoMessageWithoutBubble__mediaAttachments">
-  // сосед текста, а не его родитель.
-  const SPOILER_BOX_DEPTH = 8;
+  // Сколько уровней над контейнером текста осматриваем в поисках вложений
+  // по [spoiler/]. Подниматься надо: они лежат не внутри текста, а рядом
+  // с ним — ConvoMessageWithoutBubble__mediaAttachments сосед текста,
+  // а не его родитель, и одного уровня хватает. Потолок низкий нарочно:
+  // у сообщения без вложений подъём идёт до упора, и чем он выше, тем
+  // ближе к соседям — у соседнего сообщения без текста своё фото
+  // остановить подъём не может.
+  const SPOILER_BOX_DEPTH = 4;
   // Потолок обхода поддерева: выше сообщения лежит вся история переписки,
   // перебирать её целиком незачем. Чужой текст находится в первых же узлах,
   // а если не нашёлся — поддерево для одного сообщения слишком велико.
@@ -688,34 +706,127 @@
     return false;
   }
 
-  // Вложение рядом с текстом сообщения. Свои картинки не считаем: эмоут
-  // и превью набора — это сам текст, подниматься над ним ради них незачем.
-  function hasAttachment(box, textBox) {
-    for (const m of box.querySelectorAll('img,video,canvas')) {
-      if (textBox.contains(m)) continue;
-      if (m.classList.contains(EMOTE_CLASS) || m.classList.contains('vk7tv-suggest-img')) continue;
-      return true;
+  // Вложение сообщения: <img class="PhotoItem__img"> внутри
+  // Attachments / AttachesGrid / AttachPhotos__link — все они лежат
+  // в ConvoMessageWithoutBubble__mediaAttachments. Опознаём по этим кускам
+  // имени, потому что аватар собеседника — тоже картинка в том же
+  // сообщении, а прятать его не надо.
+  const ATTACH_TOKENS = new Set([
+    'attach', 'attaches', 'attachment', 'attachments', 'media', 'photo',
+    'photos', 'image', 'images', 'video', 'videos', 'gallery', 'sticker',
+    'stickers', 'graffiti', 'gif', 'doc', 'docs',
+  ]);
+
+  const AVATAR_TOKENS = new Set([
+    'avatar', 'avatars', 'userphoto', 'profilephoto', 'thumb', 'thumbs',
+  ]);
+
+  // Аватар перебивает вложение: он лежит в том же сообщении и попадается
+  // раньше, а его картинка про содержимое ничего не говорит.
+  function isAttachment(m, scope) {
+    if (m.classList.contains(EMOTE_CLASS) || m.classList.contains('vk7tv-suggest-img')) {
+      return false;
+    }
+    let attach = false;
+    for (let n = m, depth = 0; n && n !== scope.parentElement && depth < 8; n = n.parentElement, depth++) {
+      const tokens = tokensOf(n);
+      if (!tokens) continue;
+      for (const t of tokens) {
+        if (AVATAR_TOKENS.has(t)) return false;
+        if (ATTACH_TOKENS.has(t)) attach = true;
+      }
+    }
+    return attach;
+  }
+
+  function eachAttachment(scope, textRoot, fn) {
+    for (const m of scope.querySelectorAll('img,video,canvas')) {
+      if (textRoot.contains(m)) continue; // эмоуты и чипы — это сам текст
+      if (!isAttachment(m, scope)) continue;
+      if (fn(m)) return true;
     }
     return false;
   }
 
-  // Что закрывать блюром по [spoiler/]: от контейнера текста вверх, пока
-  // в коробку не попадёт вложение — ради него и поднимаемся. Дошли до
-  // чужого текста, не найдя вложения, — откатываемся на уровень назад:
-  // соседнее сообщение закрывать нельзя. У сообщения без вложений подъём
-  // так и останавливается на границе сообщения.
+  function hasAttachment(scope, textRoot) {
+    return eachAttachment(scope, textRoot, () => true);
+  }
+
+  // Где искать вложения этого сообщения: от контейнера текста вверх, пока
+  // они не попадут внутрь. Дошли до чужого текста, не найдя вложений, —
+  // откатываемся на уровень назад: чужое сообщение нам не нужно.
   //
   // Порядок проверок важен: чужой текст смотрим первым. Иначе на уровне
-  // списка сообщений нашлось бы фото соседа, и блюр накрыл бы переписку.
-  function spoilerBox(textRoot) {
-    let box = textRoot;
+  // списка сообщений нашлось бы фото соседа.
+  //
+  // Блюр на саму эту область не вешаем: в ней же лежат имя отправителя,
+  // время и аватар. Она нужна только чтобы найти вложения — прячем их
+  // самих, а текст закрывают наши span'ы.
+  function spoilerScope(textRoot) {
+    let scope = textRoot;
     let depth = 0;
     for (let n = textRoot.parentElement; n && n !== document.body && depth < SPOILER_BOX_DEPTH; n = n.parentElement, depth++) {
       if (hasForeignText(n, textRoot)) break;
-      box = n;
+      scope = n;
       if (hasAttachment(n, textRoot)) break;
     }
-    return box;
+    return scope;
+  }
+
+  // --- вложения под блюром ---
+
+  const SPOILER_MEDIA = 'vk7tv-spoiler-media';
+
+  // Сообщения с [spoiler/], которые сейчас на экране. ВК дорисовывает
+  // картинку позже текста (ленивая загрузка, докачка превью), поэтому
+  // список вложений пересобирается на каждую пачку изменений страницы.
+  const hidden = new Set();
+
+  // React переписывает class у <img>, когда картинка догрузилась
+  // (PhotoItem__img--loaded), и вместе со своим стирает наш — блюр
+  // слетал прямо при загрузке. Возвращаем его на место.
+  const mediaWatcher = new MutationObserver((mutations) => {
+    for (const m of mutations) {
+      const el = m.target;
+      if (!el._vk7tvHidden || el.classList.contains(SPOILER_MEDIA)) continue;
+      el.classList.add(SPOILER_MEDIA);
+      if (el._vk7tvOpen) el.classList.add('vk7tv-open');
+    }
+  });
+
+  function hideMedia(rec) {
+    eachAttachment(rec.scope, rec.textRoot, (m) => {
+      if (m._vk7tvHidden) return false;
+      m._vk7tvHidden = true;
+      m._vk7tvSpoiler = rec;
+      m.classList.add(SPOILER_MEDIA);
+      rec.media.push(m);
+      mediaWatcher.observe(m, { attributes: true, attributeFilter: ['class'] });
+      return false;
+    });
+  }
+
+  function showMedia(rec) {
+    for (const m of rec.media) {
+      m._vk7tvHidden = false;
+      m._vk7tvOpen = false;
+      m._vk7tvSpoiler = null;
+      m.classList.remove(SPOILER_MEDIA, 'vk7tv-open');
+    }
+    rec.media.length = 0;
+  }
+
+  // Страница поменялась: у сообщений со спойлером могли появиться новые
+  // картинки, а сами сообщения — уехать со страницы.
+  function refreshHidden() {
+    for (const rec of hidden) {
+      if (!rec.scope.isConnected) {
+        showMedia(rec);
+        hidden.delete(rec);
+        continue;
+      }
+      hideMedia(rec);
+    }
   }
 
   // --- рендер ---
@@ -841,28 +952,31 @@
   // а рендер вставляется соседним span'ом. Перерисовал React текст
   // обратно — обработчик characterData уберёт span и отрендерит заново.
   //
-  // box — сообщение, которому этот рендер поставил блюр по [spoiler/]:
-  // рендер снимается вместе с блюром, иначе закрытым останется чужое
-  // сообщение, которое ВК положит в переиспользованную разметку.
-  function mount(node, frag, box) {
+  // rec — сообщение, вложения которого этот рендер спрятал по [spoiler/]:
+  // рендер снимается вместе с блюром, иначе закрытыми останутся картинки
+  // чужого сообщения, которое ВК положит в переиспользованную разметку.
+  function mount(node, frag, rec) {
     const span = document.createElement('span');
     span.className = 'vk7tv-text';
     span.appendChild(frag);
     span._vk7tvSrc = node;
     span._vk7tvText = node.nodeValue;
-    span._vk7tvBox = box || null;
+    span._vk7tvRec = rec || null;
     node._vk7tv = span;
     node.parentNode.insertBefore(span, node.nextSibling);
     node.nodeValue = '';
   }
 
-  function clearBox(span) {
-    const box = span._vk7tvBox;
-    if (box) box.classList.remove('vk7tv-spoiler-all', 'vk7tv-open');
+  function clearRec(span) {
+    const rec = span._vk7tvRec;
+    if (!rec) return;
+    span._vk7tvRec = null;
+    showMedia(rec);
+    hidden.delete(rec);
   }
 
   function dropSpan(span) {
-    clearBox(span);
+    clearRec(span);
     span.remove();
   }
 
@@ -910,15 +1024,17 @@
       return;
     }
 
-    let box = null;
-    if (parsed.all && textBox && !isPreview(textBox)) {
-      box = spoilerBox(textBox);
-      box.classList.add('vk7tv-spoiler-all');
+    // [spoiler/] — под блюром всё содержимое сообщения: текст закрывают
+    // наши span'ы, вложения прячутся поштучно. У превью в списке диалогов
+    // вложений нет, искать их вокруг незачем — там только текст.
+    let rec = null;
+    if (parsed.all && !(textBox && isPreview(textBox))) {
+      rec = { scope: spoilerScope(root), textRoot: root, media: [], spans: [] };
+      hideMedia(rec);
+      hidden.add(rec);
     }
-    // Вне переписки контейнер сообщения не опознаётся (галка «показывать
-    // везде»), а у превью в списке диалогов его и не ищем: закрываем хотя
-    // бы сам текст, вложения ВК рядом с ним остаются видимыми.
-    const textOnly = parsed.all && !box;
+    const textOnly = parsed.all;
+    let owner = rec; // рендер, который потом снимет блюр с вложений
 
     const seen = new Set(); // одно и то же слово в сообщении — один чип
     for (let k = 0; k < nodes.length; k++) {
@@ -948,13 +1064,18 @@
           blurred = document.createElement('span');
           blurred.className = 'vk7tv-spoiler';
           blurred.title = 'Спойлер — нажми, чтобы открыть';
+          // клик по тексту открывает и картинки того же сообщения
+          if (rec) {
+            blurred._vk7tvSpoiler = rec;
+            rec.spans.push(blurred);
+          }
           frag.appendChild(blurred);
         }
         renderRange(blurred, text, s.from, s.to, seen);
       }
       if (!changed) continue;
-      mount(t, frag, box);
-      box = null; // блюр снимет тот рендер, который его поставил
+      mount(t, frag, owner);
+      owner = null; // блюр снимает тот рендер, который его поставил
     }
   }
 
@@ -1002,7 +1123,7 @@
         src.nodeValue = span._vk7tvText;
         dropSpan(span);
       } else {
-        clearBox(span);
+        clearRec(span);
         span.replaceWith(document.createTextNode(span._vk7tvText || span.textContent));
       }
     }
@@ -1031,6 +1152,9 @@
         for (const n of m.addedNodes) scan(n);
       }
     }
+    // Картинка в сообщении со спойлером могла приехать только сейчас —
+    // ВК грузит превью и вложения позже текста.
+    if (hidden.size) refreshHidden();
   });
 
   // Избранное и позиция виджета меняются часто (в том числе из соседней
