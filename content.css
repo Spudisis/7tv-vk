@@ -19,6 +19,47 @@ img.vk7tv-emote:not(.vk7tv-zw):hover {
   display: inline-block;
 }
 
+/* Заглушка на время загрузки картинки: имя эмоута и крутилка справа.
+   Размеры повторяют картинку эмоута (высота, отбивка, vertical-align) —
+   иначе при подмене дёргалась бы вся строка сообщения. Цвет берём от
+   текста: у ВК есть светлая и тёмная темы. */
+.vk7tv-loading {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 31px;
+  margin: -4px 1px;
+  padding: 0 6px;
+  vertical-align: middle;
+  border-radius: 6px;
+  background: rgba(127, 127, 127, 0.16);
+  color: inherit;
+  white-space: nowrap;
+}
+
+.vk7tv-loading i {
+  flex: none;
+  width: 9px;
+  height: 9px;
+  border: 1.5px solid currentColor;
+  border-right-color: transparent;
+  border-radius: 50%;
+  opacity: 0.55;
+  animation: vk7tv-spin 0.7s linear infinite;
+}
+
+@keyframes vk7tv-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .vk7tv-loading i {
+    animation: none;
+  }
+}
+
 /* zero-width: не занимает места, лежит поверх предыдущего эмоута */
 img.vk7tv-emote.vk7tv-zw {
   position: absolute;

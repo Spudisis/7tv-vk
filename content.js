@@ -62,6 +62,10 @@
   // Фоновый скрипт качает картинку, здесь она превращается в blob:-URL;
   // кэш по URL — повторные эмоуты в чате не ходят в сеть.
   const blobCache = new Map(); // url -> Promise<string|null>
+  // Готовые blob-адреса держим отдельно от промисов: повторный эмоут в чате
+  // (а их большинство) должен получить src сразу, а не через микротаску —
+  // иначе на кадр показывалась бы заглушка загрузки.
+  const blobReady = new Map(); // url -> blob:
   // На vk.com прямая загрузка с CDN не проходит никогда. Первая картинка
   // это выясняет, остальные уже не тратят время на заведомо мёртвый запрос.
   let cdnBlocked = false;
@@ -84,6 +88,9 @@
       });
     });
     blobCache.set(url, p);
+    p.then((u) => {
+      if (u) blobReady.set(url, u);
+    });
     return p;
   }
 
@@ -253,6 +260,18 @@
     return changed;
   }
 
+  // Заглушка на время загрузки: имя эмоута и крутилка справа. У <img> без
+  // src нет ни размеров, ни alt, поэтому на его месте была пустота — пока
+  // картинка шла из фона, сообщение выглядело пустым. Высота и отбивка —
+  // как у картинки эмоута, чтобы строка не дёргалась при подмене.
+  function makeLoader(name) {
+    const box = document.createElement('span');
+    box.className = 'vk7tv-loading';
+    box.title = `${name} — загружается`;
+    box.append(name, document.createElement('i'));
+    return box;
+  }
+
   function makeEmote(name, url, zeroWidth) {
     const img = document.createElement('img');
     img.className = EMOTE_CLASS + (zeroWidth ? ' vk7tv-zw' : '');
@@ -263,25 +282,45 @@
     // адрес с CDN, а не итоговый src: в src может лежать blob:, а пикер
     // ищет набор по тому же адресу, что записан в хранилище
     img._vk7tvUrl = url;
+    // hold — заглушка, которая сейчас стоит в сообщении вместо картинки
+    let hold = null;
+    const giveUp = () => {
+      // ни с CDN, ни через фон — возвращаем текст, чтобы не терять сообщение
+      (hold || img).replaceWith(document.createTextNode(name));
+      hold = null;
+    };
     const viaBackground = () => {
       img.dataset.vk7tvFallback = '1';
+      // zero-width эмоут ложится поверх соседнего и своего места не занимает —
+      // заглушка там раздвигала бы стопку
+      if (!zeroWidth) {
+        hold = makeLoader(name);
+        if (img.parentNode) img.replaceWith(hold); // CDN отвалился уже в сообщении
+      }
       resolveEmote(url).then((u) => {
-        if (u) img.src = u;
-        else img.replaceWith(document.createTextNode(name));
+        if (!u) return giveUp();
+        // картинку ставим в сообщение загруженной: иначе на кадр видно
+        // пустую ячейку вместо заглушки
+        if (hold) {
+          img.addEventListener('load', () => {
+            if (!hold) return;
+            hold.replaceWith(img);
+            hold = null;
+          }, { once: true });
+        }
+        img.src = u;
       });
     };
     img.addEventListener('error', () => {
-      if (img.dataset.vk7tvFallback) {
-        // и blob не загрузился — возвращаем текст, чтобы не терять сообщение
-        img.replaceWith(document.createTextNode(name));
-        return;
-      }
+      if (img.dataset.vk7tvFallback) return giveUp();
       cdnBlocked = true;
       viaBackground();
     });
-    if (cdnBlocked) viaBackground();
+    const ready = blobReady.get(url);
+    if (ready) img.src = ready; // тот же эмоут уже качали — без заглушки
+    else if (cdnBlocked) viaBackground();
     else img.src = url;
-    return img;
+    return hold || img;
   }
 
   // Клик по эмоуту в сообщении открывает пикер на наборе, из которого этот
