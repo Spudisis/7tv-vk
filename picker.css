@@ -155,7 +155,6 @@
   max-height: 84px; /* две строки, дальше своя прокрутка — полоса не растёт */
   overflow-y: auto;
   overflow-x: hidden;
-  padding-top: 4px; /* чтобы прокрутка не срезала звёздочки верхнего ряда */
 }
 
 .vk7tv-picker-fav-title {
@@ -571,6 +570,9 @@
   display: flex;
   flex-wrap: wrap;
   gap: 2px;
+  /* Звёздочка выступает на 3px: оставляем место под липким заголовком
+     и у правого края прокрутки, в том числе в полосе недавних. */
+  padding: 4px 3px 0 0;
 }
 
 .vk7tv-picker-cell {
@@ -646,7 +648,15 @@
 }
 
 .vk7tv-picker-cell .vk7tv-fav svg {
-  display: block; /* иначе строчный бокс добавит снизу лишний пиксель */
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  display: block;
+  width: 10px;
+  height: 10px;
+  margin: 0;
+  padding: 0;
+  transform: translate(-50%, -50%);
 }
 
 .vk7tv-picker-cell:hover .vk7tv-fav,

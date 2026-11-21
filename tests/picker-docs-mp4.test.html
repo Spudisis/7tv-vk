@@ -18,7 +18,8 @@
       })
     );
 
-    const sizes = [{ type: 's', src: 'https://media.test/poster.png', width: 64, height: 48 }];
+    const posterUrl = 'https://media.test/poster.png';
+    const sizes = [{ type: 's', src: posterUrl, width: 64, height: 48 }];
     const docs = [
       {
         owner_id: 42,
@@ -143,7 +144,7 @@
 
       // PNG статичен: карточка и превью берут готовое изображение.
       const png = cell(2);
-      T.eq('PNG — постер', png.querySelector('img').src, 'https://media.test/poster.png');
+      T.eq('PNG — постер', png.querySelector('img').src, posterUrl);
       hover(png);
       T.eq('превью PNG открылось', preview.style.display, 'flex');
       T.check('PNG в превью — статичное изображение', preview.querySelector('img').style.display !== 'none', 'да');

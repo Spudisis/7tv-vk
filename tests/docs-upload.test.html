@@ -249,10 +249,13 @@
       // Пустой response — не успех, а неподтверждённое сохранение.
       saveMode = 'empty';
       const emptyId = DOCS.enqueueUploads([file('Empty.png')])[0];
-      await T.waitFor(
+      const reachedUnconfirmed = await T.waitFor(
         'неподтверждённое сохранение',
         () => DOCS.getState().uploads.find((u) => u.id === emptyId).stage === 'unconfirmed'
       );
+      if (!reachedUnconfirmed) throw new Error('Save state: ' + JSON.stringify(
+        DOCS.getState().uploads.find((u) => u.id === emptyId)
+      ));
       const unconfirmed = DOCS.getState().uploads.find((u) => u.id === emptyId);
       T.eq('пустой ответ не считается успехом', unconfirmed.docKey, '');
       T.check('неподтверждённое можно повторить', unconfirmed.canRetry, 'да');
