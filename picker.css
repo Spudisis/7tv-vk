@@ -560,6 +560,8 @@
    быть почти любого цвета, а область нажатия — не меньше 24×24. */
 .vk7tv-picker-cell.vk7tv-doc-cell {
   position: relative;
+  /* Слои удаления остаются внутри карточки, под липким заголовком. */
+  isolation: isolate;
 }
 
 .vk7tv-doc-delete {
@@ -795,7 +797,8 @@
   height: 10px;
   margin: 0;
   padding: 0;
-  transform: translate(-50%, -50%);
+  /* У пятиконечной звезды визуальный вес ниже центра её рамки. */
+  transform: translate(-50%, calc(-50% - 0.5px));
 }
 
 .vk7tv-picker-cell:hover .vk7tv-fav,

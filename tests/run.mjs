@@ -81,12 +81,18 @@ try {
       let report;
       const deadline = Date.now() + 30000;
       while (Date.now() < deadline) {
-        const { result, exceptionDetails } = await call('Runtime.evaluate', {
-          expression: 'document.querySelector("#result")?.textContent || ""', returnByValue: true,
-        }, sessionId);
-        if (!exceptionDetails && result.value?.startsWith('RESULT ')) {
-          report = JSON.parse(result.value.slice(7));
-          break;
+        try {
+          const { result, exceptionDetails } = await call('Runtime.evaluate', {
+            expression: 'document.querySelector("#result")?.textContent || ""', returnByValue: true,
+          }, sessionId);
+          if (!exceptionDetails && result.value?.startsWith('RESULT ')) {
+            report = JSON.parse(result.value.slice(7));
+            break;
+          }
+        } catch (e) {
+          // Стенд может перезагрузить страницу между проходами: в момент
+          // навигации evaluate отменяется, но цель и сессия остаются живы.
+          if (!/navigated or closed/i.test(e.message)) throw e;
         }
         await delay(25);
       }

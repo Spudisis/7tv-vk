@@ -134,6 +134,19 @@ window.VK7TV_TEST = (() => {
     document.body.appendChild(box);
   }
 
+  // Стенд с перезагрузкой проходит несколько страниц. Проверки и ошибки
+  // копятся между ними, иначе итоговый отчёт показывал бы только последний
+  // проход, а сбой раннего прохода терялся бы после навигации.
+  function exportState() {
+    return { checks: checks.slice(), errors: errors.slice() };
+  }
+
+  function importState(state) {
+    if (!state) return;
+    for (const c of state.checks || []) checks.push(c);
+    for (const e of state.errors || []) errors.push(e);
+  }
+
   // Тело стенда гоняем здесь: упавшая проверка не должна лишать отчёта —
   // иначе в прогоне видно только «стенд не дошёл до отчёта».
   async function run(fn) {
@@ -145,5 +158,5 @@ window.VK7TV_TEST = (() => {
     report();
   }
 
-  return { install, check, eq, waitFor, report, run, png, pngB64 };
+  return { install, check, eq, waitFor, report, run, png, pngB64, exportState, importState };
 })();

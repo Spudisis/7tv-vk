@@ -1,0 +1,498 @@
+<!doctype html>
+<meta charset="utf-8" />
+<title>VK7TV — позиция кнопки при ресайзе</title>
+<link rel="stylesheet" href="../picker.css" />
+<body style="margin: 0; background: #141519">
+  <script src="harness.js"></script>
+  <script>
+    // Стенд идёт в три прохода с перезагрузкой: так проверяется чтение
+    // сохранённой позиции при старте, а не только поведение в одной сессии.
+    // Между проходами хранилище и ожидаемые координаты лежат в sessionStorage.
+    const T = window.VK7TV_TEST;
+    const SAVED = JSON.parse(sessionStorage.getItem('vk7tv-widget-pos-store') || 'null');
+
+    const em = (w, h) => ({ u: T.png(w, h), z: 0, r: w / h });
+    const baseSync = {
+      enabled: true,
+      useGlobal: false,
+      widget: true,
+      sets: [{ id: 'SET1', name: 'Набор', slug: 's', count: 1 }],
+      customEmotes: {},
+      favorites: [],
+    };
+    const baseLocal = {
+      setEmotes: { SET1: { one: em(64, 64) } },
+      globalEmotes: null,
+      recent: [],
+      collapsedGroups: [],
+      stripTab: 'recent',
+      docsKnown: true,
+    };
+    const load = SAVED || { sync: baseSync, local: baseLocal };
+    const store = T.install({ sync: load.sync, local: load.local, respond: () => ({}) });
+    window.__vkStore = store;
+    window.__vkSnapshot = SAVED;
+    window.__widgetWrites = 0;
+    const localSet = chrome.storage.local.set;
+    chrome.storage.local.set = (obj) => {
+      if (obj && Object.prototype.hasOwnProperty.call(obj, 'widgetPos')) window.__widgetWrites++;
+      return localSet(obj);
+    };
+  </script>
+  <script src="../default-emotes.js"></script>
+  <script src="../emotes.js"></script>
+  <script src="../picker.js"></script>
+  <script>
+    (() => {
+      const T = window.VK7TV_TEST;
+      const store = window.__vkStore;
+      const phase = sessionStorage.getItem('vk7tv-widget-pos-phase') || '1';
+      const snapshot = window.__vkSnapshot;
+      const widgetEl = () => document.querySelector('.vk7tv-widget');
+
+      // Проверки прошлых проходов переносим в итоговый отчёт: иначе после
+      // перезагрузки он показывал бы только последние шесть проверок.
+      const HISTORY_KEY = 'vk7tv-widget-pos-history';
+      const priorStates = JSON.parse(sessionStorage.getItem(HISTORY_KEY) || '[]');
+      for (const state of priorStates) T.importState(state);
+      const before = T.exportState();
+      const baseChecks = before.checks.length;
+      const baseErrors = before.errors.length;
+      const saveHistory = () => {
+        const now = T.exportState();
+        const current = {
+          checks: now.checks.slice(baseChecks),
+          errors: now.errors.slice(baseErrors),
+        };
+        sessionStorage.setItem(HISTORY_KEY, JSON.stringify(priorStates.concat(current)));
+      };
+      const pickerEl = () => document.querySelector('.vk7tv-picker');
+      const rectOf = (el) => el.getBoundingClientRect();
+      const near = (a, b, tol = 1) => Math.abs(a - b) <= tol;
+      const fmt = (r) => `${Math.round(r.left)},${Math.round(r.top)} (${Math.round(r.width)}×${Math.round(r.height)})`;
+
+      // Синтетические PointerEvent не проходят настоящий захват указателя.
+      Element.prototype.setPointerCapture = function () {};
+
+      const pointer = (type, x, y) =>
+        new PointerEvent(type, {
+          bubbles: true,
+          cancelable: true,
+          button: 0,
+          pointerId: 17,
+          pointerType: 'mouse',
+          isPrimary: true,
+          clientX: x,
+          clientY: y,
+        });
+
+      const dragTo = (left, top) => {
+        const el = widgetEl();
+        const r = rectOf(el);
+        const x = r.left + r.width / 2;
+        const y = r.top + r.height / 2;
+        el.dispatchEvent(pointer('pointerdown', x, y));
+        el.dispatchEvent(pointer('pointermove', x + (left - r.left), y + (top - r.top)));
+        el.dispatchEvent(pointer('pointerup', x + (left - r.left), y + (top - r.top)));
+      };
+
+      // CSS не пересчитывает vw/vh от подменённого innerWidth, поэтому
+      // проверяем именно логику позиционирования кнопки, а не вёрстку.
+      const setViewport = (width, height) => {
+        Object.defineProperty(window, 'innerWidth', { value: width, configurable: true });
+        Object.defineProperty(window, 'innerHeight', { value: height, configurable: true });
+        window.dispatchEvent(new Event('resize'));
+      };
+
+      const waitWidget = () =>
+        T.waitFor('виджет показан', () => {
+          const el = widgetEl();
+          return el && rectOf(el).width > 0;
+        });
+
+      const pickerExpected = (w) => {
+        const el = pickerEl();
+        const pw = el.offsetWidth;
+        const ph = el.offsetHeight;
+        let left = w.left + w.width / 2 > window.innerWidth / 2 ? w.right - pw : w.left;
+        let top = w.top + w.height / 2 > window.innerHeight / 2 ? w.top - ph - 10 : w.bottom + 10;
+        left = Math.max(8, Math.min(left, window.innerWidth - pw - 8));
+        top = Math.max(8, Math.min(top, window.innerHeight - ph - 8));
+        return { left, top };
+      };
+
+      async function phase1() {
+        await waitWidget();
+        const startW = window.innerWidth;
+        const startH = window.innerHeight;
+        const start = rectOf(widgetEl());
+
+        T.check(
+          'начальная позиция: 20px от правого края',
+          near(startW - 46 - start.left, 20),
+          `${startW - 46 - start.left}px`
+        );
+        T.check(
+          'начальная позиция не записывается до перетаскивания',
+          !store.local.widgetPos,
+          JSON.stringify(store.local.widgetPos || null)
+        );
+
+        const narrowW = Math.max(120, startW - 240);
+        setViewport(narrowW, startH);
+        const narrow = rectOf(widgetEl());
+        T.check(
+          'при сужении кнопка сдвигается влево',
+          narrow.left < start.left,
+          fmt(narrow)
+        );
+        T.check(
+          'при сужении кнопка остаётся в окне',
+          narrow.right <= narrowW + 1,
+          `${Math.round(narrow.right)} <= ${narrowW}`
+        );
+
+        setViewport(startW, startH);
+        const returned = rectOf(widgetEl());
+        T.check(
+          'после возврата ширины кнопка вернулась',
+          near(returned.left, start.left) && near(returned.top, start.top),
+          `${fmt(returned)} (ждали ${fmt(start)})`
+        );
+        T.check(
+          'правый отступ после возврата сохранился',
+          near(startW - returned.right, startW - start.right),
+          `${startW - returned.right}px`
+        );
+
+        let cycle = '';
+        let stable = true;
+        for (let i = 0; i < 4; i++) {
+          setViewport(Math.max(120, startW - 80 * (i + 1)), startH);
+          setViewport(startW, startH);
+          const r = rectOf(widgetEl());
+          cycle = fmt(r);
+          if (!near(r.left, start.left) || !near(r.top, start.top)) {
+            stable = false;
+            break;
+          }
+        }
+        T.check('циклы сужения не накапливают смещение', stable, cycle);
+
+        // Ровно по центру расстояния до краёв равны: по договорённости
+        // выбираются левый и верхний края.
+        dragTo((startW - 46) / 2, (startH - 46) / 2);
+        const middle = store.local.widgetPos;
+        T.eq('при равном расстоянии выбран левый край', middle.edgeX, 'left');
+        T.eq('при равном расстоянии выбран верхний край', middle.edgeY, 'top');
+
+        // Левая и верхняя привязки: после сужения и изменения высоты
+        // кнопка должна остаться на тех же отступах от краёв.
+        dragTo(30, 100);
+        let saved = store.local.widgetPos;
+        T.eq('после перетаскивания влево привязка к левому краю', saved.edgeX, 'left');
+        T.eq('после перетаскивания вверх привязка к верхнему краю', saved.edgeY, 'top');
+        T.check(
+          'левая привязка записана отступом',
+          near(saved.offsetX, 30),
+          `${saved.offsetX}px`
+        );
+        T.check(
+          'верхняя привязка записана отступом',
+          near(saved.offsetY, 100),
+          `${saved.offsetY}px`
+        );
+        const leftTop = rectOf(widgetEl());
+        setViewport(Math.max(80, startW - 260), startH);
+        T.check(
+          'левая привязка: сужение не двигает кнопку',
+          near(rectOf(widgetEl()).left, leftTop.left),
+          `${rectOf(widgetEl()).left}px`
+        );
+        setViewport(startW, Math.max(120, startH - 200));
+        T.check(
+          'верхняя привязка: изменение высоты не двигает кнопку',
+          near(rectOf(widgetEl()).top, leftTop.top),
+          `${rectOf(widgetEl()).top}px`
+        );
+        setViewport(startW, startH);
+
+        // Нижняя привязка: отступ от низа должен пережить изменение высоты.
+        dragTo(40, startH - 46 - 50);
+        saved = store.local.widgetPos;
+        T.eq('после перетаскивания вниз привязка к нижнему краю', saved.edgeY, 'bottom');
+        const bottomOffset = saved.offsetY;
+        const bottomTop = rectOf(widgetEl()).top;
+        setViewport(startW, startH - 150);
+        T.check(
+          'нижняя привязка: отступ от низа сохраняется',
+          near(startH - 150 - 46 - rectOf(widgetEl()).top, bottomOffset),
+          `${Math.round(startH - 150 - 46 - rectOf(widgetEl()).top)}px (ждали ${Math.round(bottomOffset)})`
+        );
+        setViewport(startW, startH);
+        T.check(
+          'после возврата высоты кнопка на месте',
+          near(rectOf(widgetEl()).top, bottomTop),
+          `${rectOf(widgetEl()).top}px`
+        );
+
+        // Маленькое окно временно прижимает кнопку к отступу 4px. Желаемая
+        // привязка при этом не меняется, поэтому после расширения позиция
+        // должна восстановиться.
+        setViewport(40, 40);
+        const tiny = rectOf(widgetEl());
+        T.check(
+          'маленькое окно ограничивает показ отступом 4px',
+          near(tiny.left, 4) && near(tiny.top, 4),
+          `${Math.round(tiny.left)},${Math.round(tiny.top)}`
+        );
+        setViewport(startW, startH);
+        const restoredTiny = rectOf(widgetEl());
+        T.check(
+          'после маленького окна позиция восстановлена',
+          near(restoredTiny.left, 40) && near(restoredTiny.top, bottomTop),
+          fmt(restoredTiny)
+        );
+
+        // Перетаскивание после сужения: новые привязки должны стать
+        // сохранёнными, и расширение окна не возвращает старую позицию.
+        dragTo(startW - 46 - 30, startH - 46 - 120);
+        saved = store.local.widgetPos;
+        T.eq('перед сужением привязка к правому краю', saved.edgeX, 'right');
+        const narrowDragW = Math.max(140, startW - 300);
+        setViewport(narrowDragW, startH);
+        dragTo(25, 60);
+        saved = store.local.widgetPos;
+        T.eq('перетаскивание после сужения: привязка к левому краю', saved.edgeX, 'left');
+        T.check(
+          'перетаскивание после сужения сохранило новые отступы',
+          near(saved.offsetX, 25) && near(saved.offsetY, 60),
+          `${Math.round(saved.offsetX)},${Math.round(saved.offsetY)}`
+        );
+        setViewport(startW, startH);
+        const afterWiden = rectOf(widgetEl());
+        T.check(
+          'после расширения новая позиция не возвращается к старой',
+          near(afterWiden.left, 25) && near(afterWiden.top, 60),
+          fmt(afterWiden)
+        );
+
+        const savedBeforeResize = JSON.stringify(store.local.widgetPos);
+        const writesBeforeResize = window.__widgetWrites;
+        setViewport(narrowDragW, startH);
+        setViewport(startW, startH);
+        T.eq(
+          'ресайз не перезаписывает сохранённую позицию',
+          JSON.stringify(store.local.widgetPos),
+          savedBeforeResize
+        );
+        T.eq(
+          'ресайз не пишет widgetPos',
+          window.__widgetWrites,
+          writesBeforeResize
+        );
+
+        // Открытый поповер пересчитывается вместе с кнопкой и остаётся
+        // в пределах окна, пока его размеры позволяют.
+        document.dispatchEvent(
+          new KeyboardEvent('keydown', {
+            code: 'KeyE',
+            ctrlKey: true,
+            shiftKey: true,
+            bubbles: true,
+          })
+        );
+        await T.waitFor('поповер открылся', () => pickerEl() && pickerEl().style.display === 'flex');
+
+        dragTo(startW - 46 - 40, startH - 46 - 140);
+        let w = rectOf(widgetEl());
+        let p = rectOf(pickerEl());
+        let want = pickerExpected(w);
+        T.check(
+          'поповер следует за кнопкой после перетаскивания',
+          near(p.left, want.left) && near(p.top, want.top),
+          `${fmt(p)} (ждали ${Math.round(want.left)},${Math.round(want.top)})`
+        );
+        T.check(
+          'поповер в пределах окна при полной ширине',
+          p.left >= 7 && p.top >= 7 && p.right <= startW - 7 && p.bottom <= startH - 7,
+          fmt(p)
+        );
+
+        const popoverW = Math.max(360, startW - 200);
+        setViewport(popoverW, startH);
+        w = rectOf(widgetEl());
+        p = rectOf(pickerEl());
+        want = pickerExpected(w);
+        T.check(
+          'поповер следует за кнопкой при сужении окна',
+          near(p.left, want.left) && near(p.top, want.top),
+          `${fmt(p)} (ждали ${Math.round(want.left)},${Math.round(want.top)})`
+        );
+        T.check(
+          'поповер остаётся в пределах суженного окна',
+          p.left >= 7 && p.top >= 7 && p.right <= popoverW - 7 && p.bottom <= startH - 7,
+          fmt(p)
+        );
+
+        setViewport(startW, startH);
+        w = rectOf(widgetEl());
+        p = rectOf(pickerEl());
+        want = pickerExpected(w);
+        T.check(
+          'после расширения поповер снова у кнопки',
+          near(p.left, want.left) && near(p.top, want.top),
+          `${fmt(p)} (ждали ${Math.round(want.left)},${Math.round(want.top)})`
+        );
+
+        const expected = {
+          left: w.left,
+          top: w.top,
+          width: w.width,
+          height: w.height,
+        };
+        sessionStorage.setItem(
+          'vk7tv-widget-pos-store',
+          JSON.stringify({ sync: store.sync, local: store.local, expected })
+        );
+        saveHistory();
+        sessionStorage.setItem('vk7tv-widget-pos-phase', '2');
+        location.reload();
+      }
+
+      async function phase2() {
+        await waitWidget();
+        const startW = window.innerWidth;
+        const startH = window.innerHeight;
+        const expected = snapshot.expected;
+        const r = rectOf(widgetEl());
+        T.check(
+          'после перезагрузки позиция восстановлена',
+          near(r.left, expected.left) && near(r.top, expected.top),
+          `${fmt(r)} (ждали ${Math.round(expected.left)},${Math.round(expected.top)})`
+        );
+        T.check(
+          'готовая запись не перезаписывается при загрузке',
+          window.__widgetWrites === 0,
+          `записей widgetPos: ${window.__widgetWrites}`
+        );
+        const saved = store.local.widgetPos;
+        T.check(
+          'в сохранённой записи есть привязки',
+          saved &&
+            (saved.edgeX === 'left' || saved.edgeX === 'right') &&
+            (saved.edgeY === 'top' || saved.edgeY === 'bottom') &&
+            Number.isFinite(saved.offsetX) &&
+            Number.isFinite(saved.offsetY),
+          JSON.stringify(saved)
+        );
+        T.check(
+          'left и top сохранены для совместимости',
+          saved && near(saved.left, expected.left) && near(saved.top, expected.top),
+          saved ? `${Math.round(saved.left)},${Math.round(saved.top)}` : 'нет'
+        );
+
+        const savedBeforeResize = JSON.stringify(store.local.widgetPos);
+        setViewport(Math.max(360, window.innerWidth - 150), startH);
+        T.eq(
+          'ресайз после загрузки не меняет запись',
+          JSON.stringify(store.local.widgetPos),
+          savedBeforeResize
+        );
+        T.eq('ресайз после загрузки не пишет widgetPos', window.__widgetWrites, 0);
+        setViewport(startW, startH);
+        const restoredAfterResize = rectOf(widgetEl());
+        T.check(
+          'после ресайза кнопка вернулась к сохранённой позиции',
+          near(restoredAfterResize.left, expected.left) &&
+            near(restoredAfterResize.top, expected.top),
+          fmt(restoredAfterResize)
+        );
+
+        // Теперь старый формат: только left/top, без привязок.
+        store.local.widgetPos = { left: expected.left, top: expected.top };
+        sessionStorage.setItem(
+          'vk7tv-widget-pos-store',
+          JSON.stringify({ sync: store.sync, local: store.local, expected })
+        );
+        saveHistory();
+        sessionStorage.setItem('vk7tv-widget-pos-phase', '3');
+        location.reload();
+      }
+
+      async function phase3() {
+        await waitWidget();
+        const expected = snapshot.expected;
+        const startW = window.innerWidth;
+        const startH = window.innerHeight;
+        const r = rectOf(widgetEl());
+        T.check(
+          'старый формат: позиция восстановлена',
+          near(r.left, expected.left) && near(r.top, expected.top),
+          `${fmt(r)} (ждали ${Math.round(expected.left)},${Math.round(expected.top)})`
+        );
+        T.check(
+          'старый формат пересохранён один раз',
+          window.__widgetWrites === 1,
+          `записей widgetPos: ${window.__widgetWrites}`
+        );
+
+        const saved = store.local.widgetPos;
+        const right = startW - 46 - expected.left;
+        const bottom = startH - 46 - expected.top;
+        const edgeX = expected.left <= right ? 'left' : 'right';
+        const edgeY = expected.top <= bottom ? 'top' : 'bottom';
+        T.check(
+          'старая запись получила привязки от ближайших краёв',
+          saved && saved.edgeX === edgeX && saved.edgeY === edgeY,
+          saved ? `${saved.edgeX}/${saved.edgeY} (ждали ${edgeX}/${edgeY})` : 'нет'
+        );
+        T.check(
+          'отступы старой записи совпадают с координатами',
+          saved &&
+            near(saved.offsetX, edgeX === 'left' ? expected.left : right) &&
+            near(saved.offsetY, edgeY === 'top' ? expected.top : bottom),
+          saved ? `${Math.round(saved.offsetX)},${Math.round(saved.offsetY)}` : 'нет'
+        );
+
+        // После преобразования ресайз тоже не должен сдвигать позицию.
+        setViewport(Math.max(360, startW - 150), startH);
+        setViewport(startW, startH);
+        const after = rectOf(widgetEl());
+        T.check(
+          'после преобразования ресайз не сдвигает кнопку',
+          near(after.left, expected.left) && near(after.top, expected.top),
+          fmt(after)
+        );
+      }
+
+      const runPhase = async (fn) => {
+        try {
+          await fn();
+        } catch (e) {
+          T.check(
+            'стенд доработал до конца',
+            false,
+            e && e.stack ? e.stack.split('\n')[0] : String(e)
+          );
+          T.report();
+          return false;
+        }
+        return true;
+      };
+
+      if (phase === '3') {
+        T.run(phase3);
+      } else if (phase === '2') {
+        runPhase(phase2).then((ok) => {
+          if (!ok) return;
+          // phase2 сам перезагружает страницу; сюда управление не доходит.
+        });
+      } else {
+        runPhase(phase1).then((ok) => {
+          if (!ok) return;
+        });
+      }
+    })();
+  </script>
+</body>

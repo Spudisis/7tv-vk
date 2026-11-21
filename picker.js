@@ -20,6 +20,9 @@
 
   let widget = null;
   let picker = null;
+  // Желаемое положение кнопки: привязка к краю окна и отступ от него.
+  // Фактические left/top могут быть сдвинуты, если окно временно меньше.
+  let widgetPos = null;
   let searchInput = null;
   let body = null;
   let foot = null;
@@ -3149,11 +3152,92 @@
 
   // --- позиционирование и перетаскивание ---
 
+  const WIDGET_MARGIN = 4;
+
   function setWidgetPos(left, top) {
-    left = Math.max(4, Math.min(left, window.innerWidth - WIDGET_SIZE - 4));
-    top = Math.max(4, Math.min(top, window.innerHeight - WIDGET_SIZE - 4));
+    left = Math.max(WIDGET_MARGIN, Math.min(left, window.innerWidth - WIDGET_SIZE - WIDGET_MARGIN));
+    top = Math.max(WIDGET_MARGIN, Math.min(top, window.innerHeight - WIDGET_SIZE - WIDGET_MARGIN));
     widget.style.left = left + 'px';
     widget.style.top = top + 'px';
+  }
+
+  // Привязка к ближайшему краю по каждой оси. При равном расстоянии
+  // оставляем левый и верхний край: иначе привязка менялась бы скачком,
+  // когда окно совпадает по размеру с положением кнопки.
+  function widgetAnchor(left, top) {
+    const right = window.innerWidth - WIDGET_SIZE - left;
+    const bottom = window.innerHeight - WIDGET_SIZE - top;
+    const edgeX = left <= right ? 'left' : 'right';
+    const edgeY = top <= bottom ? 'top' : 'bottom';
+    return {
+      left,
+      top,
+      edgeX,
+      edgeY,
+      offsetX: edgeX === 'left' ? left : right,
+      offsetY: edgeY === 'top' ? top : bottom,
+    };
+  }
+
+  function hasWidgetAnchor(pos) {
+    return (
+      !!pos &&
+      (pos.edgeX === 'left' || pos.edgeX === 'right') &&
+      (pos.edgeY === 'top' || pos.edgeY === 'bottom') &&
+      Number.isFinite(pos.offsetX) &&
+      Number.isFinite(pos.offsetY)
+    );
+  }
+
+  // Старая запись { left, top } не знает, к какому краю была привязана
+  // кнопка. Выводим привязку из сохранённых координат до ограничения:
+  // после сужения окна они могли быть уже сдвинуты, и прежний замысел
+  // пользователя восстановить нельзя — исходной считаем эту позицию.
+  function normalizeWidgetPos(pos) {
+    if (!pos || typeof pos !== 'object') return null;
+    if (hasWidgetAnchor(pos)) {
+      const left = Number.isFinite(pos.left)
+        ? pos.left
+        : pos.edgeX === 'right'
+          ? window.innerWidth - WIDGET_SIZE - pos.offsetX
+          : pos.offsetX;
+      const top = Number.isFinite(pos.top)
+        ? pos.top
+        : pos.edgeY === 'bottom'
+          ? window.innerHeight - WIDGET_SIZE - pos.offsetY
+          : pos.offsetY;
+      return {
+        left,
+        top,
+        edgeX: pos.edgeX,
+        edgeY: pos.edgeY,
+        offsetX: pos.offsetX,
+        offsetY: pos.offsetY,
+      };
+    }
+    const left = Number.isFinite(pos.left)
+      ? pos.left
+      : window.innerWidth - WIDGET_SIZE - 20;
+    const top = Number.isFinite(pos.top) ? pos.top : window.innerHeight - 170;
+    return widgetAnchor(left, top);
+  }
+
+  function applyWidgetPos() {
+    if (!widgetPos) return;
+    const left =
+      widgetPos.edgeX === 'right'
+        ? window.innerWidth - WIDGET_SIZE - widgetPos.offsetX
+        : widgetPos.offsetX;
+    const top =
+      widgetPos.edgeY === 'bottom'
+        ? window.innerHeight - WIDGET_SIZE - widgetPos.offsetY
+        : widgetPos.offsetY;
+    setWidgetPos(left, top);
+  }
+
+  function saveWidgetPos(left, top) {
+    widgetPos = widgetAnchor(left, top);
+    chrome.storage.local.set({ widgetPos });
   }
 
   function positionPicker() {
@@ -3194,7 +3278,8 @@
       drag = null;
       if (moved) {
         const r = widget.getBoundingClientRect();
-        chrome.storage.local.set({ widgetPos: { left: r.left, top: r.top } });
+        saveWidgetPos(r.left, r.top);
+        if (open) positionPicker();
       } else if (toggleOnClick) {
         setOpen(!open);
       }
@@ -3375,8 +3460,7 @@
   window.addEventListener('blur', () => cancelDocHold('blur'));
 
   window.addEventListener('resize', () => {
-    const r = widget.getBoundingClientRect();
-    setWidgetPos(r.left, r.top);
+    applyWidgetPos();
     if (open) positionPicker();
     if (docsDndVisible) placeDropOverlay();
   });
@@ -3405,7 +3489,7 @@
       recent: [],
       stripTab: 'recent',
     });
-    const { widgetPos, pickerSize } = stored;
+    const { widgetPos: savedPos, pickerSize } = stored;
     collapsedKeys = new Set(Array.isArray(stored.collapsedGroups) ? stored.collapsedGroups : []);
     // «Файлы» по умолчанию свёрнуты: открытие панели не должно тянуть
     // документы. Флаг docsKnown отличает старые настройки от ручного
@@ -3426,11 +3510,19 @@
       picker.style.width = pickerSize.w + 'px';
       picker.style.height = pickerSize.h + 'px';
     }
-    if (widgetPos) {
-      setWidgetPos(widgetPos.left, widgetPos.top);
-    } else {
-      setWidgetPos(window.innerWidth - WIDGET_SIZE - 20, window.innerHeight - 170);
+    const legacyPos = !!savedPos && !hasWidgetAnchor(savedPos);
+    widgetPos = normalizeWidgetPos(savedPos);
+    if (!widgetPos) {
+      // начальная позиция: 20px от правого края, по вертикали — как раньше
+      widgetPos = widgetAnchor(
+        window.innerWidth - WIDGET_SIZE - 20,
+        window.innerHeight - 170
+      );
     }
+    applyWidgetPos();
+    // Старый формат пересохраняем один раз: дальше окно уже не сможет
+    // сдвинуть координаты, не затронув привязку.
+    if (legacyPos) chrome.storage.local.set({ widgetPos });
     const show = await loadGroups();
     widget.style.display = show ? 'flex' : 'none';
     refreshGrid();
