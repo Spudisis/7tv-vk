@@ -1,0 +1,141 @@
+<!doctype html>
+<meta charset="utf-8" />
+<title>VK7TV — форматы загрузки и сигнатуры</title>
+<body>
+  <script src="harness.js"></script>
+  <script>
+    const T = window.VK7TV_TEST;
+    const AUTH_KEY = '6287487:web_token:login:auth';
+    localStorage.clear();
+    localStorage.setItem(
+      AUTH_KEY,
+      JSON.stringify({
+        access_token: 'test',
+        user_id: 42,
+        expires: Math.floor(Date.now() / 1000) + 3600,
+      })
+    );
+
+    const saveCalls = [];
+    window.fetch = (url, opts) => {
+      const method = String(url).split('/').pop();
+      const body = new URLSearchParams(opts && opts.body);
+      const reply = (json) =>
+        Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve(json) });
+      if (method === 'docs.get') {
+        return reply({ response: { count: 0, total_count: 0, items: [] } });
+      }
+      if (method === 'docs.getUploadServer') {
+        return reply({ response: { upload_url: 'https://pu.vk.ru/upload_doc.php' } });
+      }
+      if (method === 'docs.save') {
+        saveCalls.push(body.get('file'));
+        const title = body.get('title') || 'file';
+        const ext = title.split('.').pop().toLowerCase();
+        return reply({
+          response: {
+            type: 'doc',
+            doc: {
+              owner_id: 42,
+              id: 700 + saveCalls.length,
+              title,
+              ext,
+              type: ext === 'gif' ? 3 : ext === 'mp4' ? 6 : 4,
+              size: 12,
+              date: 1,
+              url: `https://vk.ru/doc42_${700 + saveCalls.length}`,
+              preview: null,
+            },
+          },
+        });
+      }
+      return Promise.reject(new Error('unexpected'));
+    };
+
+    const uploadCalls = [];
+    class FakeXHR {
+      constructor() {
+        this.upload = {};
+      }
+      open(method, url) {
+        this.method = method;
+        this.url = url;
+      }
+      send(form) {
+        uploadCalls.push(form.get('file').name);
+        setTimeout(() => {
+          this.status = 200;
+          this.responseText = JSON.stringify({ file: 'f-' + uploadCalls.length });
+          this.onload();
+        }, 0);
+      }
+      abort() {
+        if (this.onabort) this.onabort();
+      }
+    }
+    window.XMLHttpRequest = FakeXHR;
+
+    const bytes = {
+      gif: [0x47, 0x49, 0x46, 0x38, 0x39, 0x61, 0, 0, 0, 0, 0, 0],
+      gif87: [0x47, 0x49, 0x46, 0x38, 0x37, 0x61, 0, 0, 0, 0, 0, 0],
+      webp: [0x52, 0x49, 0x46, 0x46, 0, 0, 0, 0, 0x57, 0x45, 0x42, 0x50],
+      png: [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 0],
+      jpeg: [0xff, 0xd8, 0xff, 0xe0, 0, 0, 0, 0, 0, 0, 0, 0],
+      mp4: [0, 0, 0, 0x18, 0x66, 0x74, 0x79, 0x70, 0x69, 0x73, 0x6f, 0x6d],
+    };
+    const makeFile = (name, data, type) =>
+      new File([new Uint8Array(data)], name, {
+        type: type == null ? '' : type,
+        lastModified: 1,
+      });
+  </script>
+  <script src="../vk-docs.js"></script>
+  <script>
+    T.run(async () => {
+      const DOCS = window.VK7TV_DOCS;
+      const waitJob = (id, stage) =>
+        T.waitFor(`задание ${id}: ${stage}`, () => {
+          const job = DOCS.getState().uploads.find((u) => u.id === id);
+          return !!job && job.stage === stage;
+        });
+
+      T.check('MP4 подтверждён и включён', DOCS.mp4, true);
+      T.check('список форматов содержит MP4', DOCS.formats.includes('mp4'), 'да');
+
+      async function accepted(name, data, type) {
+        const id = DOCS.enqueueUploads([makeFile(name, data, type)])[0];
+        await waitJob(id, 'success');
+        const job = DOCS.getState().uploads.find((u) => u.id === id);
+        T.check(`${name} принят`, !!job.docKey, job.stage);
+        DOCS.dismissUpload(id);
+      }
+
+      await accepted('a.GIF', bytes.gif, 'image/gif');
+      await accepted('b.gif', bytes.gif87, '');
+      await accepted('c.WebP', bytes.webp, '');
+      await accepted('d.PNG', bytes.png, 'image/png');
+      await accepted('e.JpG', bytes.jpeg, 'image/jpeg');
+      await accepted('f.jpeg', bytes.jpeg, '');
+      await accepted('g.MP4', bytes.mp4, 'video/mp4');
+
+      async function rejected(name, data, type, kind) {
+        const before = uploadCalls.length;
+        const id = DOCS.enqueueUploads([makeFile(name, data, type)])[0];
+        await waitJob(id, 'error');
+        const job = DOCS.getState().uploads.find((u) => u.id === id);
+        T.eq(`${name} — причина`, job.error.kind, kind);
+        T.eq(`${name} не ушёл на сервер`, uploadCalls.length, before);
+        T.check(`${name} нельзя повторить файлом`, !job.canRetry, 'да');
+        DOCS.dismissUpload(id);
+      }
+
+      await rejected('broken.png', bytes.gif, 'image/png', 'corrupt');
+      await rejected('photo.pdf', bytes.png, 'application/pdf', 'format');
+      await rejected('empty.gif', [], 'image/gif', 'empty');
+      await rejected('fake.mp4', bytes.gif, 'video/mp4', 'corrupt');
+      await rejected('noext', bytes.png, '', 'format');
+
+      T.eq('успешные загрузки дошли до docs.save', saveCalls.length, 7);
+    });
+  </script>
+</body>

@@ -1,0 +1,526 @@
+<!doctype html>
+<meta charset="utf-8" />
+<title>VK7TV — загрузка файлов в документы VK</title>
+<body>
+  <script src="harness.js"></script>
+  <script>
+    const T = window.VK7TV_TEST;
+    const AUTH_KEY = '6287487:web_token:login:auth';
+    const authValue = (userId, token) =>
+      JSON.stringify({
+        access_token: token || 'test-token',
+        user_id: userId,
+        expires: Math.floor(Date.now() / 1000) + 3600,
+      });
+    localStorage.clear();
+    localStorage.setItem(AUTH_KEY, authValue(42));
+
+    const preview = [
+      { type: 's', src: 'https://sun9-1.userapi.com/s.png', width: 64, height: 64 },
+    ];
+    const serverDoc = (id, title) => ({
+      owner_id: 42,
+      id,
+      title,
+      ext: 'png',
+      type: 4,
+      size: 1,
+      date: 1,
+      url: `https://vk.ru/doc42_${id}`,
+      preview: { photo: { sizes: preview } },
+    });
+
+    let pageItems = [];
+    let saveMode = 'doc';
+    let saveCount = 0;
+    let heldSave = null;
+    let uploadServerFailOnce = false;
+    const apiCalls = [];
+    const offsets = [];
+    window.fetch = (url, opts) => {
+      const method = String(url).split('/').pop();
+      const body = new URLSearchParams(opts && opts.body);
+      apiCalls.push({ method, body: body.toString() });
+      const reply = (json) =>
+        Promise.resolve({
+          ok: true,
+          status: 200,
+          json: () => Promise.resolve(json),
+        });
+      if (method === 'docs.get') {
+        const offset = Number(body.get('offset')) || 0;
+        offsets.push(offset);
+        return reply({
+          response: { count: pageItems.length, total_count: 100, items: pageItems },
+        });
+      }
+      if (method === 'docs.getUploadServer') {
+        if (uploadServerFailOnce) {
+          uploadServerFailOnce = false;
+          return Promise.reject(new Error('network'));
+        }
+        return reply({
+          response: { upload_url: 'https://pu.vk.ru/upload_doc.php?act=do_add' },
+        });
+      }
+      if (method === 'docs.save') {
+        const makeDoc = () => {
+          const doc = serverDoc(500 + saveCount, body.get('title') || 'new.png');
+          saveCount++;
+          return doc;
+        };
+        if (saveMode === 'hold') {
+          return new Promise((resolve, reject) => {
+            const onAbort = () => reject(new DOMException('aborted', 'AbortError'));
+            if (opts && opts.signal) {
+              opts.signal.addEventListener('abort', onAbort, { once: true });
+            }
+            heldSave = {
+              resolve: () => {
+                if (opts && opts.signal) opts.signal.removeEventListener('abort', onAbort);
+                resolve(reply({ response: { type: 'doc', doc: makeDoc() } }));
+              },
+            };
+          });
+        }
+        if (saveMode === 'late') {
+          return new Promise((resolve) => {
+            heldSave = {
+              resolve: () => resolve(reply({ response: { type: 'doc', doc: makeDoc() } })),
+            };
+          });
+        }
+        if (saveMode === 'captcha') {
+          return reply({ error: { error_code: 14, error_msg: 'Captcha needed' } });
+        }
+        if (saveMode === '429' || saveMode === '500') {
+          return Promise.resolve({
+            ok: false,
+            status: Number(saveMode),
+            json: () => Promise.resolve({}),
+          });
+        }
+        if (saveMode === 'network') return Promise.reject(new Error('network'));
+        if (saveMode === 'empty') return reply({ response: {} });
+        if (saveMode === 'unknown') {
+          return reply({ response: { type: 'photo', doc: serverDoc(600, 'wrong.png') } });
+        }
+        if (saveMode === 'noid') {
+          return reply({
+            response: {
+              type: 'doc',
+              doc: { title: 'noid.png', ext: 'png', url: 'https://vk.ru/noid' },
+            },
+          });
+        }
+        const doc = makeDoc();
+        if (saveMode === 'array') return reply({ response: [{ type: 'doc', doc }] });
+        return reply({ response: { type: 'doc', doc } });
+      }
+      return Promise.reject(new Error('unexpected ' + method));
+    };
+
+    const uploads = [];
+    const xhrState = { mode: 'ok', held: null };
+    class FakeXHR {
+      constructor() {
+        this.upload = {};
+        this.status = 0;
+        this.responseText = '';
+        this.aborted = false;
+      }
+      open(method, url) {
+        this.method = method;
+        this.url = url;
+      }
+      send(form) {
+        uploads.push({ url: this.url, method: this.method, form });
+        if (xhrState.mode === 'hold') {
+          xhrState.held = this;
+          return;
+        }
+        const mode = xhrState.mode;
+        setTimeout(() => {
+          const file = form.get('file');
+          this.upload.onprogress({
+            lengthComputable: true,
+            loaded: file.size,
+            total: file.size,
+          });
+          if (mode === '413' || mode === '429' || mode === '500') {
+            this.status = Number(mode);
+            this.onload();
+            return;
+          }
+          if (mode === 'network') {
+            this.onerror();
+            return;
+          }
+          if (mode === 'timeout') {
+            this.ontimeout();
+            return;
+          }
+          this.status = 200;
+          this.responseText = JSON.stringify({ file: 'file-' + uploads.length });
+          this.onload();
+        }, 0);
+      }
+      abort() {
+        this.aborted = true;
+        if (this.onabort) this.onabort();
+      }
+    }
+    window.XMLHttpRequest = FakeXHR;
+
+    const png = new Uint8Array([
+      0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x0d,
+    ]);
+    const file = (name, bytes) =>
+      new File([bytes || png], name, { type: 'image/png', lastModified: 1 });
+  </script>
+  <script src="../vk-docs.js"></script>
+  <script>
+    T.run(async () => {
+      const DOCS = window.VK7TV_DOCS;
+      const waitStage = (stage) =>
+        T.waitFor(`этап ${stage}`, () =>
+          DOCS.getState().uploads.some((u) => u.stage === stage)
+        );
+      const waitJob = (id, stage) =>
+        T.waitFor(`задание ${id}: ${stage}`, () => {
+          const found = DOCS.getState().uploads.find((u) => u.id === id);
+          return !!found && found.stage === stage;
+        });
+      const lastJob = () => DOCS.getState().uploads.at(-1);
+
+      // Пагинация не с нуля: после загрузки она должна начаться заново.
+      pageItems = [serverDoc(1, 'old.png')];
+      await DOCS.loadMore();
+      T.eq('исходная страница прочитана', offsets.join(','), '0');
+      T.eq('смещение после страницы', DOCS.getState().rawLoaded, 1);
+
+      // Одна операция: повтор по имени/размеру/времени не создаёт задание.
+      const ids = DOCS.enqueueUploads([file('NewCat.PNG'), file('NewCat.PNG')]);
+      T.eq('дубль внутри выбора не задвоен', ids.length, 1);
+      await waitJob(ids[0], 'success');
+      const job = lastJob();
+      T.eq('документ сохранён', job.docKey, '42:500');
+      T.eq('порядок запросов', apiCalls.filter((c) => c.method !== 'docs.get').map((c) => c.method).join(','), 'docs.getUploadServer,docs.save');
+      T.eq('multipart ушёл на pu.vk.ru', uploads[0].url.indexOf('https://pu.vk.ru/') === 0, true);
+      T.eq('поле multipart', uploads[0].form.get('file').name, 'NewCat.PNG');
+      T.check('токен не попал в upload URL', !uploads[0].url.includes('access_token'), 'да');
+      T.eq('новый файл первым в библиотеке', DOCS.getItems()[0].key, '42:500');
+      T.eq('счётчик — уникальное объединение', DOCS.getItems().length, 2);
+      T.eq('после загрузки пагинация с нуля', DOCS.getState().rawLoaded, 0);
+      T.eq('полнота списка сброшена', DOCS.getState().loaded, false);
+      T.check('публичный снимок без файла', !('file' in job) && !('fileId' in job), 'да');
+      T.check('публичный снимок без URL и токена', !('url' in job) && !('token' in job), 'да');
+
+      // Серверная страница с тем же ключом не создаёт дубль и обновляет данные.
+      pageItems = [serverDoc(500, 'Server-Name.png'), serverDoc(1, 'old.png')];
+      await DOCS.refresh();
+      T.eq('серверная страница не задвоила документ', DOCS.getItems().length, 2);
+      T.eq('метаданные обновлены с сервера', DOCS.getDocument('42:500').title, 'Server-Name.png');
+      T.eq('локальная загрузка осталась первой', DOCS.getItems()[0].key, '42:500');
+
+      // Старая форма docs.save: массив с обёрткой type/doc.
+      saveMode = 'array';
+      const arrayId = DOCS.enqueueUploads([file('Array.png')])[0];
+      await waitJob(arrayId, 'success');
+      T.eq(
+        'массив response сохранён',
+        !!DOCS.getState().uploads.find((u) => u.id === arrayId).docKey,
+        true
+      );
+      saveMode = 'doc';
+
+      // Получение upload URL повторяется один раз при сетевом сбое.
+      uploadServerFailOnce = true;
+      const serverBefore = apiCalls.filter((c) => c.method === 'docs.getUploadServer').length;
+      const retryUrlId = DOCS.enqueueUploads([file('RetryUrl.png')])[0];
+      await waitJob(retryUrlId, 'success');
+      T.eq(
+        'upload URL повторён один раз',
+        apiCalls.filter((c) => c.method === 'docs.getUploadServer').length,
+        serverBefore + 2
+      );
+      DOCS.dismissUpload(retryUrlId);
+
+      // Пустой response — не успех, а неподтверждённое сохранение.
+      saveMode = 'empty';
+      const emptyId = DOCS.enqueueUploads([file('Empty.png')])[0];
+      await T.waitFor(
+        'неподтверждённое сохранение',
+        () => DOCS.getState().uploads.find((u) => u.id === emptyId).stage === 'unconfirmed'
+      );
+      const unconfirmed = DOCS.getState().uploads.find((u) => u.id === emptyId);
+      T.eq('пустой ответ не считается успехом', unconfirmed.docKey, '');
+      T.check('неподтверждённое можно повторить', unconfirmed.canRetry, 'да');
+      T.check(
+        'сообщение о неподтверждении',
+        unconfirmed.error.message.includes('подтвердить'),
+        unconfirmed.error.message
+      );
+
+      // Повтор идёт с docs.save, без повторной передачи байтов.
+      saveMode = 'doc';
+      const uploadsBeforeRetry = uploads.length;
+      const savesBeforeRetry = apiCalls.filter((c) => c.method === 'docs.save').length;
+      DOCS.retryUpload(emptyId);
+      await T.waitFor(
+        'повтор сохранил документ',
+        () => DOCS.getState().uploads.find((u) => u.id === emptyId).stage === 'success'
+      );
+      T.eq('повтор не передавал файл заново', uploads.length, uploadsBeforeRetry);
+      T.eq('повтор вызвал docs.save', apiCalls.filter((c) => c.method === 'docs.save').length, savesBeforeRetry + 1);
+
+      // Неизвестный тип и документ без идентификаторов — не успех.
+      saveMode = 'unknown';
+      const unknownId = DOCS.enqueueUploads([file('Unknown.png')])[0];
+      await T.waitFor(
+        'неизвестный тип не подтверждён',
+        () => DOCS.getState().uploads.find((u) => u.id === unknownId).stage === 'unconfirmed'
+      );
+      DOCS.dismissUpload(unknownId);
+      saveMode = 'noid';
+      const noidId = DOCS.enqueueUploads([file('NoId.png')])[0];
+      await T.waitFor(
+        'документ без id не подтверждён',
+        () => DOCS.getState().uploads.find((u) => u.id === noidId).stage === 'unconfirmed'
+      );
+      DOCS.dismissUpload(noidId);
+      saveMode = 'doc';
+
+      // Капча — отдельное сообщение и ручной повтор.
+      saveMode = 'captcha';
+      const captchaId = DOCS.enqueueUploads([file('Captcha.png')])[0];
+      await T.waitFor(
+        'ошибка капчи',
+        () => DOCS.getState().uploads.find((u) => u.id === captchaId).stage === 'error'
+      );
+      const captcha = DOCS.getState().uploads.find((u) => u.id === captchaId);
+      T.eq('капча названа', captcha.error.kind, 'captcha');
+      T.check('капча просит завершить проверку', captcha.error.message.includes('проверку'), 'да');
+      DOCS.dismissUpload(captchaId);
+      saveMode = 'doc';
+
+      // HTTP 413 — ограничение размера, повтор не предлагается.
+      xhrState.mode = '413';
+      const bigId = DOCS.enqueueUploads([file('Big.png')])[0];
+      await T.waitFor(
+        'ошибка размера',
+        () => DOCS.getState().uploads.find((u) => u.id === bigId).stage === 'error'
+      );
+      const big = DOCS.getState().uploads.find((u) => u.id === bigId);
+      T.eq('413 назван ограничением размера', big.error.kind, 'size');
+      T.check('413 не предлагает повтор', !big.canRetry, 'да');
+      DOCS.dismissUpload(bigId);
+
+      // 429, 5xx, обрыв и таймаут передачи называются отдельно.
+      for (const [mode, kind, retry] of [
+        ['429', 'rate', true],
+        ['500', 'server', true],
+        ['network', 'network', true],
+        ['timeout', 'timeout', true],
+      ]) {
+        xhrState.mode = mode;
+        const id = DOCS.enqueueUploads([file(`Transfer-${mode}.png`)])[0];
+        await T.waitFor(
+          `передача: ${mode}`,
+          () => DOCS.getState().uploads.find((u) => u.id === id).stage === 'error'
+        );
+        const failed = DOCS.getState().uploads.find((u) => u.id === id);
+        T.eq(`передача ${mode} — причина`, failed.error.kind, kind);
+        T.eq(`передача ${mode} — повтор`, failed.canRetry, retry);
+        DOCS.dismissUpload(id);
+      }
+      xhrState.mode = 'ok';
+
+      // Ошибки docs.save: 429 — явный отказ, 5xx и сеть — результат неизвестен.
+      saveMode = '429';
+      const save429 = DOCS.enqueueUploads([file('Save429.png')])[0];
+      await T.waitFor(
+        'docs.save 429',
+        () => DOCS.getState().uploads.find((u) => u.id === save429).stage === 'error'
+      );
+      T.eq('429 при сохранении назван', DOCS.getState().uploads.find((u) => u.id === save429).error.kind, 'rate');
+      DOCS.dismissUpload(save429);
+      for (const mode of ['500', 'network']) {
+        saveMode = mode;
+        const id = DOCS.enqueueUploads([file(`Save-${mode}.png`)])[0];
+        await T.waitFor(
+          `docs.save ${mode}`,
+          () => DOCS.getState().uploads.find((u) => u.id === id).stage === 'unconfirmed'
+        );
+        T.eq(
+          `docs.save ${mode} не подтверждён`,
+          DOCS.getState().uploads.find((u) => u.id === id).canRetry,
+          true
+        );
+        DOCS.dismissUpload(id);
+      }
+      saveMode = 'doc';
+
+      // Отмена во время передачи прерывает XHR и не доходит до docs.save.
+      xhrState.mode = 'hold';
+      const cancelId = DOCS.enqueueUploads([file('Cancel.png')])[0];
+      await waitStage('uploading');
+      const held = xhrState.held;
+      const savesBeforeCancel = apiCalls.filter((c) => c.method === 'docs.save').length;
+      DOCS.cancelUpload(cancelId);
+      await T.waitFor(
+        'загрузка отменена',
+        () => DOCS.getState().uploads.find((u) => u.id === cancelId).stage === 'canceled'
+      );
+      T.check('XHR прерван', held.aborted, 'да');
+      T.eq('отмена не вызвала docs.save', apiCalls.filter((c) => c.method === 'docs.save').length, savesBeforeCancel);
+      DOCS.dismissUpload(cancelId);
+      xhrState.mode = 'ok';
+
+      // Ожидающее задание отменяется без сетевого запроса.
+      xhrState.mode = 'hold';
+      const activeId = DOCS.enqueueUploads([file('Active.png')])[0];
+      await waitStage('uploading');
+      const heldActive = xhrState.held;
+      const xhrBeforeQueued = uploads.length;
+      const queuedId = DOCS.enqueueUploads([file('Queued.png')])[0];
+      T.eq(
+        'новая порция ждёт в очереди',
+        DOCS.getState().uploads.find((u) => u.id === queuedId).stage,
+        'queued'
+      );
+      DOCS.cancelUpload(queuedId);
+      await T.waitFor(
+        'ожидающее задание отменено',
+        () => DOCS.getState().uploads.find((u) => u.id === queuedId).stage === 'canceled'
+      );
+      T.eq('ожидающее задание не отправляло файл', uploads.length, xhrBeforeQueued);
+      DOCS.cancelUpload(activeId);
+      await T.waitFor(
+        'активное задание отменено',
+        () => DOCS.getState().uploads.find((u) => u.id === activeId).stage === 'canceled'
+      );
+      T.check('активный XHR прерван', heldActive.aborted, 'да');
+      DOCS.dismissUpload(queuedId);
+      DOCS.dismissUpload(activeId);
+      xhrState.mode = 'ok';
+
+      // Отмена во время сохранения: ответ ещё не подтверждён.
+      saveMode = 'hold';
+      const saveCancelId = DOCS.enqueueUploads([file('SaveCancel.png')])[0];
+      await T.waitFor(
+        'сохранение началось',
+        () =>
+          !!heldSave &&
+          DOCS.getState().uploads.find((u) => u.id === saveCancelId).stage === 'saving'
+      );
+      DOCS.cancelUpload(saveCancelId);
+      await T.waitFor(
+        'сохранение отменено',
+        () => DOCS.getState().uploads.find((u) => u.id === saveCancelId).stage === 'canceled'
+      );
+      T.check(
+        'отмена сохранения предупреждает о VK',
+        DOCS.getState().uploads.find((u) => u.id === saveCancelId).error.message.includes('не гарантирует'),
+        'да'
+      );
+      DOCS.dismissUpload(saveCancelId);
+      heldSave = null;
+      saveMode = 'doc';
+
+      // Поздний подтверждённый успех после отмены сохраняет документ.
+      saveMode = 'late';
+      const lateId = DOCS.enqueueUploads([file('Late.png')])[0];
+      await T.waitFor(
+        'позднее сохранение началось',
+        () =>
+          !!heldSave &&
+          DOCS.getState().uploads.find((u) => u.id === lateId).stage === 'saving'
+      );
+      DOCS.cancelUpload(lateId);
+      await T.waitFor(
+        'позднее сохранение отменено',
+        () => DOCS.getState().uploads.find((u) => u.id === lateId).stage === 'canceled'
+      );
+      heldSave.resolve();
+      await T.waitFor(
+        'поздний успех подтверждён',
+        () => DOCS.getState().uploads.find((u) => u.id === lateId).stage === 'success'
+      );
+      const lateJob = DOCS.getState().uploads.find((u) => u.id === lateId);
+      T.check('поздний успех попал в библиотеку', !!DOCS.getDocument(lateJob.docKey), 'да');
+      DOCS.dismissUpload(lateId);
+      heldSave = null;
+      saveMode = 'doc';
+
+      // Потеря сессии во время передачи: файл сохраняется для повтора.
+      xhrState.mode = 'hold';
+      const authId = DOCS.enqueueUploads([file('Session.png')])[0];
+      await waitStage('uploading');
+      const heldAuth = xhrState.held;
+      localStorage.removeItem(AUTH_KEY);
+      DOCS.checkAuth();
+      T.eq('статус чтения — нет авторизации', DOCS.getState().status, 'unauthorized');
+      heldAuth.status = 200;
+      heldAuth.responseText = JSON.stringify({ file: 'file-session' });
+      heldAuth.onload();
+      await T.waitFor(
+        'ошибка авторизации в задании',
+        () => DOCS.getState().uploads.find((u) => u.id === authId).stage === 'error'
+      );
+      const authJob = DOCS.getState().uploads.find((u) => u.id === authId);
+      T.eq('ошибка авторизации названа', authJob.error.kind, 'auth');
+      T.check('очередь приостановлена', !!DOCS.getState().uploadsPaused, 'да');
+      const uploadsBeforeAuth = uploads.length;
+      localStorage.setItem(AUTH_KEY, authValue(42));
+      DOCS.checkAuth();
+      await T.waitFor(
+        'после входа задание продолжилось',
+        () => DOCS.getState().uploads.find((u) => u.id === authId).stage === 'success'
+      );
+      T.eq('после входа файл не передавался заново', uploads.length, uploadsBeforeAuth);
+
+      // Новый токен того же пользователя не очищает очередь.
+      xhrState.mode = 'hold';
+      const tokenId = DOCS.enqueueUploads([file('Token.png')])[0];
+      await waitStage('uploading');
+      const heldToken = xhrState.held;
+      localStorage.setItem(AUTH_KEY, authValue(42, 'test-token-2'));
+      window.dispatchEvent(new StorageEvent('storage', { key: AUTH_KEY }));
+      T.check(
+        'новый токен того же пользователя сохранил задание',
+        !!DOCS.getState().uploads.find((u) => u.id === tokenId),
+        'да'
+      );
+      heldToken.status = 200;
+      heldToken.responseText = JSON.stringify({ file: 'file-token' });
+      heldToken.onload();
+      await T.waitFor(
+        'задание завершилось с новым токеном',
+        () => DOCS.getState().uploads.find((u) => u.id === tokenId).stage === 'success'
+      );
+      DOCS.dismissUpload(tokenId);
+      xhrState.mode = 'ok';
+
+      // Смена аккаунта очищает очередь и прерывает активную передачу.
+      xhrState.mode = 'hold';
+      DOCS.enqueueUploads([file('Other.png')]);
+      await waitStage('uploading');
+      const heldOther = xhrState.held;
+      const epoch = DOCS.getState().accountEpoch;
+      localStorage.setItem(AUTH_KEY, authValue(99, 'other-token'));
+      window.dispatchEvent(new StorageEvent('storage', { key: AUTH_KEY }));
+      T.eq('смена аккаунта очистила очередь', DOCS.getState().uploads.length, 0);
+      T.check('активная передача прервана', heldOther.aborted, 'да');
+      T.check('эпоха аккаунта сменилась', DOCS.getState().accountEpoch !== epoch, 'да');
+      xhrState.mode = 'ok';
+
+      // Ошибки выбора (каталог) видны в той же ленте.
+      DOCS.enqueueRejected([{ name: 'folder', message: 'Каталоги не загружаются.' }]);
+      const rejected = DOCS.getState().uploads.at(-1);
+      T.eq('каталог попал в ошибки очереди', rejected.stage, 'error');
+      T.check('у ошибки выбора нет повтора', !rejected.canRetry, 'да');
+      DOCS.dismissUpload(rejected.id);
+    });
+  </script>
+</body>

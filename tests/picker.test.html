@@ -52,6 +52,10 @@
       );
 
     T.run(async () => {
+      const draft = document.createElement('div');
+      draft.id = 'draft';
+      draft.contentEditable = 'true';
+      document.body.prepend(draft);
       await T.waitFor('виджет появился', () => document.querySelector('.vk7tv-widget'));
       // открываем поповер тем же путём, что и пользователь с клавиатуры
       document.dispatchEvent(
@@ -110,6 +114,21 @@
 
       T.eq('подвал в обычном состоянии', document.querySelector('.vk7tv-picker-foot').textContent,
         'Вставить — клик или Enter, выбор — стрелками');
+
+      // Удержание эмоута по-прежнему только показывает превью: клик после
+      // него ничего не вставляет.
+      const holdCell = secByName('обычный').querySelector('.vk7tv-picker-cell');
+      holdCell.dispatchEvent(
+        new PointerEvent('pointerdown', { bubbles: true, button: 0, pointerId: 1 })
+      );
+      await T.waitFor('превью эмоута открылось', () => {
+        const box = document.querySelector('.vk7tv-preview');
+        return box && box.style.display === 'flex';
+      }, 1200);
+      document.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, pointerId: 1 }));
+      holdCell.click();
+      T.eq('удержание не вставило эмоут', draft.textContent, '');
+      T.eq('превью эмоута закрыто', document.querySelector('.vk7tv-preview').style.display, 'none');
 
       // Вкладка отвалилась от расширения: поповер должен сказать это, а не
       // молча стоять с пустыми разделами.

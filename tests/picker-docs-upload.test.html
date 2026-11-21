@@ -1,0 +1,293 @@
+<!doctype html>
+<meta charset="utf-8" />
+<title>VK7TV — кнопка загрузки и DnD в пикере</title>
+<link rel="stylesheet" href="../picker.css" />
+<body style="margin: 0; background: #141519">
+  <script src="harness.js"></script>
+  <script>
+    const T = window.VK7TV_TEST;
+    const AUTH_KEY = '6287487:web_token:login:auth';
+    localStorage.clear();
+    localStorage.setItem(
+      AUTH_KEY,
+      JSON.stringify({
+        access_token: 'test',
+        user_id: 42,
+        expires: Math.floor(Date.now() / 1000) + 3600,
+      })
+    );
+
+    const sizes = [{ type: 's', src: 'https://sun9-1.userapi.com/s.jpg', width: 64, height: 64 }];
+    const cat = {
+      owner_id: 42,
+      id: 1,
+      title: 'cat.gif',
+      ext: 'gif',
+      type: 3,
+      size: 1,
+      date: 1,
+      url: 'https://media.test/cat.gif',
+      preview: { photo: { sizes } },
+    };
+    let saveCount = 0;
+    window.fetch = (url, opts) => {
+      const method = String(url).split('/').pop();
+      const body = new URLSearchParams(opts && opts.body);
+      const reply = (json) =>
+        Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve(json) });
+      if (method === 'docs.get') {
+        return reply({ response: { count: 1, total_count: 1, items: [cat] } });
+      }
+      if (method === 'docs.getUploadServer') {
+        return reply({ response: { upload_url: 'https://pu.vk.ru/upload_doc.php' } });
+      }
+      if (method === 'docs.save') {
+        saveCount++;
+        const title = body.get('title') || 'new.png';
+        return reply({
+          response: {
+            type: 'doc',
+            doc: {
+              owner_id: 42,
+              id: 100 + saveCount,
+              title,
+              ext: 'png',
+              type: 4,
+              size: 12,
+              date: 1,
+              url: `https://media.test/${100 + saveCount}.png`,
+              preview: { photo: { sizes } },
+            },
+          },
+        });
+      }
+      return Promise.reject(new Error('unexpected'));
+    };
+
+    let xhrMode = 'ok';
+    let held = null;
+    const uploadCalls = [];
+    class FakeXHR {
+      constructor() {
+        this.upload = {};
+      }
+      open(method, url) {
+        this.method = method;
+        this.url = url;
+      }
+      send(form) {
+        uploadCalls.push(form.get('file').name);
+        if (xhrMode === 'hold') {
+          held = this;
+          return;
+        }
+        setTimeout(() => {
+          this.status = 200;
+          this.responseText = JSON.stringify({ file: 'f-' + uploadCalls.length });
+          this.onload();
+        }, 0);
+      }
+      abort() {
+        if (this.onabort) this.onabort();
+      }
+    }
+    window.XMLHttpRequest = FakeXHR;
+
+    const png = new Uint8Array([
+      0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 0,
+    ]);
+    const makeFile = (name) =>
+      new File([png], name, { type: 'image/png', lastModified: 1 });
+
+    T.install({
+      sync: {
+        enabled: true,
+        useGlobal: false,
+        widget: true,
+        sets: [],
+        customEmotes: {},
+        favorites: [],
+      },
+      local: {
+        setEmotes: {},
+        globalEmotes: null,
+        recent: [],
+        collapsedGroups: [],
+        stripTab: 'recent',
+      },
+      respond: () => ({}),
+    });
+  </script>
+  <script src="../default-emotes.js"></script>
+  <script src="../emotes.js"></script>
+  <script src="../vk-docs.js"></script>
+  <script src="../vk-docs-media.js"></script>
+  <script src="../picker.js"></script>
+  <script>
+    const group = () => document.querySelector('.vk7tv-docs-group');
+    const overlay = () => document.querySelector('.vk7tv-docs-dnd');
+    const pickerEl = () => document.querySelector('.vk7tv-picker');
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const dragEvent = (type, dt, target) => {
+      let event;
+      try {
+        event = new DragEvent(type, { bubbles: true, cancelable: true, dataTransfer: dt });
+      } catch (e) {
+        event = new Event(type, { bubbles: true, cancelable: true });
+        Object.defineProperty(event, 'dataTransfer', { value: dt });
+      }
+      (target || document.body).dispatchEvent(event);
+      return event;
+    };
+    const files = (list) => {
+      const dt = new DataTransfer();
+      for (const file of list) dt.items.add(file);
+      return dt;
+    };
+
+    T.run(async () => {
+      await T.waitFor('виджет появился', () => document.querySelector('.vk7tv-widget'));
+      document.dispatchEvent(
+        new KeyboardEvent('keydown', { code: 'KeyE', ctrlKey: true, shiftKey: true, bubbles: true })
+      );
+      await T.waitFor('файлы появились', () => group());
+
+      const head = group().querySelector('.vk7tv-picker-group-title');
+      const refresh = head.querySelector('.vk7tv-docs-refresh');
+      const uploadBtn = head.querySelector('.vk7tv-docs-upload');
+      T.check('кнопка загрузки есть', !!uploadBtn, 'да');
+      T.eq('кнопка справа от обновления', refresh.nextElementSibling, uploadBtn);
+      T.eq('кнопка не отправляет форму', uploadBtn.type, 'button');
+      T.eq('у кнопки есть доступное имя', uploadBtn.getAttribute('aria-label'), 'Загрузить файлы в документы VK');
+      T.check('иконка кнопки — SVG', !!uploadBtn.querySelector('svg'), 'да');
+      T.eq('иконка использует currentColor', uploadBtn.querySelectorAll('path')[1].getAttribute('fill'), 'currentColor');
+
+      const input = pickerEl().querySelector('.vk7tv-docs-upload-input');
+      T.check('скрытый input существует', !!input, 'да');
+      T.check('выбор нескольких файлов', input.multiple, 'да');
+      T.check('accept содержит форматы', input.accept.includes('.png') && input.accept.includes('.mp4'), 'да');
+
+      let inputClicked = false;
+      input.click = () => {
+        inputClicked = true;
+      };
+      uploadBtn.click();
+      T.check('кнопка открывает выбор файла', inputClicked, 'да');
+      T.check('кнопка не свернула раздел', group().classList.contains('vk7tv-collapsed'), 'да');
+
+      // Выбор через input сбрасывает значение после обработки.
+      const selected = makeFile('Hidden.png');
+      Object.defineProperty(input, 'files', { configurable: true, value: [selected] });
+      input.dispatchEvent(new Event('change', { bubbles: true }));
+      T.eq('значение input сброшено', input.value, '');
+      await T.waitFor('загрузка началась', () => uploadCalls.length === 1);
+
+      // Лента очереди видна и при свёрнутой сетке.
+      xhrMode = 'hold';
+      const heldJob = window.VK7TV_DOCS.enqueueUploads([makeFile('Queue.png')])[0];
+      await T.waitFor('лента загрузок появилась', () => {
+        const box = group().querySelector('.vk7tv-docs-uploads');
+        return box && box.style.display !== 'none' && box.textContent.includes('Queue.png');
+      });
+      T.check('раздел остался свёрнутым', group().classList.contains('vk7tv-collapsed'), 'да');
+      T.eq(
+        'сетка скрыта, лента видна',
+        getComputedStyle(group().querySelector('.vk7tv-docs-grid')).display,
+        'none'
+      );
+      await T.waitFor('передача очереди началась', () => !!held);
+      held.status = 200;
+      held.responseText = JSON.stringify({ file: 'queued-file' });
+      held.onload();
+      await T.waitFor(
+        'загрузка очереди завершилась',
+        () => window.VK7TV_DOCS.getState().uploads.find((u) => u.id === heldJob).stage === 'success'
+      );
+      await T.waitFor(
+        'успех виден в свёрнутом разделе',
+        () => group().textContent.includes('Загружено в документы VK')
+      );
+      xhrMode = 'ok';
+
+      // Поиск: результат не виден из-за фильтра, но предлагает очистку.
+      const search = document.querySelector('.vk7tv-picker-search');
+      search.value = 'cat';
+      search.dispatchEvent(new Event('input', { bubbles: true }));
+      await sleep(150);
+      const uploadRow = group()
+        .querySelector('.vk7tv-docs-upload-row[data-upload-id="' + heldJob + '"]');
+      T.check('скрытый поиском файл назван', uploadRow.textContent.includes('Файл загружен, но скрыт поиском'), uploadRow.textContent);
+      const clear = uploadRow.querySelector('[data-upload-action="clear-search"]');
+      T.check('есть действие очистки поиска', !!clear, 'да');
+      clear.click();
+      T.eq('поиск очищен', search.value, '');
+
+      // DnD: накладка появляется только при открытом пикере.
+      document.dispatchEvent(
+        new KeyboardEvent('keydown', { code: 'KeyE', ctrlKey: true, shiftKey: true, bubbles: true })
+      );
+      T.eq('пикер закрыт', pickerEl().style.display, 'none');
+      dragEvent('dragenter', files([makeFile('closed.png')]));
+      T.check('при закрытом пикере накладки нет', overlay().hidden, 'да');
+      document.dispatchEvent(
+        new KeyboardEvent('keydown', { code: 'KeyE', ctrlKey: true, shiftKey: true, bubbles: true })
+      );
+      await T.waitFor('пикер снова открыт', () => pickerEl().style.display !== 'none');
+
+      dragEvent('dragenter', files([makeFile('drop.png')]));
+      T.check('накладка появилась', !overlay().hidden, 'да');
+      T.check('текст накладки про файлы', overlay().textContent.includes('файлы'), overlay().textContent);
+      const headEl = document.querySelector('.vk7tv-picker-head');
+      const footEl = document.querySelector('.vk7tv-picker-foot');
+      const overlayTop = parseFloat(overlay().style.top);
+      const overlayBottom = overlayTop + parseFloat(overlay().style.height);
+      T.check(
+        'накладка не перекрывает шапку',
+        overlayTop >= headEl.offsetTop + headEl.offsetHeight,
+        String(overlayTop)
+      );
+      T.check(
+        'накладка не перекрывает подвал',
+        overlayBottom <= footEl.offsetTop + 1,
+        String(overlayBottom)
+      );
+
+      // Вложенные dragenter не мигают: одного dragleave мало.
+      dragEvent('dragenter', files([makeFile('nested.png')]));
+      dragEvent('dragleave', { types: ['Files'] });
+      T.check('вложенный dragleave не скрыл накладку', !overlay().hidden, 'да');
+      dragEvent('dragleave', { types: ['Files'] });
+      T.check('второй dragleave скрыл накладку', overlay().hidden, 'да');
+
+      // Текст и ссылки не считаются файлами.
+      dragEvent('dragenter', { types: ['text/plain'] });
+      T.check('текст не открывает накладку', overlay().hidden, 'да');
+
+      // Escape снимает накладку, но не закрывает пикер.
+      dragEvent('dragenter', files([makeFile('escape.png')]));
+      document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+      T.check('Escape снял накладку', overlay().hidden, 'да');
+      T.check('Escape не закрыл пикер', pickerEl().style.display !== 'none', 'да');
+
+      // Сброс вне области содержимого не создаёт задание.
+      const beforeOutside = window.VK7TV_DOCS.getState().uploads.length;
+      dragEvent('dragenter', files([makeFile('outside.png')]));
+      dragEvent(
+        'drop',
+        files([makeFile('outside.png')]),
+        document.querySelector('.vk7tv-picker-head')
+      );
+      T.eq('сброс вне панели проигнорирован', window.VK7TV_DOCS.getState().uploads.length, beforeOutside);
+      T.check('накладка сброшена', overlay().hidden, 'да');
+
+      // Сброс на накладке ставит файлы в очередь.
+      const beforeDrop = uploadCalls.length;
+      const dropFiles = [makeFile('Dropped.png')];
+      dragEvent('dragenter', files(dropFiles));
+      dragEvent('dragover', files(dropFiles), overlay());
+      dragEvent('drop', files(dropFiles), overlay());
+      await T.waitFor('файл из DnD загрузился', () => uploadCalls.length > beforeDrop);
+      T.check('накладка скрыта после drop', overlay().hidden, 'да');
+    });
+  </script>
+</body>

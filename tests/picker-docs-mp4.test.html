@@ -1,0 +1,156 @@
+<!doctype html>
+<meta charset="utf-8" />
+<title>VK7TV — PNG и MP4 в пикере</title>
+<link rel="stylesheet" href="../picker.css" />
+<body style="margin: 0; background: #141519">
+  <div id="draft" contenteditable="true"></div>
+  <script src="harness.js"></script>
+  <script>
+    const T = window.VK7TV_TEST;
+    const AUTH_KEY = '6287487:web_token:login:auth';
+    localStorage.clear();
+    localStorage.setItem(
+      AUTH_KEY,
+      JSON.stringify({
+        access_token: 'test',
+        user_id: 42,
+        expires: Math.floor(Date.now() / 1000) + 3600,
+      })
+    );
+
+    const sizes = [{ type: 's', src: 'https://media.test/poster.png', width: 64, height: 48 }];
+    const docs = [
+      {
+        owner_id: 42,
+        id: 1,
+        title: 'clip.mp4',
+        ext: 'mp4',
+        type: 6,
+        size: 100,
+        date: 1,
+        url: 'https://media.test/1.mp4',
+        preview: null,
+      },
+      {
+        owner_id: 42,
+        id: 2,
+        title: 'still.png',
+        ext: 'png',
+        type: 4,
+        size: 100,
+        date: 1,
+        url: 'https://media.test/2.png',
+        preview: { photo: { sizes } },
+      },
+    ];
+    const mediaCalls = [];
+    window.fetch = (url) => {
+      if (String(url).includes('web.api.vk.ru')) {
+        return Promise.resolve({
+          ok: true,
+          status: 200,
+          json: () =>
+            Promise.resolve({
+              response: { count: docs.length, total_count: docs.length, items: docs },
+            }),
+        });
+      }
+      mediaCalls.push(String(url));
+      return Promise.reject(new Error('media should not load'));
+    };
+
+    const attached = [];
+    window.addEventListener('message', (e) => {
+      if (e.source !== window || e.origin !== location.origin) return;
+      const d = e.data;
+      if (!d || !d.__vk7tvDocsBridge || d.to !== 'page') return;
+      let result;
+      if (d.type === 'get-context') {
+        result = { ok: true, peerId: '123', userId: 42, docs: attached.slice() };
+      } else if (d.type === 'attach-doc') {
+        const key = `${d.payload.doc.ownerId}:${d.payload.doc.id}`;
+        attached.push(key);
+        result = { ok: true, status: 'added' };
+      } else result = { ok: false, reason: 'unknown' };
+      window.postMessage(
+        { __vk7tvDocsBridge: 1, to: 'extension', id: d.id, result },
+        location.origin
+      );
+    });
+
+    T.install({
+      sync: {
+        enabled: true,
+        useGlobal: false,
+        widget: true,
+        sets: [],
+        customEmotes: {},
+        favorites: [],
+      },
+      local: {
+        setEmotes: {},
+        globalEmotes: null,
+        recent: [],
+        collapsedGroups: [],
+        stripTab: 'recent',
+      },
+      respond: () => ({}),
+    });
+  </script>
+  <script src="../default-emotes.js"></script>
+  <script src="../emotes.js"></script>
+  <script src="../vk-docs.js"></script>
+  <script src="../vk-docs-media.js"></script>
+  <script src="../picker.js"></script>
+  <script>
+    const group = () => document.querySelector('.vk7tv-docs-group');
+    const cell = (id) =>
+      group() && group().querySelector(`.vk7tv-doc-cell[data-key="42:${id}"]`);
+    const hover = (el) => el.dispatchEvent(new Event('pointerover', { bubbles: true }));
+    const leave = (el) => el.dispatchEvent(new Event('pointerout', { bubbles: true }));
+
+    T.run(async () => {
+      await T.waitFor('виджет появился', () => document.querySelector('.vk7tv-widget'));
+      document.dispatchEvent(
+        new KeyboardEvent('keydown', { code: 'KeyE', ctrlKey: true, shiftKey: true, bubbles: true })
+      );
+      await T.waitFor('файлы появились', () => group());
+      group().querySelector('.vk7tv-picker-group-title').click();
+      await T.waitFor('оба файла в сетке', () => cell(1) && cell(2));
+
+      // MP4 без миниатюры не исчезает: видна заглушка с форматом.
+      const mp4 = cell(1);
+      T.eq('MP4 — заглушка формата', mp4.querySelector('.vk7tv-doc-fallback').textContent, 'MP4');
+      T.eq('заглушка видна', mp4.querySelector('.vk7tv-doc-fallback').style.display, 'flex');
+
+      // Большое превью MP4 пытается играть, но ошибка оставляет заглушку.
+      hover(mp4);
+      const preview = document.querySelector('.vk7tv-preview');
+      T.eq('превью MP4 открылось сразу', preview.style.display, 'flex');
+      T.check('в превью подпись MP4', preview.querySelector('span').textContent.includes('MP4'), preview.querySelector('span').textContent);
+      const video = preview.querySelector('video');
+      T.check('превью пробует видео', video.style.display !== 'none' && video.src.includes('1.mp4'), video.src);
+      video.dispatchEvent(new Event('error'));
+      T.eq('ошибка видео скрыла плеер', video.style.display, 'none');
+      T.eq('заглушка MP4 осталась', mp4.querySelector('.vk7tv-doc-fallback').style.display, 'flex');
+      T.eq('MP4 не пошёл в медиа-кэш', mediaCalls.length, 0);
+
+      leave(mp4);
+      T.eq('уход курсора закрыл превью', preview.style.display, 'none');
+      mp4.click();
+      await T.waitFor('MP4 прикреплён', () => document.querySelector('.vk7tv-picker-foot').textContent === 'Файл прикреплён');
+      T.eq('MP4 ушёл в мост', attached.includes('42:1'), true);
+
+      // PNG статичен: карточка и превью берут готовое изображение.
+      const png = cell(2);
+      T.eq('PNG — постер', png.querySelector('img').src, 'https://media.test/poster.png');
+      hover(png);
+      T.eq('превью PNG открылось', preview.style.display, 'flex');
+      T.check('PNG в превью — статичное изображение', preview.querySelector('img').style.display !== 'none', 'да');
+      T.eq('PNG не загружается через кэш', mediaCalls.length, 0);
+      leave(png);
+      png.click();
+      await T.waitFor('PNG прикреплён', () => attached.includes('42:2'));
+    });
+  </script>
+</body>

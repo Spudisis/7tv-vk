@@ -164,12 +164,20 @@
         'contain'
       );
 
-      // Короткий проход курсора не запускает загрузку.
+      // Документы не ждут 150 мс: наведение сразу запускает медиа.
       const two = cellFor(2);
       hover(two);
+      await T.waitFor(
+        'наведение сразу грузит оригинал',
+        () => mediaCalls.includes('https://media.test/2.webp')
+      );
+      const preview = document.querySelector('.vk7tv-preview');
+      T.eq('большое превью открылось сразу', preview.style.display, 'flex');
+      T.eq('в превью название файла', preview.querySelector('span').textContent, 'two.webp');
       leave(two);
-      await sleep(220);
-      T.check('короткое наведение не грузит оригинал', !mediaCalls.includes('https://media.test/2.webp'), 'нет');
+      await sleep(20);
+      T.eq('уход курсора закрыл превью', preview.style.display, 'none');
+      T.check('наведение не заблокировало клик', !two.classList.contains('vk7tv-sel'), 'да');
 
       // Наведение на GIF: сначала видео-превью, при ошибке — оригинал.
       const one = cellFor(1);

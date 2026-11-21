@@ -160,13 +160,18 @@
     if (!title) return null;
 
     const ext = typeof raw.ext === 'string' ? raw.ext.toLowerCase() : '';
-    if (ext !== 'gif' && ext !== 'webp') return null;
+    // MP4 VK принимает как документ (type 6) и штатный dispatch добавляет
+    // его в черновик. Оригинал по doc.url не воспроизводится, но это не
+    // мешает прикреплению.
+    if (!['gif', 'webp', 'png', 'jpg', 'jpeg', 'mp4'].includes(ext)) return null;
 
     const url = safeUrl(raw.url);
     if (!url) return null;
 
     let type = typeof raw.type === 'string' ? raw.type : 'default';
-    if (!['gif', 'image', 'default'].includes(type)) type = ext === 'gif' ? 'gif' : 'image';
+    if (!['gif', 'image', 'video', 'default'].includes(type)) {
+      type = ext === 'gif' ? 'gif' : ext === 'mp4' ? 'video' : 'image';
+    }
 
     const image = new Map();
     if (Array.isArray(raw.previewSizes)) {

@@ -94,6 +94,47 @@
       T.eq('в новом черновике один документ', state.composerDrafts[123][0].attaches.docs.length, 1);
       state.composerDrafts[123] = [{ text: 'черновик', attaches: {} }];
 
+      // Новые форматы проходят тот же мост: PNG как image, MP4 как video.
+      const pngDoc = {
+        ...doc,
+        id: 10,
+        title: 'attach.png',
+        ext: 'png',
+        type: 'image',
+        url: 'https://vk.ru/doc1_10',
+      };
+      const pngAttach = await call('attach-doc', {
+        expectedPeerId: '123',
+        expectedUserId: 42,
+        doc: pngDoc,
+      });
+      T.eq('PNG добавлен в черновик', pngAttach.status, 'added');
+      const mp4Doc = {
+        ownerId: 1,
+        id: 11,
+        title: 'attach.mp4',
+        ext: 'mp4',
+        type: 'video',
+        size: 10,
+        date: 1,
+        url: 'https://vk.ru/doc1_11',
+        previewSizes: [],
+      };
+      const mp4Attach = await call('attach-doc', {
+        expectedPeerId: '123',
+        expectedUserId: 42,
+        doc: mp4Doc,
+      });
+      T.eq('MP4 добавлен в черновик', mp4Attach.status, 'added');
+      T.eq('в черновике два новых документа', state.composerDrafts[123][0].attaches.docs.length, 2);
+      const pdfAttach = await call('attach-doc', {
+        expectedPeerId: '123',
+        expectedUserId: 42,
+        doc: { ...mp4Doc, id: 12, title: 'attach.pdf', ext: 'pdf', type: 'default' },
+      });
+      T.eq('неподдерживаемый формат отклонён мостом', pdfAttach.reason, 'bad-doc');
+      state.composerDrafts[123] = [{ text: 'черновик', attaches: {} }];
+
       state.composerPostponedDrafts = { 123: [{ text: 'отложенное' }] };
       const postponed = await call('get-context', {});
       T.eq('отложенное сообщение не поддерживается', postponed.reason, 'unsupported');

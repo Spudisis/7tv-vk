@@ -1,0 +1,159 @@
+<!doctype html>
+<meta charset="utf-8" />
+<title>VK7TV — локальная загрузка и серверное обновление</title>
+<body>
+  <script src="harness.js"></script>
+  <script>
+    const T = window.VK7TV_TEST;
+    const AUTH_KEY = '6287487:web_token:login:auth';
+    localStorage.clear();
+    localStorage.setItem(
+      AUTH_KEY,
+      JSON.stringify({
+        access_token: 'test',
+        user_id: 42,
+        expires: Math.floor(Date.now() / 1000) + 3600,
+      })
+    );
+
+    const preview = [
+      { type: 's', src: 'https://sun9-1.userapi.com/s.png', width: 64, height: 64 },
+    ];
+    const oldDoc = {
+      owner_id: 42,
+      id: 1,
+      title: 'old.png',
+      ext: 'png',
+      type: 4,
+      size: 1,
+      date: 1,
+      url: 'https://vk.ru/doc42_1',
+      preview: { photo: { sizes: preview } },
+    };
+    const newDoc = {
+      owner_id: 42,
+      id: 2,
+      title: 'fresh.png',
+      ext: 'png',
+      type: 4,
+      size: 1,
+      date: 1,
+      url: 'https://vk.ru/doc42_2',
+      preview: { photo: { sizes: preview } },
+    };
+
+    let holdGet = null;
+    const offsets = [];
+    function getReply(items) {
+      return Promise.resolve({
+        ok: true,
+        status: 200,
+        json: () =>
+          Promise.resolve({
+            response: { count: items.length, total_count: 2, items },
+          }),
+      });
+    }
+    window.fetch = (url, opts) => {
+      const method = String(url).split('/').pop();
+      const body = new URLSearchParams(opts && opts.body);
+      const reply = (json) =>
+        Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve(json) });
+      if (method === 'docs.get') {
+        const offset = Number(body.get('offset')) || 0;
+        offsets.push(offset);
+        if (holdGet) {
+          return new Promise((resolve) => {
+            holdGet = { offset, resolve: () => resolve(getReply([oldDoc])) };
+          });
+        }
+        return getReply(offset === 0 ? [oldDoc] : []);
+      }
+      if (method === 'docs.getUploadServer') {
+        return reply({ response: { upload_url: 'https://pu.vk.ru/upload_doc.php' } });
+      }
+      if (method === 'docs.save') {
+        return reply({ response: { type: 'doc', doc: newDoc } });
+      }
+      return Promise.reject(new Error('unexpected'));
+    };
+
+    class FakeXHR {
+      constructor() {
+        this.upload = {};
+      }
+      open() {}
+      send(form) {
+        setTimeout(() => {
+          this.status = 200;
+          this.responseText = JSON.stringify({ file: 'fresh-file' });
+          this.onload();
+        }, 0);
+      }
+      abort() {
+        if (this.onabort) this.onabort();
+      }
+    }
+    window.XMLHttpRequest = FakeXHR;
+
+    const png = new Uint8Array([
+      0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 0,
+    ]);
+    const file = new File([png], 'Fresh.png', { type: 'image/png', lastModified: 1 });
+  </script>
+  <script src="../vk-docs.js"></script>
+  <script>
+    T.run(async () => {
+      const DOCS = window.VK7TV_DOCS;
+      await DOCS.loadMore();
+      T.eq('старый документ загружен', DOCS.getItems().map((d) => d.key).join(','), '42:1');
+
+      // Обновление уже в пути: его ответ не должен стереть новую загрузку.
+      holdGet = {};
+      const refreshing = DOCS.refresh();
+      await T.waitFor('запрос обновления ушёл', () => !!holdGet.resolve);
+      const id = DOCS.enqueueUploads([file])[0];
+      await T.waitFor('новая загрузка подтверждена', () => {
+        const job = DOCS.getState().uploads.find((u) => u.id === id);
+        return !!job && job.stage === 'success';
+      });
+      T.eq('новый документ виден до ответа обновления', DOCS.getItems()[0].key, '42:2');
+      T.eq('старый список пока сохранён', DOCS.getItems().length, 2);
+
+      const pending = holdGet;
+      holdGet = null;
+      pending.resolve();
+      await refreshing;
+      T.eq('ответ обновления не удалил новую загрузку', DOCS.getItems().map((d) => d.key).join(','), '42:2,42:1');
+      T.eq('локальная загрузка не увеличила offset', DOCS.getState().rawLoaded, 1);
+      T.eq('счётчик — уникальное объединение', DOCS.getItems().length, 2);
+
+      // Следующее чтение начинается с нуля, а не с серверного смещения.
+      offsets.length = 0;
+      await DOCS.loadMore();
+      T.eq('пагинация перезапущена с нуля', offsets[0], 0);
+      T.eq('после перезапуска дублей нет', DOCS.getItems().length, 2);
+      await DOCS.loadMore();
+      T.eq('серверная страница не считается локальной', DOCS.getState().loaded, true);
+
+      DOCS.setQuery('fresh');
+      T.eq('поиск считает уникальную вставку', DOCS.getState().count, 1);
+      DOCS.setQuery('');
+
+      // Смена пользователя очищает и локальный набор.
+      const epoch = DOCS.getState().uploadEpoch;
+      localStorage.setItem(
+        AUTH_KEY,
+        JSON.stringify({
+          access_token: 'other',
+          user_id: 99,
+          expires: Math.floor(Date.now() / 1000) + 3600,
+        })
+      );
+      window.dispatchEvent(new StorageEvent('storage', { key: AUTH_KEY }));
+      T.eq('локальные вставки очищены', DOCS.getItems().length, 0);
+      T.eq('очередь очищена', DOCS.getState().uploads.length, 0);
+      T.check('эпоха загрузок сменилась', DOCS.getState().uploadEpoch !== epoch, 'да');
+    });
+  </script>
+</body>
