@@ -1,0 +1,69 @@
+<!doctype html>
+<meta charset="utf-8" />
+<title>VK7TV — документы: поиск по остальным страницам</title>
+<body>
+  <script src="harness.js"></script>
+  <script>
+    const T = window.VK7TV_TEST;
+    const AUTH_KEY = '6287487:web_token:login:auth';
+    localStorage.clear();
+    localStorage.setItem(
+      AUTH_KEY,
+      JSON.stringify({ access_token: 'test', user_id: 1, expires: Math.floor(Date.now() / 1000) + 3600 })
+    );
+
+    const sizes = [{ type: 's', src: 'https://sun9-1.userapi.com/s.jpg', width: 64, height: 64 }];
+    const doc = (id, title) => ({
+      owner_id: 1,
+      id,
+      title,
+      ext: 'gif',
+      size: 1,
+      date: 1,
+      url: `https://vk.ru/doc1_${id}`,
+      preview: { photo: { sizes } },
+    });
+    const filler = (n) => ({ ...doc(9000 + n, `file-${n}.pdf`), ext: 'pdf' });
+
+    const offsets = [];
+    window.fetch = (url, opts) => {
+      const body = new URLSearchParams(opts.body);
+      const offset = Number(body.get('offset')) || 0;
+      offsets.push(offset);
+      let items = [];
+      if (offset === 0) items = [doc(1, 'first.gif')];
+      else if (offset === 100) items = [doc(2, 'last-needle.gif')];
+      while (items.length < 50) items.push(filler(offset + items.length));
+      const response = { response: { count: 50, total_count: 150, items } };
+      return new Promise((resolve) => {
+        setTimeout(
+          () => resolve({ ok: true, status: 200, json: () => Promise.resolve(response) }),
+          offset === 100 ? 30 : 0
+        );
+      });
+    };
+  </script>
+  <script src="../vk-docs.js"></script>
+  <script>
+    T.run(async () => {
+      const DOCS = window.VK7TV_DOCS;
+      await DOCS.loadMore();
+      T.eq('до поиска загружена первая страница', DOCS.getItems().length, 1);
+      T.eq('поиск пока не находит дальний файл', DOCS.filterItems('needle').length, 0);
+
+      DOCS.setQuery('needle');
+      T.eq('поиск включает неполный список', DOCS.getState().query, 'needle');
+      T.eq('поиск не начинает пагинацию с нуля', offsets[offsets.length - 1], 50);
+      T.check('поиск по остальным страницам идёт', DOCS.getState().query && !DOCS.getState().loaded, 'да');
+
+      await T.waitFor('дальний файл догрузился', () => DOCS.getState().loaded);
+      T.eq('нашёлся файл с последней страницы', DOCS.filterItems('needle').length, 1);
+      T.eq('счётчик в поиске — найденное', DOCS.getState().count, 1);
+      T.eq('поиск дошёл до последней страницы', offsets.join(','), '0,50,100');
+
+      DOCS.setQuery('');
+      T.eq('после очистки поиска фильтр снят', DOCS.getState().count, 2);
+      T.eq('после очистки поиска всё загружено', DOCS.getState().loaded, true);
+    });
+  </script>
+</body>

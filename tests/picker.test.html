@@ -65,7 +65,13 @@
       );
 
       // Битое значение не должно уносить с собой остальные разделы.
-      T.eq('разделов в сетке', sel('.vk7tv-picker-group').length, 5); // «Свои» + 4 набора
+      T.eq('разделов в сетке', sel('.vk7tv-picker-group').length, 6); // «Файлы» + «Свои» + 4 набора
+      T.eq(
+        '«Файлы» стоят первыми',
+        document.querySelector('.vk7tv-picker-body .vk7tv-picker-group .vk7tv-picker-group-name')
+          ?.textContent,
+        'Файлы'
+      );
       T.eq('ячеек в обычном наборе', secByName('обычный').querySelectorAll('.vk7tv-picker-cell').length, 5);
       T.eq('старый формат-строка рисуется', secByName('строки').querySelectorAll('.vk7tv-picker-cell').length, 2);
       T.eq('кэш без пропорций рисуется', secByName('без пропорций').querySelectorAll('.vk7tv-picker-cell').length, 2);

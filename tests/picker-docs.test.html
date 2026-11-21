@@ -1,0 +1,169 @@
+<!doctype html>
+<meta charset="utf-8" />
+<title>VK7TV — файлы в пикере</title>
+<link rel="stylesheet" href="../picker.css" />
+<body style="margin: 0; background: #141519">
+  <div id="draft" contenteditable="true" style="min-height: 20px"></div>
+  <script src="harness.js"></script>
+  <script>
+    const T = window.VK7TV_TEST;
+    const AUTH_KEY = '6287487:web_token:login:auth';
+    localStorage.clear();
+    localStorage.setItem(
+      AUTH_KEY,
+      JSON.stringify({ access_token: 'test', user_id: 42, expires: Math.floor(Date.now() / 1000) + 3600 })
+    );
+
+    const sizes = [{ type: 's', src: 'https://sun9-1.userapi.com/s.jpg', width: 64, height: 48 }];
+    const docs = [
+      {
+        owner_id: 42,
+        id: 1,
+        title: 'cat-one.gif',
+        ext: 'gif',
+        type: 3,
+        size: 1,
+        date: 1,
+        url: 'https://vk.ru/doc42_1',
+        preview: { photo: { sizes }, video: { src: 'https://vk.ru/v.mp4' } },
+      },
+      {
+        owner_id: 42,
+        id: 2,
+        title: 'dog.webp',
+        ext: 'webp',
+        type: 4,
+        size: 1,
+        date: 1,
+        url: 'https://vk.ru/doc42_2',
+        preview: { photo: { sizes } },
+      },
+    ];
+    window.fetch = () =>
+      Promise.resolve({
+        ok: true,
+        status: 200,
+        json: () =>
+          Promise.resolve({ response: { count: docs.length, total_count: docs.length, items: docs } }),
+      });
+
+    const attached = [];
+    window.addEventListener('message', (e) => {
+      if (e.source !== window || e.origin !== location.origin) return;
+      const d = e.data;
+      if (!d || d.__vk7tvDocsBridge !== 1 || d.to !== 'page') return;
+      let result;
+      if (d.type === 'get-context') {
+        result = { ok: true, peerId: '123', userId: 42, docs: attached.slice() };
+      } else if (d.type === 'attach-doc') {
+        const key = `${d.payload.doc.ownerId}:${d.payload.doc.id}`;
+        if (attached.includes(key)) result = { ok: true, status: 'already' };
+        else {
+          attached.push(key);
+          result = { ok: true, status: 'added' };
+        }
+      } else {
+        result = { ok: false, reason: 'unknown' };
+      }
+      window.postMessage({ __vk7tvDocsBridge: 1, to: 'extension', id: d.id, result }, location.origin);
+    });
+
+    T.install({
+      sync: {
+        enabled: true,
+        useGlobal: false,
+        widget: true,
+        sets: [],
+        customEmotes: {},
+        favorites: [],
+      },
+      local: { setEmotes: {}, globalEmotes: null, recent: [], collapsedGroups: [], stripTab: 'recent' },
+      respond: () => ({}),
+    });
+  </script>
+  <script src="../default-emotes.js"></script>
+  <script src="../emotes.js"></script>
+  <script src="../vk-docs.js"></script>
+  <script src="../picker.js"></script>
+  <script>
+    const sel = (s) => [...document.querySelectorAll(s)];
+    T.run(async () => {
+      await T.waitFor('виджет появился', () => document.querySelector('.vk7tv-widget'));
+      document.dispatchEvent(
+        new KeyboardEvent('keydown', { code: 'KeyE', ctrlKey: true, shiftKey: true, bubbles: true })
+      );
+      await T.waitFor('секция файлов появилась', () => document.querySelector('.vk7tv-docs-group'));
+
+      const docsGroup = document.querySelector('.vk7tv-docs-group');
+      T.eq('«Файлы» первыми в списке', docsGroup, document.querySelector('.vk7tv-picker-body .vk7tv-picker-group'));
+      T.check('по умолчанию свёрнута', docsGroup.classList.contains('vk7tv-collapsed'), 'да');
+      T.eq('до загрузки счётчик нейтральный', docsGroup.querySelector('.vk7tv-picker-group-count').textContent, '…');
+
+      const draft = document.getElementById('draft');
+      draft.focus();
+      draft.textContent = 'привет';
+      const selection = window.getSelection();
+      const range = document.createRange();
+      range.selectNodeContents(draft);
+      range.collapse(false);
+      selection.removeAllRanges();
+      selection.addRange(range);
+
+      docsGroup.querySelector('.vk7tv-picker-group-title').click();
+      await T.waitFor('ячейки файлов появились', () => docsGroup.querySelectorAll('.vk7tv-doc-cell').length === 2);
+      T.eq('после загрузки счётчик точный', docsGroup.querySelector('.vk7tv-picker-group-count').textContent, '2');
+      T.eq('у файлов нет звёзд избранного', docsGroup.querySelectorAll('.vk7tv-fav').length, 0);
+
+      const cat = docsGroup.querySelector('.vk7tv-doc-cell[data-key="42:1"]');
+      cat.querySelector('img').dispatchEvent(new Event('error'));
+      T.eq('битое превью не удалило файл', docsGroup.querySelectorAll('.vk7tv-doc-cell').length, 2);
+      T.eq('вместо превью видно расширение', cat.querySelector('.vk7tv-doc-fallback').style.display, 'flex');
+
+      cat.click();
+      await T.waitFor('файл прикреплён', () => document.querySelector('.vk7tv-picker-foot').textContent === 'Файл прикреплён');
+      T.eq('текст черновика не тронут', draft.textContent, 'привет');
+      T.eq('вложение ушло в мост', attached.join(','), '42:1');
+
+      cat.click();
+      await T.waitFor('повтор назван', () => document.querySelector('.vk7tv-picker-foot').textContent === 'Файл уже прикреплён');
+
+      const search = document.querySelector('.vk7tv-picker-search');
+      search.value = 'dog';
+      search.dispatchEvent(new Event('input', { bubbles: true }));
+      await T.waitFor('поиск оставил один файл', () => {
+        const group = document.querySelector('.vk7tv-docs-group');
+        return group && group.querySelectorAll('.vk7tv-doc-cell').length === 1;
+      });
+      const afterSearch = document.querySelector('.vk7tv-docs-group');
+      T.eq('поиск по названию файла', afterSearch.querySelector('.vk7tv-doc-cell').dataset.key, '42:2');
+
+      // Стрелка выбирает файл, Enter прикрепляет его, а не вставляет имя.
+      search.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true }));
+      search.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+      await T.waitFor('Enter прикрепил файл', () => document.querySelector('.vk7tv-picker-foot').textContent === 'Файл прикреплён');
+      T.eq('Enter не вставил название в текст', draft.textContent, 'привет');
+      T.eq('оба файла в черновике', attached.join(','), '42:1,42:2');
+
+      // Кнопка обновления не сворачивает секцию.
+      const refreshed = document.querySelector('.vk7tv-docs-group');
+      refreshed.querySelector('.vk7tv-docs-refresh').click();
+      await T.waitFor('список после обновления', () => {
+        const group = document.querySelector('.vk7tv-docs-group');
+        return group && group.querySelectorAll('.vk7tv-doc-cell').length === 1;
+      });
+      T.check('обновление не свернуло секцию', !document.querySelector('.vk7tv-docs-group').classList.contains('vk7tv-collapsed'), 'да');
+
+      // Сворачивание запоминается и не сбрасывается повторным открытием.
+      document.querySelector('.vk7tv-docs-group .vk7tv-picker-group-title').click();
+      T.check('секция свернулась', document.querySelector('.vk7tv-docs-group').classList.contains('vk7tv-collapsed'), 'да');
+      document.dispatchEvent(
+        new KeyboardEvent('keydown', { code: 'KeyE', ctrlKey: true, shiftKey: true, bubbles: true })
+      );
+      document.dispatchEvent(
+        new KeyboardEvent('keydown', { code: 'KeyE', ctrlKey: true, shiftKey: true, bubbles: true })
+      );
+      await T.waitFor('поповер открылся снова', () => document.querySelector('.vk7tv-picker').style.display !== 'none');
+      T.check('сворачивание пережило открытие', document.querySelector('.vk7tv-docs-group').classList.contains('vk7tv-collapsed'), 'да');
+    });
+  </script>
+</body>

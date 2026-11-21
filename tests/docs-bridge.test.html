@@ -1,0 +1,115 @@
+<!doctype html>
+<meta charset="utf-8" />
+<title>VK7TV — мост к черновику ВК</title>
+<body>
+  <div class="ConvoComposer">
+    <div data-testid="vkme_composer_input" contenteditable="true"></div>
+  </div>
+  <script src="harness.js"></script>
+  <script>
+    const T = window.VK7TV_TEST;
+
+    const state = {
+      viewer: { id: 42 },
+      composerDrafts: { 123: [{ text: 'черновик', attaches: {} }] },
+    };
+    const actions = [];
+    const store = {
+      getState: () => state,
+      dispatch(action) {
+        actions.push(action);
+        if (action.type === 'UserChangedComposerDraft' && action.kind === 'addAttaches') {
+          if (!state.composerDrafts[action.peerId]) {
+            state.composerDrafts[action.peerId] = [{ text: '', html: '', attaches: {} }];
+          }
+          const draft = state.composerDrafts[action.peerId].at(-1);
+          draft.attaches = {
+            ...draft.attaches,
+            docs: [...(draft.attaches.docs || []), ...action.attaches.docs],
+          };
+        }
+      },
+    };
+    window.MECommonContext = Promise.resolve({ store });
+
+    let seq = 0;
+    function call(type, payload) {
+      const id = 't' + ++seq;
+      return new Promise((resolve) => {
+        const onMessage = (e) => {
+          if (e.source !== window || e.origin !== location.origin) return;
+          const d = e.data;
+          if (!d || d.__vk7tvDocsBridge !== 1 || d.to !== 'extension' || d.id !== id) return;
+          window.removeEventListener('message', onMessage);
+          resolve(d.result);
+        };
+        window.addEventListener('message', onMessage);
+        window.postMessage({ __vk7tvDocsBridge: 1, to: 'page', id, type, payload }, location.origin);
+        setTimeout(() => resolve({ ok: false, reason: 'test-timeout' }), 2000);
+      });
+    }
+
+    const doc = {
+      ownerId: 1,
+      id: 9,
+      title: 'attach.gif',
+      ext: 'gif',
+      type: 'gif',
+      size: 10,
+      date: 1,
+      url: 'https://vk.ru/doc1_9',
+      previewSizes: [{ type: 's', url: 'https://sun9-1.userapi.com/s.jpg', width: 64, height: 64 }],
+    };
+  </script>
+  <script src="../vk-docs-page.js"></script>
+  <script>
+    history.replaceState(null, '', '/im/convo/123/tests/docs-bridge.test.html');
+    T.run(async () => {
+      const ctx = await call('get-context', {});
+      T.check('контекст редактора получен', ctx.ok, 'да');
+      T.eq('peer id из маршрута', ctx.peerId, '123');
+      T.eq('автор из store', ctx.userId, 42);
+
+      const first = await call('attach-doc', { expectedPeerId: '123', expectedUserId: 42, doc });
+      T.eq('документ добавлен', first.status, 'added');
+      T.eq('в черновике один документ', state.composerDrafts[123][0].attaches.docs.length, 1);
+      T.eq('текст черновика сохранён', state.composerDrafts[123][0].text, 'черновик');
+      T.eq('dispatch штатного действия', actions[0].type, 'UserChangedComposerDraft');
+      T.eq('dispatch kind', actions[0].kind, 'addAttaches');
+
+      const second = await call('attach-doc', { expectedPeerId: '123', expectedUserId: 42, doc });
+      T.eq('повтор не создаёт дубль', second.status, 'already');
+      T.eq('в черновике всё ещё один документ', state.composerDrafts[123][0].attaches.docs.length, 1);
+
+      const stale = await call('attach-doc', { expectedPeerId: '999', expectedUserId: 42, doc });
+      T.eq('другой чат отклонён', stale.reason, 'stale-context');
+      T.eq('dispatch не добавил лишнего', actions.length, 1);
+
+      // Пустой черновик ещё не лежит в store — это нормальное состояние.
+      delete state.composerDrafts[123];
+      const emptyCtx = await call('get-context', {});
+      T.check('пустой черновик не мешает прикреплению', emptyCtx.ok, 'да');
+      const emptyAttach = await call('attach-doc', { expectedPeerId: '123', expectedUserId: 42, doc });
+      T.eq('документ создал черновик', emptyAttach.status, 'added');
+      T.eq('в новом черновике один документ', state.composerDrafts[123][0].attaches.docs.length, 1);
+      state.composerDrafts[123] = [{ text: 'черновик', attaches: {} }];
+
+      state.composerPostponedDrafts = { 123: [{ text: 'отложенное' }] };
+      const postponed = await call('get-context', {});
+      T.eq('отложенное сообщение не поддерживается', postponed.reason, 'unsupported');
+      delete state.composerPostponedDrafts;
+
+      state.composerDrafts[123][0].editing = { cmid: 5 };
+      const editing = await call('get-context', {});
+      T.eq('редактирование сообщения не поддерживается', editing.reason, 'editing');
+      state.composerDrafts[123][0].editing = undefined;
+
+      document.querySelector('[data-testid="vkme_composer_input"]').remove();
+      const noEditor = await call('get-context', {});
+      T.eq('без поля ввода прикреплять некуда', noEditor.reason, 'no-editor');
+
+      const bad = await call('attach-doc', { expectedPeerId: '123', expectedUserId: 42, doc: { id: 1 } });
+      T.eq('битый документ отклонён', bad.reason, 'bad-doc');
+    });
+  </script>
+</body>

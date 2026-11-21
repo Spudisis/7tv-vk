@@ -1,0 +1,60 @@
+<!doctype html>
+<meta charset="utf-8" />
+<title>VK7TV — документы: очистка поиска останавливает догрузку</title>
+<body>
+  <script src="harness.js"></script>
+  <script>
+    const T = window.VK7TV_TEST;
+    const AUTH_KEY = '6287487:web_token:login:auth';
+    localStorage.clear();
+    localStorage.setItem(
+      AUTH_KEY,
+      JSON.stringify({ access_token: 'test', user_id: 1, expires: Math.floor(Date.now() / 1000) + 3600 })
+    );
+
+    const sizes = [{ type: 's', src: 'https://sun9-1.userapi.com/s.jpg', width: 64, height: 64 }];
+    const doc = (id, ext, title) => ({
+      owner_id: 1,
+      id,
+      title,
+      ext,
+      size: 1,
+      date: 1,
+      url: `https://vk.ru/doc1_${id}`,
+      preview: { photo: { sizes } },
+    });
+    const filler = (n) => doc(9000 + n, 'pdf', `file-${n}.pdf`);
+    const offsets = [];
+    window.fetch = (url, opts) => {
+      const body = new URLSearchParams(opts.body);
+      const offset = Number(body.get('offset')) || 0;
+      offsets.push(offset);
+      const items = [];
+      if (offset === 0) items.push(doc(1, 'gif', 'first.gif'));
+      while (items.length < 50) items.push(filler(offset + items.length));
+      return new Promise((resolve) => {
+        setTimeout(
+          () => resolve({ ok: true, status: 200, json: () => Promise.resolve({ response: { count: 50, total_count: 150, items } }) }),
+          20
+        );
+      });
+    };
+  </script>
+  <script src="../vk-docs.js"></script>
+  <script>
+    T.run(async () => {
+      const DOCS = window.VK7TV_DOCS;
+      await DOCS.loadMore();
+      T.eq('первая страница загружена', DOCS.getItems().length, 1);
+
+      DOCS.setQuery('не-существует');
+      // Пока вторая страница в пути, пользователь очистил поиск.
+      DOCS.setQuery('');
+      await T.waitFor('догрузка остановилась', () => offsets.length >= 2);
+      await new Promise((r) => setTimeout(r, 120));
+      T.eq('очистка поиска не запустила остальные страницы', offsets.join(','), '0,50');
+      T.eq('уже полученная страница осталась в списке', DOCS.getItems().length, 1);
+      T.eq('поиск очищен', DOCS.getState().query, '');
+    });
+  </script>
+</body>

@@ -1,0 +1,77 @@
+<!doctype html>
+<meta charset="utf-8" />
+<title>VK7TV — документы: ошибки и повтор</title>
+<body>
+  <script src="harness.js"></script>
+  <script>
+    const T = window.VK7TV_TEST;
+    const AUTH_KEY = '6287487:web_token:login:auth';
+    localStorage.clear();
+    localStorage.setItem(
+      AUTH_KEY,
+      JSON.stringify({ access_token: 'test', user_id: 1, expires: Math.floor(Date.now() / 1000) + 3600 })
+    );
+
+    const sizes = [{ type: 's', src: 'https://sun9-1.userapi.com/s.jpg', width: 64, height: 64 }];
+    const doc = (id, ext, title) => ({
+      owner_id: 1,
+      id,
+      title,
+      ext,
+      size: 1,
+      date: 1,
+      url: `https://vk.ru/doc1_${id}`,
+      preview: { photo: { sizes } },
+    });
+    const filler = (n) => doc(9000 + n, 'pdf', `file-${n}.pdf`);
+    const page0 = [doc(1, 'gif', 'first.gif')];
+    while (page0.length < 50) page0.push(filler(page0.length));
+    const page50 = [];
+    while (page50.length < 50) page50.push(filler(100 + page50.length));
+    const page100 = [doc(2, 'webp', 'last.webp')];
+    while (page100.length < 50) page100.push(filler(200 + page100.length));
+
+    let fail = true;
+    let repeatPage = false;
+    const offsets = [];
+    window.fetch = (url, opts) => {
+      const body = new URLSearchParams(opts.body);
+      const offset = Number(body.get('offset')) || 0;
+      offsets.push(offset);
+      if (offset === 50 && fail) {
+        return Promise.resolve({ ok: false, status: 503, json: () => Promise.resolve({}) });
+      }
+      let items = offset === 0 ? page0 : offset === 50 ? (repeatPage ? page0 : page50) : page100;
+      const response = { response: { count: items.length, total_count: 150, items } };
+      return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve(response) });
+    };
+  </script>
+  <script src="../vk-docs.js"></script>
+  <script>
+    T.run(async () => {
+      const DOCS = window.VK7TV_DOCS;
+      await DOCS.loadMore();
+      T.eq('первая страница загрузилась', DOCS.getItems().length, 1);
+      await DOCS.loadMore();
+      T.eq('сбой второй страницы после одного повтора', offsets.join(','), '0,50,50');
+      T.eq('ошибка сохранена вместе с данными', DOCS.getState().status, 'partial');
+      T.check('ошибка видна', !!DOCS.getState().error, 'да');
+      T.eq('счётчик не выдаёт часть за целое', DOCS.getState().partial, true);
+
+      fail = false;
+      await DOCS.loadMore();
+      T.eq('повтор продолжил с неуспешного смещения', offsets.slice(-2).join(','), '50,100');
+      T.eq('после повтора файлы догружены', DOCS.getItems().length, 2);
+      T.eq('после повтора список полный', DOCS.getState().loaded, true);
+
+      // Обнуляем сессию и проверяем защиту от страницы без новых id.
+      await DOCS.refresh();
+      T.eq('после обновления снова первая страница', DOCS.getItems().length, 1);
+      repeatPage = true;
+      await DOCS.loadMore();
+      T.eq('повтор страницы назван отдельно', DOCS.getState().error.kind, 'repeat');
+      T.eq('повтор страницы не считается концом', DOCS.getState().loaded, false);
+      T.eq('счётчик остался неполным', DOCS.getState().partial, true);
+    });
+  </script>
+</body>

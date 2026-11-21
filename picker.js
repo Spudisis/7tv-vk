@@ -10,6 +10,8 @@
   if (window.top !== window) return; // только в основном фрейме
 
   const WIDGET_SIZE = 46;
+  const DOCS = window.VK7TV_DOCS;
+  const DOCS_KEY = 'docs:files'; // отдельный ключ: наборы 7TV его не двигают
 
   let widget = null;
   let picker = null;
@@ -35,6 +37,21 @@
   let pendingReveal = null; // {key, full} — доскроллить, когда набор соберётся
   let missingSets = 0; // наборы подключены, но их эмоуты не скачались
   let nearObserver = null; // следит, какой набор подошёл к видимой части списка
+  let docsSection = null;
+  let docsGrid = null;
+  let docsStatus = null;
+  let docsCount = null;
+  let docsSentinel = null;
+  let docsObserver = null;
+  let docsCollapsed = true;
+  let docsBuildToken = 0;
+  let docsRenderQueued = false;
+  let docsSubscribed = false;
+  let docsRenderedQuery = null;
+  let docsRenderedGen = -1;
+  let docsRenderedKeys = new Set();
+  let docsAttachQueue = Promise.resolve();
+  let docsAttaching = new Set();
 
   // --- последнее поле ввода ВК: куда вставлять эмоут ---
 
@@ -236,7 +253,7 @@
       if (e.key === 'Enter') {
         e.preventDefault();
         const cell = selCell && selCell.isConnected ? selCell : firstCell();
-        if (cell) insertEmote(cell.dataset.name);
+        if (cell) activateCell(cell);
         return;
       }
       const step =
@@ -319,7 +336,12 @@
     if (previewBox) return previewBox;
     previewBox = document.createElement('div');
     previewBox.className = 'vk7tv-preview';
-    previewBox.append(document.createElement('img'), document.createElement('span'));
+    const video = document.createElement('video');
+    video.muted = true;
+    video.loop = true;
+    video.playsInline = true;
+    video.style.display = 'none';
+    previewBox.append(video, document.createElement('img'), document.createElement('span'));
     document.body.appendChild(previewBox);
     // Высота меняется, когда догрузится картинка. Позиция считается от неё,
     // поэтому одного расчёта мало — окно наезжало на эмоут снизу.
@@ -358,11 +380,22 @@
   }
 
   function showPreview(cell) {
+    if (cell.classList.contains('vk7tv-doc-cell')) {
+      showDocPreview(cell);
+      return;
+    }
     const src = cell.querySelector('img');
     if (!src) return;
     const box = previewEl();
     const img = box.querySelector('img');
     const label = box.querySelector('span');
+    const video = box.querySelector('video');
+    if (video) {
+      video.pause();
+      video.removeAttribute('src');
+      video.style.display = 'none';
+    }
+    img.style.display = '';
     const name = cell.dataset.name || src.alt || '';
     label.textContent = name;
     box.style.display = 'flex';
@@ -382,13 +415,58 @@
     }, HI_DELAY);
   }
 
+  // В сетке лежит лёгкое превью. Оригинал GIF тянем только здесь, по
+  // требованию; если у документа есть видео-превью, оно и проигрывается.
+  function showDocPreview(cell) {
+    if (!DOCS) return;
+    const doc = DOCS.getDocument(cell.dataset.key);
+    if (!doc) return;
+    const box = previewEl();
+    const img = box.querySelector('img');
+    const video = box.querySelector('video');
+    const label = box.querySelector('span');
+    label.textContent = doc.title;
+    box.style.display = 'flex';
+    previewShown = true;
+    previewCell = cell;
+
+    const still = doc.preview ? doc.preview.url : doc.url;
+    img.style.display = '';
+    img.src = still || '';
+    if (video) {
+      video.pause();
+      video.removeAttribute('src');
+      video.style.display = 'none';
+    }
+
+    if (doc.ext === 'gif' && doc.video && video) {
+      img.style.display = 'none';
+      video.style.display = '';
+      video.src = doc.video.url;
+      const play = video.play();
+      if (play && typeof play.catch === 'function') play.catch(() => {});
+    } else if (doc.url) {
+      // GIF без видео и WEBP показываем оригиналом: в сетке он не нужен,
+      // а при увеличении это единственный способ увидеть анимацию.
+      img.src = doc.url;
+    }
+    placePreview(cell, box);
+  }
+
   function hidePreview() {
     clearTimeout(previewTimer);
     clearTimeout(hiTimer);
     previewTimer = 0;
     pressing = false;
     armedCell = null;
-    if (previewBox) previewBox.style.display = 'none';
+    if (!previewBox) return;
+    const video = previewBox.querySelector('video');
+    if (video) {
+      video.pause();
+      video.removeAttribute('src');
+      video.load?.();
+    }
+    previewBox.style.display = 'none';
   }
 
   // За pointerleave не цепляемся: браузер сыплет leave/enter, даже когда
@@ -443,6 +521,439 @@
     return cell;
   }
 
+  // Документ — отдельный тип ячейки: у него нет звезды избранного, имени
+  // эмоута и правил CDN 7TV. Клик и Enter прикрепляют его к черновику.
+  function makeDocCell(doc) {
+    const cell = document.createElement('span');
+    cell.className = 'vk7tv-picker-cell vk7tv-doc-cell';
+    cell.dataset.key = doc.key;
+    cell.dataset.name = doc.title;
+
+    const img = document.createElement('img');
+    if (doc.preview) {
+      img.src = doc.preview.url;
+      img.style.aspectRatio = String(VK7TV.displayRatio({ r: doc.ratio }));
+    } else {
+      img.style.display = 'none';
+    }
+    img.alt = doc.title;
+    img.title = doc.title;
+    img.loading = 'lazy';
+    img.decoding = 'async';
+    img.draggable = false;
+
+    const fallback = document.createElement('span');
+    fallback.className = 'vk7tv-doc-fallback';
+    fallback.textContent = doc.ext.toUpperCase();
+    fallback.title = doc.title;
+    fallback.style.display = doc.preview ? 'none' : 'flex';
+
+    cell.append(img, fallback);
+    return cell;
+  }
+
+  function docsSnapshot() {
+    if (!DOCS) return null;
+    try {
+      return DOCS.getState();
+    } catch (e) {
+      return null;
+    }
+  }
+
+  function docsCountText() {
+    const st = docsSnapshot();
+    if (!st || st.status === 'idle') return '…';
+    if (!st.totalDocuments && (st.status === 'error' || st.status === 'unauthorized')) {
+      return '—';
+    }
+    if (st.status === 'loading' && !st.totalDocuments) return '…';
+    return `${st.count}${st.partial ? '+' : ''}`;
+  }
+
+  function docsStatusText() {
+    const st = docsSnapshot();
+    if (!st) return 'Не удалось загрузить файлы';
+    if (st.status === 'unauthorized') {
+      return 'Не удалось получить авторизацию VK. Открой VK под своим аккаунтом и повтори загрузку.';
+    }
+    if (st.error) {
+      if (st.error.kind === 'auth') {
+        return 'Не удалось получить авторизацию VK. Открой VK под своим аккаунтом и повтори загрузку.';
+      }
+      if (st.error.search && st.totalDocuments) return 'Поиск выполнен не полностью';
+      if (st.error.message) return st.error.message;
+      return 'Не удалось загрузить файлы';
+    }
+    if (st.query && !st.loaded) return 'Поиск по остальным файлам…';
+    if (st.query && st.loaded && st.count === 0) return 'Ничего не найдено';
+    if (st.status === 'loading') return 'Загружаем файлы…';
+    if (st.status === 'partial') return 'Показаны не все файлы';
+    if (st.status === 'empty') return 'В документах нет GIF и WEBP';
+    if (st.status === 'ready') return '';
+    return 'Загружаем файлы…';
+  }
+
+  function setDocsCollapsed(next) {
+    docsCollapsed = !!next;
+    if (docsCollapsed) collapsedKeys.add(DOCS_KEY);
+    else collapsedKeys.delete(DOCS_KEY);
+    chrome.storage.local.set({ collapsedGroups: [...collapsedKeys] });
+    if (docsCollapsed) {
+      try {
+        if (DOCS) DOCS.setPaused(true);
+      } catch (e) {}
+      if (docsObserver) docsObserver.disconnect();
+    } else if (DOCS) {
+      try {
+        DOCS.checkAuth();
+        DOCS.setPaused(false);
+      } catch (e) {}
+    }
+    renderDocsSection();
+  }
+
+  function toggleDocs() {
+    setDocsCollapsed(!docsCollapsed);
+    if (docsCollapsed) return;
+    ensureDocsLoad();
+  }
+
+  function ensureDocsLoad() {
+    if (!DOCS || docsCollapsed || !open) return;
+    try {
+      if (DOCS.getState().status === 'unauthorized' && !DOCS.checkAuth()) return;
+      if (searchInput && searchInput.value.trim()) DOCS.loadAll();
+      else DOCS.loadMore();
+    } catch (e) {
+      // сбой загрузки файлов не должен мешать эмоутам
+    }
+  }
+
+  function refreshDocs() {
+    if (!DOCS) return;
+    if (docsCollapsed) setDocsCollapsed(false);
+    try {
+      DOCS.checkAuth();
+      DOCS.setPaused(false);
+      DOCS.refresh().then(queueDocsRender).catch(() => {});
+    } catch (e) {
+      flash('Не удалось обновить файлы');
+    }
+    queueDocsRender();
+  }
+
+  // Пересобираем только секцию файлов: тысячи ячеек 7TV и прокрутка
+  // списка при обновлении документов не должны страдать.
+  function queueDocsRender() {
+    if (docsRenderQueued) return;
+    docsRenderQueued = true;
+    requestAnimationFrame(() => {
+      docsRenderQueued = false;
+      try {
+        renderDocsSection();
+      } catch (e) {
+        // сбой раздела файлов не должен ломать эмоуты
+      }
+    });
+  }
+
+  function buildDocsSection() {
+    const sec = document.createElement('div');
+    sec.className = 'vk7tv-picker-group vk7tv-docs-group';
+    sec._vk7tvDocs = true;
+
+    const head = document.createElement('div');
+    head.className = 'vk7tv-picker-group-title';
+    head.title = 'Свернуть или развернуть файлы';
+    const chevron = document.createElement('span');
+    chevron.className = 'vk7tv-picker-chevron';
+    chevron.textContent = '▾';
+    const name = document.createElement('span');
+    name.className = 'vk7tv-picker-group-name';
+    name.textContent = 'Файлы';
+    const count = document.createElement('span');
+    count.className = 'vk7tv-picker-group-count';
+    count.textContent = docsCountText();
+    const refresh = document.createElement('button');
+    refresh.className = 'vk7tv-docs-refresh';
+    refresh.type = 'button';
+    refresh.textContent = 'Обновить';
+    refresh.title = 'Обновить список файлов';
+    refresh.dataset.action = 'refresh';
+    head.append(chevron, name, count, refresh);
+
+    const status = document.createElement('div');
+    status.className = 'vk7tv-docs-status';
+    const statusText = document.createElement('span');
+    statusText.className = 'vk7tv-docs-status-text';
+    const retry = document.createElement('button');
+    retry.className = 'vk7tv-docs-action';
+    retry.type = 'button';
+    retry.textContent = 'Повторить';
+    retry.style.display = 'none';
+    status.append(statusText, retry);
+
+    const grid = document.createElement('div');
+    grid.className = 'vk7tv-picker-grid vk7tv-docs-grid';
+    const sentinel = document.createElement('div');
+    sentinel.className = 'vk7tv-docs-sentinel';
+
+    sec.append(head, status, grid, sentinel);
+
+    docsSection = sec;
+    docsGrid = grid;
+    docsStatus = status;
+    docsStatus._text = statusText;
+    docsStatus._retry = retry;
+    docsCount = count;
+    docsSentinel = sentinel;
+    docsRenderedQuery = null;
+    docsRenderedGen = -1;
+    docsRenderedKeys = new Set();
+
+    if (!docsObserver) {
+      docsObserver = new IntersectionObserver(
+        (entries) => {
+          if (!open || docsCollapsed || !DOCS) return;
+          if (!entries.some((e) => e.isIntersecting)) return;
+          const st = DOCS.getState();
+          if (st.loaded || st.status === 'unauthorized' || st.paused) return;
+          ensureDocsLoad();
+        },
+        { root: body, rootMargin: '400px 0px' }
+      );
+    }
+
+    if (DOCS && !docsSubscribed) {
+      docsSubscribed = true;
+      DOCS.subscribe(queueDocsRender);
+    }
+    return sec;
+  }
+
+  function renderDocsSection() {
+    if (!docsSection || !docsSection.isConnected) return;
+    const st = docsSnapshot();
+    docsSection.classList.toggle('vk7tv-collapsed', docsCollapsed);
+    if (docsCount) docsCount.textContent = docsCountText();
+
+    if (!docsStatus) return;
+    const retry = docsStatus._retry;
+    if (docsCollapsed) {
+      docsStatus.style.display = 'none';
+      if (docsObserver) docsObserver.disconnect();
+      return;
+    }
+
+    docsStatus.style.display = 'flex';
+    const text = docsStatusText();
+    docsStatus._text.textContent = text;
+    const showRetry =
+      !!st && !st.query && !st.loaded && st.status !== 'unauthorized' && st.status !== 'loading';
+    retry.style.display = showRetry ? '' : 'none';
+    retry.textContent = st && st.status === 'partial' ? 'Догрузить' : 'Повторить';
+    retry.dataset.action = 'retry';
+    if (!text && !showRetry) docsStatus.style.display = 'none';
+
+    if (docsCollapsed) return;
+    renderDocsGrid();
+    observeDocs();
+    if (DOCS && st && st.status === 'idle') ensureDocsLoad();
+  }
+
+  function renderDocsGrid() {
+    const token = ++docsBuildToken;
+    if (!docsGrid) return;
+    if (!DOCS || docsCollapsed) {
+      docsGrid.innerHTML = '';
+      docsRenderedQuery = null;
+      docsRenderedGen = -1;
+      docsRenderedKeys = new Set();
+      return;
+    }
+
+    const st = docsSnapshot();
+    const q = searchInput ? searchInput.value : '';
+    let found = [];
+    try {
+      found = DOCS.filterItems(q);
+    } catch (e) {
+      found = [];
+    }
+    const gen = st ? st.generation : -1;
+    if (docsRenderedQuery !== q || docsRenderedGen !== gen) {
+      if (selCell && selCell.classList.contains('vk7tv-doc-cell')) selectCell(null);
+      docsGrid.innerHTML = '';
+      docsRenderedQuery = q;
+      docsRenderedGen = gen;
+      docsRenderedKeys = new Set();
+    }
+    if (selCell && selCell.classList.contains('vk7tv-doc-cell')) {
+      if (!found.some((d) => d.key === selCell.dataset.key)) selectCell(null);
+    }
+
+    const fresh = found.filter((d) => !docsRenderedKeys.has(d.key));
+    if (!fresh.length) {
+      observeDocs();
+      return;
+    }
+
+    let at = 0;
+    const step = () => {
+      if (token !== docsBuildToken) return;
+      const frag = document.createDocumentFragment();
+      let budget = CHUNK;
+      while (at < fresh.length && budget > 0) {
+        const doc = fresh[at];
+        docsRenderedKeys.add(doc.key);
+        frag.appendChild(makeDocCell(doc));
+        at++;
+        budget--;
+      }
+      docsGrid.appendChild(frag);
+      if (at < fresh.length) requestAnimationFrame(step);
+      else observeDocs();
+    };
+    step();
+  }
+
+  function observeDocs() {
+    if (!docsObserver || !docsSentinel || docsCollapsed || !open) return;
+    docsObserver.disconnect();
+    docsObserver.observe(docsSentinel);
+  }
+
+  function docImageFailed(img) {
+    img.dataset.failed = '1';
+    img.style.display = 'none';
+    const cell = img.parentElement;
+    const fallback = cell && cell.querySelector('.vk7tv-doc-fallback');
+    if (fallback) fallback.style.display = 'flex';
+  }
+
+  function activateCell(cell) {
+    if (cell.classList.contains('vk7tv-doc-cell')) {
+      attachDocFromCell(cell);
+      return;
+    }
+    insertEmote(cell.dataset.name);
+  }
+
+  function flashContextError(context) {
+    const reason = context && context.reason;
+    if (reason === 'editing' || reason === 'unsupported') {
+      flash('Здесь нельзя прикрепить файл — открой обычный диалог');
+    } else if (reason === 'bad-doc') {
+      flash('Не удалось прикрепить файл');
+    } else {
+      flash('Открой диалог в ВК, чтобы прикрепить файл');
+    }
+  }
+
+  function attachDocFromCell(cell) {
+    if (!DOCS) return;
+    const key = cell.dataset.key;
+    if (!key || docsAttaching.has(key)) return;
+    docsAttaching.add(key);
+    cell.classList.add('vk7tv-doc-busy');
+
+    // Контекст берём в момент клика, а не когда дойдёт очередь: иначе
+    // переключение чата до начала операции прикрепило бы файл в новый чат.
+    let contextPromise;
+    try {
+      contextPromise = DOCS.composer.getContext();
+    } catch (e) {
+      contextPromise = Promise.resolve({ ok: false, reason: 'error' });
+    }
+
+    // Разные документы добавляем строго по очереди: ВК меняет один и тот же
+    // черновик, и параллельные dispatch-и могли потерять вложение.
+    const job = docsAttachQueue.then(async () => {
+      let doc = null;
+      try {
+        doc = DOCS.getDocument(key);
+      } catch (e) {
+        doc = null;
+      }
+      if (!doc) {
+        flash('Файл больше не доступен');
+        return;
+      }
+      const context = await contextPromise;
+      if (!context.ok) {
+        flashContextError(context);
+        return;
+      }
+      await attachDocNow(doc, context);
+    });
+    docsAttachQueue = job.catch(() => {});
+    job.finally(() => {
+      docsAttaching.delete(key);
+      cell.classList.remove('vk7tv-doc-busy');
+    });
+  }
+
+  async function attachDocNow(doc, context) {
+    try {
+      if (!DOCS.checkAuth()) {
+        flash('Не удалось получить авторизацию VK. Открой VK под своим аккаунтом и повтори загрузку.');
+        return;
+      }
+
+      // Пока файл ждал своей очереди, могли сменить аккаунт или обновить
+      // список. Прикрепляем только документ, который всё ещё принадлежит
+      // текущей сессии.
+      const current = DOCS.getDocument(doc.key);
+      if (!current) {
+        flash('Файл больше не доступен');
+        return;
+      }
+      doc = current;
+
+      const state = DOCS.getState();
+      if (!context || !context.ok) {
+        flashContextError(context);
+        return;
+      }
+
+      if (state.auth.userId && context.userId && state.auth.userId !== context.userId) {
+        DOCS.checkAuth();
+        flash('Аккаунт сменился — файл не прикреплён');
+        return;
+      }
+
+      const result = await DOCS.composer.attach(context, doc);
+      if (result.ok && result.status === 'added') {
+        flash('Файл прикреплён');
+        return;
+      }
+      if (result.ok && result.status === 'already') {
+        flash('Файл уже прикреплён');
+        return;
+      }
+      if (result.reason === 'stale-context') {
+        flash('Чат сменился — файл не прикреплён');
+        return;
+      }
+      if (result.reason === 'not-added') {
+        flash('Не удалось прикрепить файл — возможно, достигнут лимит вложений');
+        return;
+      }
+      if (result.reason === 'no-fastchat' || result.reason === 'no-peer' || result.reason === 'no-editor') {
+        flash('Открой диалог в ВК, чтобы прикрепить файл');
+        return;
+      }
+      if (result.reason === 'editing' || result.reason === 'unsupported') {
+        flash('Здесь нельзя прикрепить файл — открой обычный диалог');
+        return;
+      }
+      flash('ВК не принял файл — попробуй ещё раз');
+    } catch (e) {
+      flash('ВК не принял файл — попробуй ещё раз');
+    }
+  }
+
   function bindGrid() {
     picker.addEventListener('click', (e) => {
       const star = e.target.closest('.vk7tv-fav');
@@ -451,9 +962,21 @@
         toggleFav(star.parentElement.dataset.name);
         return;
       }
+      const docsAction = e.target.closest('.vk7tv-docs-action, .vk7tv-docs-refresh');
+      if (docsAction) {
+        e.preventDefault();
+        e.stopPropagation();
+        if (docsAction.dataset.action === 'refresh') refreshDocs();
+        else if (DOCS) {
+          DOCS.setPaused(false);
+          DOCS.loadMore();
+        }
+        return;
+      }
       const head = e.target.closest('.vk7tv-picker-group-title');
       if (head) {
         if (justDragged) justDragged = false; // это хвост перетаскивания
+        else if (head.parentElement.classList.contains('vk7tv-docs-group')) toggleDocs();
         else toggleGroup(head.parentElement);
         return;
       }
@@ -464,18 +987,20 @@
         previewShown = false;
         return;
       }
-      insertEmote(cell.dataset.name);
+      activateCell(cell);
     });
 
     // Фокус не забираем: вставка идёт в поле ВК, а перебор стрелками — из
     // поиска, и клик по ячейке не должен его гасить. Уголок ресайза сюда
     // не попадает — иначе поповер перестал бы растягиваться.
     const NO_FOCUS =
-      '.vk7tv-fav, .vk7tv-picker-group-title, .vk7tv-strip-tab, .vk7tv-picker-cell';
+      '.vk7tv-fav, .vk7tv-picker-group-title, .vk7tv-strip-tab, .vk7tv-picker-cell, ' +
+      '.vk7tv-docs-action, .vk7tv-docs-refresh';
 
     picker.addEventListener('pointerdown', (e) => {
       if (e.target.closest(NO_FOCUS)) e.preventDefault();
       if (e.target.closest('.vk7tv-fav')) return; // звезда превью не открывает
+      if (e.target.closest('.vk7tv-docs-action, .vk7tv-docs-refresh')) return;
       const head = e.target.closest('.vk7tv-picker-group-title');
       if (head) {
         if (e.button === 0) dragStart(head, e);
@@ -519,6 +1044,12 @@
         if (!(img instanceof HTMLImageElement)) return;
         const cell = img.parentElement;
         if (!cell || !cell.classList.contains('vk7tv-picker-cell')) return;
+        if (cell.classList.contains('vk7tv-doc-cell')) {
+          // Документ уже есть в VK, даже если превью не загрузилось:
+          // ячейку не удаляем, оставляем расширение файла.
+          if (!img.dataset.failed) docImageFailed(img);
+          return;
+        }
         if (img.dataset.fb) return cell.remove();
         img.dataset.fb = '1';
         const st = window.__vk7tv;
@@ -765,6 +1296,22 @@
     nearObserver.disconnect();
     body.innerHTML = '';
     const q = searchInput.value.trim().toLowerCase();
+    if (DOCS) {
+      try {
+        DOCS.setQuery(q);
+      } catch (e) {
+        // ошибка поиска по файлам не должна оставлять пикер без эмоутов
+      }
+    }
+
+    // «Файлы» всегда первыми: при поиске они раскрываются, чтобы совпадения
+    // по документам были видны сразу.
+    try {
+      body.appendChild(buildDocsSection());
+      renderDocsSection();
+    } catch (e) {
+      // без раздела файлов эмоуты должны остаться рабочими
+    }
 
     const jobs = [];
     let reached = false; // набор, к которому ведём прокрутку, уже встретился
@@ -819,7 +1366,9 @@
         if (pendingReveal && pendingReveal.key === g.key) reached = true;
       }
     }
-    if (!body.firstChild) body.appendChild(emptyNote(q));
+    if (!body.querySelector('.vk7tv-picker-group:not(.vk7tv-docs-group)')) {
+      body.appendChild(emptyNote(q));
+    }
     fillJobs(jobs, token);
   }
 
@@ -1006,6 +1555,21 @@
   });
 
   function applyFilter() {
+    const q = searchInput.value.trim();
+    // Поиск по файлам должен показывать находки сразу, поэтому при первом
+    // вводе раскрываем секцию. Пользователь может свернуть её обратно.
+    if (DOCS && q) {
+      try {
+        DOCS.checkAuth();
+        DOCS.setPaused(false);
+        if (docsCollapsed) {
+          setDocsCollapsed(false);
+          ensureDocsLoad();
+        }
+      } catch (e) {
+        // ошибка раздела файлов не должна ломать поиск эмоутов
+      }
+    }
     filterStrip();
     renderBody();
   }
@@ -1082,6 +1646,21 @@
       positionPicker();
       searchInput.focus();
       revalidate();
+      if (DOCS) {
+        try {
+          DOCS.checkAuth();
+          if (!docsCollapsed) {
+            DOCS.setPaused(false);
+            ensureDocsLoad();
+          }
+        } catch (e) {
+          // сбой файлов не должен закрывать поповер с эмоутами
+        }
+      }
+    } else if (DOCS) {
+      try {
+        DOCS.setPaused(true);
+      } catch (e) {}
     }
   }
 
@@ -1220,11 +1799,25 @@
       widgetPos: null,
       pickerSize: null,
       collapsedGroups: [],
+      docsKnown: false,
       recent: [],
       stripTab: 'recent',
     });
     const { widgetPos, pickerSize } = stored;
     collapsedKeys = new Set(Array.isArray(stored.collapsedGroups) ? stored.collapsedGroups : []);
+    // «Файлы» по умолчанию свёрнуты: открытие панели не должно тянуть
+    // документы. Флаг docsKnown отличает старые настройки от ручного
+    // раскрытия; остальные ключи не перезаписываем.
+    if (!stored.docsKnown) {
+      collapsedKeys.add(DOCS_KEY);
+      docsCollapsed = true;
+      await chrome.storage.local.set({
+        collapsedGroups: [...collapsedKeys],
+        docsKnown: true,
+      });
+    } else {
+      docsCollapsed = collapsedKeys.has(DOCS_KEY);
+    }
     recent = Array.isArray(stored.recent) ? stored.recent : [];
     stripTab = stored.stripTab === 'fav' ? 'fav' : 'recent';
     if (pickerSize) {
