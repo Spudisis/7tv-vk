@@ -14,6 +14,9 @@
   const DOCS_MEDIA = window.VK7TV_DOCS_MEDIA;
   const DOCS_KEY = 'docs:files'; // отдельный ключ: наборы 7TV его не двигают
   const DOC_MEDIA_MARGIN = 100; // запас видимости для паузы/возобновления видео
+  const DOC_DELETE_HOLD_MS = 1000;
+  const DOC_DELETE_HINT = 'Удерживайте 1 секунду, чтобы удалить из документов VK';
+  const DOC_DELETE_DRAFT_WARN = ' Документ уже прикреплён к текущему черновику.';
 
   let widget = null;
   let picker = null;
@@ -68,6 +71,8 @@
   let docsDnd = null;
   let docsDndDepth = 0;
   let docsDndVisible = false;
+  let docHold = null; // одно активное удержание крестика
+  let docsDeleteEpoch = null;
 
   // --- последнее поле ввода ВК: куда вставлять эмоут ---
 
@@ -254,6 +259,7 @@
     searchInput.placeholder = 'Поиск эмоута…';
     // Пересборка сетки на каждую букву — лишняя работа, пока фраза набирается.
     searchInput.addEventListener('input', () => {
+      cancelDocHold('search');
       clearTimeout(filterTimer);
       filterTimer = setTimeout(applyFilter, 120);
     });
@@ -862,6 +868,218 @@
     return cell;
   }
 
+  // --- удаление документа удержанием крестика ---
+
+  function docNow() {
+    return typeof performance !== 'undefined' && typeof performance.now === 'function'
+      ? performance.now()
+      : Date.now();
+  }
+
+  function docHoldCell(hold) {
+    return hold && hold.button ? hold.button.closest('.vk7tv-doc-cell') : null;
+  }
+
+  function cancelDocHold(reason) {
+    const hold = docHold;
+    if (!hold) return;
+    docHold = null;
+    if (hold.timer) clearTimeout(hold.timer);
+    if (hold.raf) cancelAnimationFrame(hold.raf);
+    hold.timer = 0;
+    hold.raf = 0;
+    if (hold.button) {
+      hold.button.classList.remove('vk7tv-doc-holding');
+      hold.button.style.removeProperty('--vk7tv-hold');
+      if (hold.source === 'pointer' && hold.pointerId != null) {
+        try {
+          if (hold.button.hasPointerCapture(hold.pointerId)) {
+            hold.button.releasePointerCapture(hold.pointerId);
+          }
+        } catch (e) {
+          // захват уже потерян
+        }
+      }
+      if (reason === 'outside') {
+        try {
+          hold.button.blur();
+        } catch (e) {
+          // кнопка уже убрана
+        }
+      }
+    }
+    const cell = docHoldCell(hold);
+    if (cell) cell.classList.remove('vk7tv-doc-delete-holding');
+  }
+
+  function paintDocHold(hold) {
+    if (docHold !== hold || !hold.button) return;
+    const elapsed = docNow() - hold.startedAt;
+    const percent = Math.max(0, Math.min(100, (elapsed / DOC_DELETE_HOLD_MS) * 100));
+    hold.button.style.setProperty('--vk7tv-hold', String(percent));
+    if (elapsed < DOC_DELETE_HOLD_MS) {
+      hold.raf = requestAnimationFrame(() => paintDocHold(hold));
+    }
+  }
+
+  function finishDocHold(hold) {
+    if (docHold !== hold) return;
+    const key = hold.key;
+    hold.done = true;
+    cancelDocHold('done');
+    if (!key || !DOCS) return;
+    const state = DOCS.getDeletion(key);
+    if (state && (state.status === 'pending' || state.checking)) return;
+    let result;
+    try {
+      result = DOCS.deleteDocument(key);
+    } catch (e) {
+      result = null;
+    }
+    if (result && typeof result.then === 'function') {
+      result
+        .then((answer) => {
+          if (!answer || answer.ok) return;
+          if (answer.reason === 'stale') flash('Файл больше не доступен');
+          else if (answer.reason === 'auth') flash('Открой VK под своим аккаунтом');
+        })
+        .catch(() => {});
+    }
+  }
+
+  function armDocHold(hold, wait) {
+    hold.timer = setTimeout(() => {
+      if (docHold !== hold) return;
+      const elapsed = docNow() - hold.startedAt;
+      if (elapsed < DOC_DELETE_HOLD_MS) {
+        // Таймер сработал раньше монотонных часов — ждём остаток, а не
+        // начинаем новую полную секунду.
+        armDocHold(hold, DOC_DELETE_HOLD_MS - elapsed);
+        return;
+      }
+      finishDocHold(hold);
+    }, wait == null ? DOC_DELETE_HOLD_MS : Math.max(0, wait));
+  }
+
+  function startDocHold(button, event, source) {
+    if (!button || !DOCS || !open || docsCollapsed) return false;
+    if (docHold) return false;
+    const cell = button.closest('.vk7tv-doc-cell');
+    const key = cell && cell.dataset.key;
+    if (!key) return false;
+    const state = DOCS.getDeletion(key);
+    if (state && (state.status === 'pending' || state.checking)) return false;
+    if (docsAttaching.has(key)) {
+      flash('Файл прикрепляется — удаление недоступно');
+      return false;
+    }
+
+    hidePreview();
+    const hold = {
+      key,
+      button,
+      source,
+      pointerId: null,
+      startedAt: docNow(),
+      timer: 0,
+      raf: 0,
+      done: false,
+    };
+    docHold = hold;
+    button.classList.add('vk7tv-doc-holding');
+    if (cell) cell.classList.add('vk7tv-doc-delete-holding');
+    if (source === 'pointer') {
+      hold.pointerId = event.pointerId;
+      try {
+        button.setPointerCapture(event.pointerId);
+      } catch (e) {
+        // touch может не дать захват до движения
+      }
+    }
+    armDocHold(hold);
+    paintDocHold(hold);
+    warnDraftDoc(button, key);
+    return true;
+  }
+
+  // Предупреждение о текущем черновике не блокирует удаление: ВК не меняет
+  // уже прикреплённые документы, но пользователь должен об этом знать.
+  function warnDraftDoc(button, key) {
+    if (!DOCS || !DOCS.composer || typeof DOCS.composer.getContext !== 'function') return;
+    button.title = DOC_DELETE_HINT;
+    button.setAttribute('aria-label', DOC_DELETE_HINT);
+    let promise;
+    try {
+      promise = DOCS.composer.getContext();
+    } catch (e) {
+      return;
+    }
+    Promise.resolve(promise)
+      .then((context) => {
+        if (!button.isConnected) return;
+        if (!context || !context.ok || !Array.isArray(context.docs)) return;
+        if (!context.docs.includes(key)) return;
+        button.title = DOC_DELETE_HINT + DOC_DELETE_DRAFT_WARN;
+        button.setAttribute('aria-label', button.title);
+      })
+      .catch(() => {});
+  }
+
+  function applyDocDeleteState(cell, state) {
+    if (!cell) return;
+    const button = cell.querySelector('.vk7tv-doc-delete');
+    const status = cell.querySelector('.vk7tv-doc-delete-state');
+    const text = cell.querySelector('.vk7tv-doc-delete-text');
+    const verify = cell.querySelector('.vk7tv-doc-verify');
+    let message = '';
+    if (state) {
+      if (state.status === 'pending') message = 'Удаление…';
+      else if (state.checking) message = 'Проверяем библиотеку…';
+      else if (state.status === 'unknown') message = 'Не удалось подтвердить удаление';
+      else if (state.status === 'error') message = state.message || 'Не удалось удалить';
+    }
+    cell.classList.toggle(
+      'vk7tv-doc-deleting',
+      !!state && (state.status === 'pending' || state.checking)
+    );
+    cell.classList.toggle('vk7tv-doc-delete-error', !!state && state.status === 'error');
+    cell.classList.toggle('vk7tv-doc-delete-unknown', !!state && state.status === 'unknown');
+    if (status) {
+      status.style.display = message ? '' : 'none';
+      status.title = message;
+      status.setAttribute('aria-label', message);
+    }
+    if (text) text.textContent = message;
+    if (button) {
+      button.disabled = !!state && (state.status === 'pending' || state.checking);
+    }
+    if (verify) {
+      verify.style.display = state && state.status === 'unknown' && !state.checking ? '' : 'none';
+    }
+  }
+
+  function refreshDocDeleteStates(st) {
+    if (!docsGrid || !DOCS) return;
+    const map = new Map();
+    const list = st && Array.isArray(st.deletions) ? st.deletions : [];
+    for (const state of list) map.set(state.key, state);
+    for (const cell of docsGrid.querySelectorAll('.vk7tv-doc-cell')) {
+      applyDocDeleteState(cell, map.get(cell.dataset.key) || null);
+    }
+  }
+
+  function syncDocDeleteSession(st) {
+    const epoch = st ? st.accountEpoch || 0 : 0;
+    if (docsDeleteEpoch === null) {
+      docsDeleteEpoch = epoch;
+      return;
+    }
+    if (epoch !== docsDeleteEpoch) {
+      docsDeleteEpoch = epoch;
+      cancelDocHold('account');
+    }
+  }
+
   // Документ — отдельный тип ячейки: у него нет звезды избранного, имени
   // эмоута и правил CDN 7TV. Клик и Enter прикрепляют его к черновику.
   function makeDocCell(doc) {
@@ -898,7 +1116,29 @@
 
     media.append(img, fallback);
     cell.appendChild(media);
+
+    const remove = document.createElement('button');
+    remove.className = 'vk7tv-doc-delete';
+    remove.type = 'button';
+    remove.title = DOC_DELETE_HINT;
+    remove.setAttribute('aria-label', DOC_DELETE_HINT);
+    remove.appendChild(deleteIcon());
+
+    const status = document.createElement('span');
+    status.className = 'vk7tv-doc-delete-state';
+    status.style.display = 'none';
+    const statusText = document.createElement('span');
+    statusText.className = 'vk7tv-doc-delete-text';
+    const verify = document.createElement('button');
+    verify.className = 'vk7tv-doc-verify';
+    verify.type = 'button';
+    verify.textContent = 'Проверить библиотеку';
+    verify.title = 'Прочитать библиотеку с первой страницы';
+    status.append(statusText, verify);
+    cell.append(remove, status);
+
     applyReadyDocMedia(cell, doc);
+    applyDocDeleteState(cell, DOCS ? DOCS.getDeletion(doc.key) : null);
     return cell;
   }
 
@@ -1252,6 +1492,7 @@
 
   function setDocsCollapsed(next) {
     docsCollapsed = !!next;
+    cancelDocHold('collapse');
     if (docsCollapsed) collapsedKeys.add(DOCS_KEY);
     else collapsedKeys.delete(DOCS_KEY);
     chrome.storage.local.set({ collapsedGroups: [...collapsedKeys] });
@@ -1484,6 +1725,10 @@
         return 'В очереди';
       case 'checking':
         return 'Проверка файла';
+      case 'converting':
+        return job.convertedTotal > 0
+          ? `Преобразование в GIF: кадр ${job.convertedFrame} из ${job.convertedTotal}`
+          : 'Преобразование в GIF';
       case 'server':
         return 'Получение сервера VK';
       case 'uploading': {
@@ -1509,6 +1754,13 @@
     }
   }
 
+  function formatBytes(value) {
+    const size = Number(value) || 0;
+    if (size >= 1024 * 1024) return (size / (1024 * 1024)).toFixed(1) + ' МБ';
+    if (size >= 1024) return Math.round(size / 1024) + ' КБ';
+    return size + ' Б';
+  }
+
   function uploadFiltered(job) {
     if (job.stage !== 'success' || !job.docKey || !DOCS) return false;
     const q = searchInput ? searchInput.value.trim().toLowerCase() : '';
@@ -1527,10 +1779,13 @@
     name.className = 'vk7tv-docs-upload-name';
     const stage = document.createElement('span');
     stage.className = 'vk7tv-docs-upload-stage';
+    const hint = document.createElement('span');
+    hint.className = 'vk7tv-docs-upload-hint';
+    hint.style.display = 'none';
     const actions = document.createElement('span');
     actions.className = 'vk7tv-docs-upload-actions';
-    box.append(name, stage, actions);
-    row = { box, name, stage, actions, buttons: new Map() };
+    box.append(name, stage, hint, actions);
+    row = { box, name, stage, hint, actions, buttons: new Map() };
     docsUploadRows.set(id, row);
     return row;
   }
@@ -1572,15 +1827,25 @@
       const row = uploadRow(job.id);
       if (!row.box.isConnected) docsUploadsBox.appendChild(row.box);
       row.name.textContent = job.name;
-      row.name.title = job.name;
+      row.name.title =
+        (job.originalName && job.originalName !== job.name
+          ? job.originalName + ' → '
+          : '') +
+        job.name +
+        (job.size ? ' · ' + formatBytes(job.size) : '');
       let text = uploadStageText(job);
       const filtered = uploadFiltered(job);
       if (filtered) text = 'Файл загружен, но скрыт поиском';
       row.stage.textContent = text;
       row.stage.title = text;
+      const hint = job.note || '';
+      row.hint.textContent = hint;
+      row.hint.title = hint;
+      row.hint.style.display = hint ? '' : 'none';
       row.box.classList.toggle('is-error', job.stage === 'error' || job.stage === 'unconfirmed');
       row.box.classList.toggle('is-success', job.stage === 'success' && !filtered);
       row.box.classList.toggle('is-muted', job.stage === 'canceled');
+      row.box.classList.toggle('is-converting', job.stage === 'converting');
 
       for (const button of row.buttons.values()) button.style.display = 'none';
       if (job.canCancel) uploadButton(row, 'cancel', 'Отменить');
@@ -1602,8 +1867,8 @@
       if (job.canDismiss) uploadButton(row, 'dismiss', 'Скрыть');
 
       const announceKey = `${job.stage}|${text}|${job.error ? job.error.message : ''}`;
-      if (job.stage !== 'queued' && job.stage !== 'checking' && job.stage !== 'server' &&
-          job.stage !== 'uploading' && job.stage !== 'saving') {
+      if (job.stage !== 'queued' && job.stage !== 'checking' && job.stage !== 'converting' &&
+          job.stage !== 'server' && job.stage !== 'uploading' && job.stage !== 'saving') {
         if (docsUploadAnnounced.get(job.id) !== announceKey) {
           docsUploadAnnounced.set(job.id, announceKey);
           if (docsUploadsLive) {
@@ -1680,6 +1945,7 @@
     if (!docsSection || !docsSection.isConnected) return;
     const st = docsSnapshot();
     syncDocsMediaSession(st);
+    syncDocDeleteSession(st);
     docsSection.classList.toggle('vk7tv-collapsed', docsCollapsed);
     if (docsCount) docsCount.textContent = docsCountText();
     renderUploadQueue(st);
@@ -1693,7 +1959,7 @@
       return;
     }
 
-    if (st && st.loaded && !st.loading && DOCS && DOCS_MEDIA) {
+    if (st && DOCS && DOCS_MEDIA) {
       try {
         DOCS_MEDIA.retainDocs(docsAccountKey(st), DOCS.getItems());
       } catch (e) {
@@ -1722,6 +1988,7 @@
       observeDocs();
       maybeLoadNext();
     }
+    refreshDocDeleteStates(st);
     if (DOCS && st && st.status === 'idle') ensureDocsLoad();
   }
 
@@ -1729,6 +1996,7 @@
     const token = ++docsBuildToken;
     if (!docsGrid) return;
     if (!DOCS || docsCollapsed) {
+      cancelDocHold('rebuild');
       cleanupDocCells();
       docsGrid.innerHTML = '';
       docsRenderedQuery = null;
@@ -1748,6 +2016,7 @@
     }
     const gen = st ? st.generation : -1;
     if (docsRenderedQuery !== q || docsRenderedGen !== gen) {
+      cancelDocHold('rebuild');
       if (selCell && selCell.classList.contains('vk7tv-doc-cell')) selectCell(null);
       cleanupDocCells();
       docsGrid.innerHTML = '';
@@ -1759,9 +2028,28 @@
       if (!found.some((d) => d.key === selCell.dataset.key)) selectCell(null);
     }
 
+    // Удалённые ключи убираем из уже нарисованной сетки. Раньше инкрементальный
+    // рендер только добавлял карточки, и удалённый документ оставался висеть
+    // до полной пересборки.
+    const present = new Set(found.map((doc) => doc.key));
+    let removed = false;
+    for (const cell of [...docsGrid.querySelectorAll('.vk7tv-doc-cell')]) {
+      const key = cell.dataset.key;
+      if (present.has(key)) continue;
+      removed = true;
+      if (previewCell === cell) hidePreview();
+      if (selCell === cell) selectCell(null);
+      const holdCell = docHoldCell(docHold);
+      if (holdCell === cell) cancelDocHold('removed');
+      cleanupDocCell(cell);
+      cell.remove();
+      docsRenderedKeys.delete(key);
+    }
+
     docsRenderedVersion = st ? st.libraryVersion : -1;
     const fresh = found.filter((d) => !docsRenderedKeys.has(d.key));
     if (!fresh.length) {
+      if (removed) refreshDocDeleteStates(st);
       observeDocs();
       maybeLoadNext();
       return;
@@ -1863,6 +2151,11 @@
     if (!DOCS) return;
     const key = cell.dataset.key;
     if (!key || docsAttaching.has(key)) return;
+    const deletion = DOCS.getDeletion(key);
+    if (deletion && deletion.status === 'pending') {
+      flash('Документ удаляется');
+      return;
+    }
     docsAttaching.add(key);
     cell.classList.add('vk7tv-doc-busy');
 
@@ -1919,6 +2212,12 @@
       }
       doc = current;
 
+      const deletion = DOCS.getDeletion(doc.key);
+      if (deletion && deletion.status === 'pending') {
+        flash('Документ удаляется');
+        return;
+      }
+
       const state = DOCS.getState();
       if (!context || !context.ok) {
         flashContextError(context);
@@ -1964,6 +2263,30 @@
 
   function bindGrid() {
     picker.addEventListener('click', (e) => {
+      const remove = e.target.closest('.vk7tv-doc-delete');
+      if (remove) {
+        e.preventDefault();
+        e.stopPropagation();
+        return;
+      }
+      const verify = e.target.closest('.vk7tv-doc-verify');
+      if (verify) {
+        e.preventDefault();
+        e.stopPropagation();
+        const cell = verify.closest('.vk7tv-doc-cell');
+        const key = cell && cell.dataset.key;
+        if (key && DOCS) {
+          DOCS.verifyDeletion(key)
+            .then((answer) => {
+              if (!answer) return;
+              if (answer.found) flash('Документ не удалён');
+              else if (answer.deleted) flash('Документ удалён из документов VK');
+              else if (answer.reason === 'incomplete') flash('Не удалось проверить библиотеку');
+            })
+            .catch(() => {});
+        }
+        return;
+      }
       const star = e.target.closest('.vk7tv-fav');
       if (star) {
         e.stopPropagation();
@@ -2019,6 +2342,12 @@
     // большое превью. Задержек нет: документы не участвуют в удержании
     // кнопки, и ожидание здесь только мешало.
     picker.addEventListener('pointerover', (e) => {
+      const remove = e.target.closest('.vk7tv-doc-delete');
+      if (remove) {
+        const docCell = remove.closest('.vk7tv-doc-cell');
+        if (docCell && previewCell === docCell) hidePreview();
+        return;
+      }
       const cell = e.target.closest('.vk7tv-doc-cell');
       if (!cell) return;
       if (e.relatedTarget && cell.contains(e.relatedTarget)) return;
@@ -2040,6 +2369,19 @@
     });
 
     picker.addEventListener('pointerdown', (e) => {
+      const remove = e.target.closest('.vk7tv-doc-delete');
+      if (remove) {
+        e.stopPropagation();
+        if (e.button !== 0) return;
+        if (startDocHold(remove, e, 'pointer') && e.pointerType === 'mouse') {
+          e.preventDefault();
+        }
+        return;
+      }
+      if (e.target.closest('.vk7tv-doc-verify')) {
+        e.stopPropagation();
+        return;
+      }
       if (e.target.closest(NO_FOCUS)) e.preventDefault();
       if (e.target.closest('.vk7tv-fav')) return; // звезда превью не открывает
       if (e.target.closest('.vk7tv-docs-action, .vk7tv-docs-refresh, .vk7tv-docs-upload')) {
@@ -2064,6 +2406,118 @@
       clearTimeout(previewTimer);
       previewTimer = setTimeout(() => showPreview(cell), PREVIEW_DELAY);
     });
+
+    // Поиск, прокрутка и пересборка карточки отменяют удержание. Эти
+    // события приходят мимо кнопки, поэтому слушаем их отдельно.
+    picker.addEventListener('pointermove', (e) => {
+      const hold = docHold;
+      if (!hold || hold.source !== 'pointer' || !hold.button) return;
+      if (hold.pointerId != null && e.pointerId !== hold.pointerId) return;
+      const r = hold.button.getBoundingClientRect();
+      if (
+        e.clientX < r.left ||
+        e.clientX > r.right ||
+        e.clientY < r.top ||
+        e.clientY > r.bottom
+      ) {
+        if (docNow() - hold.startedAt >= DOC_DELETE_HOLD_MS) finishDocHold(hold);
+        else cancelDocHold('outside');
+      }
+    });
+    picker.addEventListener(
+      'pointerout',
+      (e) => {
+        const hold = docHold;
+        if (!hold || hold.source !== 'pointer' || hold.button !== e.target) return;
+        if (e.relatedTarget && hold.button.contains(e.relatedTarget)) return;
+        if (docNow() - hold.startedAt >= DOC_DELETE_HOLD_MS) finishDocHold(hold);
+        else cancelDocHold('outside');
+      },
+      true
+    );
+    picker.addEventListener(
+      'lostpointercapture',
+      (e) => {
+        if (docHold && docHold.source === 'pointer' && docHold.button === e.target) {
+          cancelDocHold('capture');
+        }
+      },
+      true
+    );
+    document.addEventListener(
+      'pointerup',
+      (e) => {
+        const hold = docHold;
+        if (!hold || hold.source !== 'pointer') return;
+        if (hold.pointerId != null && e.pointerId !== hold.pointerId) return;
+        if (hold.done) return;
+        // Таймер мог задержаться: секунда по монотонным часам уже прошла,
+        // поэтому отпускание в этот момент не отменяет операцию.
+        if (docNow() - hold.startedAt >= DOC_DELETE_HOLD_MS) finishDocHold(hold);
+        else cancelDocHold('up');
+      },
+      true
+    );
+    document.addEventListener(
+      'pointercancel',
+      (e) => {
+        const hold = docHold;
+        if (!hold || hold.source !== 'pointer') return;
+        if (hold.pointerId != null && e.pointerId !== hold.pointerId) return;
+        cancelDocHold('cancel');
+      },
+      true
+    );
+
+    picker.addEventListener(
+      'keydown',
+      (e) => {
+        const remove = e.target.closest('.vk7tv-doc-delete');
+        if (!remove) return;
+        if (e.key !== ' ' && e.key !== 'Enter' && e.code !== 'Space') return;
+        e.preventDefault();
+        e.stopPropagation();
+        if (e.repeat) return;
+        const hold = docHold;
+        if (hold) return;
+        startDocHold(remove, e, 'keyboard');
+        if (docHold) docHold.keyName = e.key;
+      },
+      true
+    );
+    document.addEventListener(
+      'keyup',
+      (e) => {
+        const hold = docHold;
+        if (!hold || hold.source !== 'keyboard') return;
+        if (hold.keyName && e.key !== hold.keyName) return;
+        if (!hold.done) cancelDocHold('keyup');
+      },
+      true
+    );
+    document.addEventListener(
+      'keydown',
+      (e) => {
+        if (e.key === 'Escape' && docHold) cancelDocHold('escape');
+      },
+      true
+    );
+    picker.addEventListener('focusout', (e) => {
+      const hold = docHold;
+      if (!hold || hold.source !== 'keyboard') return;
+      if (e.target === hold.button) cancelDocHold('focus');
+    });
+    picker.addEventListener(
+      'dblclick',
+      (e) => {
+        if (!e.target.closest('.vk7tv-doc-delete')) return;
+        e.preventDefault();
+        e.stopPropagation();
+      },
+      true
+    );
+
+    body.addEventListener('scroll', () => cancelDocHold('scroll'), { passive: true });
 
     picker.addEventListener('pointermove', dragMove);
     picker.addEventListener('pointerup', dragEnd);
@@ -2178,6 +2632,23 @@
       'M400 317.7h73.9V656c0 4.4 3.6 8 8 8h60c4.4 0 8-3.6 8-8V317.7H624c6.7 0 10.4-7.7 6.3-12.9L518.3 163a8 8 0 0 0-12.6 0l-112 141.7c-4.1 5.3-.4 13 6.3 13M878 626h-60c-4.4 0-8 3.6-8 8v154H214V634c0-4.4-3.6-8-8-8h-60c-4.4 0-8 3.6-8 8v198c0 17.7 14.3 32 32 32h684c17.7 0 32-14.3 32-32V634c0-4.4-3.6-8-8-8'
     );
     svg.append(box, path);
+    return svg;
+  }
+
+  function deleteIcon() {
+    const NS = 'http://www.w3.org/2000/svg';
+    const svg = document.createElementNS(NS, 'svg');
+    svg.setAttribute('viewBox', '0 0 24 24');
+    svg.setAttribute('width', '12');
+    svg.setAttribute('height', '12');
+    svg.setAttribute('aria-hidden', 'true');
+    const path = document.createElementNS(NS, 'path');
+    path.setAttribute('fill', 'none');
+    path.setAttribute('stroke', 'currentColor');
+    path.setAttribute('stroke-width', '2.4');
+    path.setAttribute('stroke-linecap', 'round');
+    path.setAttribute('d', 'M6 6l12 12M18 6L6 18');
+    svg.appendChild(path);
     return svg;
   }
 
@@ -2389,6 +2860,7 @@
   // ячейки-находки, а не все тысячи с последующим display: none.
   function renderBody() {
     const token = ++buildToken; // отменяет незаконченную прошлую сборку
+    cancelDocHold('rerender');
     selCell = null;
     hidePreview();
     nearObserver.disconnect();
@@ -2734,6 +3206,7 @@
 
   function setOpen(next) {
     open = next;
+    if (!open) cancelDocHold('close');
     hidePreview();
     resetDrop();
     picker.style.display = open ? 'flex' : 'none';
@@ -2886,6 +3359,7 @@
   // на месте, поэтому карточки не дёргаются при возврате.
   document.addEventListener('visibilitychange', () => {
     if (document.hidden) {
+      cancelDocHold('hidden');
       pauseDocMedia();
       hidePreview();
       resetDrop();
@@ -2894,9 +3368,11 @@
     }
   });
   window.addEventListener('pagehide', () => {
+    cancelDocHold('unload');
     pauseDocMedia();
     if (DOCS_MEDIA) DOCS_MEDIA.cancelPending();
   });
+  window.addEventListener('blur', () => cancelDocHold('blur'));
 
   window.addEventListener('resize', () => {
     const r = widget.getBoundingClientRect();

@@ -18,6 +18,7 @@
     );
 
     const sizes = [{ type: 's', src: 'https://sun9-1.userapi.com/s.jpg', width: 64, height: 64 }];
+    const nativeFetch = window.fetch.bind(window);
     const cat = {
       owner_id: 42,
       id: 1,
@@ -120,6 +121,29 @@
   </script>
   <script src="../default-emotes.js"></script>
   <script src="../emotes.js"></script>
+  <script src="../webp-parse.js"></script>
+  <script>
+    // Конвертер удерживается в converting, чтобы стенд успел прочитать
+    // строку задания и подсказку до отмены.
+    let converterProgress = null;
+    window.VK7TV_WEBP_CONVERT = {
+      startConversion(opts) {
+        converterProgress = opts.onProgress;
+        let rejectResult;
+        const promise = new Promise((resolve, reject) => {
+          rejectResult = reject;
+        });
+        return {
+          promise,
+          cancel: () => {
+            const err = new Error('canceled');
+            err.kind = 'canceled';
+            rejectResult(err);
+          },
+        };
+      },
+    };
+  </script>
   <script src="../vk-docs.js"></script>
   <script src="../vk-docs-media.js"></script>
   <script src="../picker.js"></script>
@@ -181,6 +205,39 @@
       input.dispatchEvent(new Event('change', { bubbles: true }));
       T.eq('значение input сброшено', input.value, '');
       await T.waitFor('загрузка началась', () => uploadCalls.length === 1);
+
+      // Строка преобразования: подсказка и номер кадра в прогрессе.
+      const animBytes = new Uint8Array(
+        await (await nativeFetch('fixtures/anim-transparent.webp')).arrayBuffer()
+      );
+      const conversionId = window.VK7TV_DOCS.enqueueUploads([
+        new File([animBytes], 'reaction.WEBP', { type: 'image/webp', lastModified: 2 }),
+      ])[0];
+      await T.waitFor(
+        'задание перешло в преобразование',
+        () => window.VK7TV_DOCS.getState().uploads.find((u) => u.id === conversionId).stage === 'converting'
+      );
+      if (converterProgress) converterProgress({ frame: 2, total: 3 });
+      await T.waitFor('прогресс кадров в строке', () => {
+        const row = group().querySelector(
+          '.vk7tv-docs-upload-row[data-upload-id="' + conversionId + '"]'
+        );
+        return row && row.textContent.includes('Преобразование в GIF: кадр 2 из 3');
+      });
+      const conversionRow = group().querySelector(
+        '.vk7tv-docs-upload-row[data-upload-id="' + conversionId + '"]'
+      );
+      T.check(
+        'подсказка о WebP в строке',
+        conversionRow.textContent.includes('WebP будет преобразован в GIF'),
+        conversionRow.textContent
+      );
+      window.VK7TV_DOCS.cancelUpload(conversionId);
+      await T.waitFor(
+        'преобразование отменено',
+        () => window.VK7TV_DOCS.getState().uploads.find((u) => u.id === conversionId).stage === 'canceled'
+      );
+      window.VK7TV_DOCS.dismissUpload(conversionId);
 
       // Лента очереди видна и при свёрнутой сетке.
       xhrMode = 'hold';

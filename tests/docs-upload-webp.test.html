@@ -1,0 +1,362 @@
+<!doctype html>
+<meta charset="utf-8" />
+<title>VK7TV — WebP в GIF в очереди загрузки</title>
+<body>
+  <script src="harness.js"></script>
+  <script src="../webp-parse.js"></script>
+  <script>
+    const T = window.VK7TV_TEST;
+    const AUTH_KEY = '6287487:web_token:login:auth';
+    localStorage.clear();
+    localStorage.setItem(
+      AUTH_KEY,
+      JSON.stringify({
+        access_token: 'test-token',
+        user_id: 42,
+        expires: Math.floor(Date.now() / 1000) + 3600,
+      })
+    );
+
+    const realWorker = (opts) => {
+      let worker;
+      let settled = false;
+      let rejectResult;
+      let cancel;
+      const promise = new Promise((resolve, reject) => {
+        rejectResult = reject;
+        worker = new Worker(new URL('../webp-convert-worker.js', location.href), { type: 'module' });
+        worker.onmessage = (e) => {
+          const msg = e.data || {};
+          if (msg.type === 'progress') {
+            if (opts.onProgress) opts.onProgress({ frame: msg.frame, total: msg.total });
+          } else if (msg.type === 'done') {
+            settled = true;
+            worker.terminate();
+            resolve(msg.bytes);
+          } else if (msg.type === 'error') {
+            settled = true;
+            worker.terminate();
+            const err = new Error(msg.message);
+            err.kind = msg.kind;
+            reject(err);
+          } else if (msg.type === 'canceled') {
+            settled = true;
+            worker.terminate();
+            const err = new Error('canceled');
+            err.kind = 'canceled';
+            reject(err);
+          }
+        };
+        worker.onerror = () => {
+          settled = true;
+          worker.terminate();
+          const err = new Error('worker');
+          err.kind = 'worker';
+          reject(err);
+        };
+        const copy = new Uint8Array(opts.data);
+        worker.postMessage({ type: 'convert', data: copy.buffer }, [copy.buffer]);
+      });
+      cancel = () => {
+        if (settled) return;
+        settled = true;
+        try {
+          worker.terminate();
+        } catch (e) {}
+        const err = new Error('canceled');
+        err.kind = 'canceled';
+        rejectResult(err);
+      };
+      return { promise, cancel };
+    };
+
+    let converterMode = 'real';
+    let converterCalls = 0;
+    let converterCancels = 0;
+    let heldConversion = null;
+    window.VK7TV_WEBP_CONVERT = {
+      startConversion(opts) {
+        converterCalls++;
+        if (converterMode === 'unsupported') {
+          const err = new Error(
+            'Этот браузер не поддерживает преобразование анимированного WebP. Загрузите GIF.'
+          );
+          err.kind = 'unsupported';
+          return { promise: Promise.reject(err), cancel: () => {} };
+        }
+        if (converterMode === 'worker') {
+          return {
+            promise: new Promise((resolve, reject) => {
+              setTimeout(() => {
+                const err = new Error('worker');
+                err.kind = 'worker';
+                reject(err);
+              }, 0);
+            }),
+            cancel: () => {},
+          };
+        }
+        if (converterMode === 'hold') {
+          let rejectResult;
+          let settled = false;
+          const promise = new Promise((resolve, reject) => {
+            rejectResult = reject;
+            heldConversion = {
+              resolve: () => {
+                if (settled) return;
+                settled = true;
+                resolve(new Uint8Array([0x47, 0x49, 0x46]).buffer);
+              },
+            };
+          });
+          return {
+            promise,
+            cancel: () => {
+              if (settled) return;
+              settled = true;
+              converterCancels++;
+              const err = new Error('canceled');
+              err.kind = 'canceled';
+              rejectResult(err);
+            },
+          };
+        }
+        // Небольшая задержка результата, чтобы стенд успел увидеть этап
+        // converting: маленький файл кодируется быстрее опроса стенда.
+        const job = realWorker(opts);
+        const settled = job.promise.then(
+          (value) => ({ ok: true, value }),
+          (error) => ({ ok: false, error })
+        );
+        return {
+          promise: new Promise((resolve, reject) => {
+            setTimeout(() => {
+              settled.then((result) => {
+                if (result.ok) resolve(result.value);
+                else reject(result.error);
+              });
+            }, 80);
+          }),
+          cancel: job.cancel,
+        };
+      },
+    };
+  </script>
+  <script>
+    const preview = [
+      { type: 's', src: 'https://sun9-1.userapi.com/s.png', width: 64, height: 64 },
+    ];
+    const nativeFetch = window.fetch.bind(window);
+    let saveCount = 0;
+    const apiCalls = [];
+    const savedDocs = [];
+    window.fetch = (url, opts) => {
+      const method = String(url).split('/').pop();
+      const body = new URLSearchParams(opts && opts.body);
+      apiCalls.push({ method, body: body.toString() });
+      const reply = (json) =>
+        Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve(json) });
+      if (method === 'docs.get') {
+        return reply({ response: { count: 0, total_count: 0, items: [] } });
+      }
+      if (method === 'docs.getUploadServer') {
+        return reply({ response: { upload_url: 'https://pu.vk.ru/upload_doc.php' } });
+      }
+      if (method === 'docs.save') {
+        const title = body.get('title') || 'file';
+        savedDocs.push(title);
+        return reply({
+          response: {
+            type: 'doc',
+            doc: {
+              owner_id: 42,
+              id: 700 + saveCount++,
+              title,
+              ext: title.slice(title.lastIndexOf('.') + 1).toLowerCase(),
+              type: 4,
+              size: 1,
+              date: 1,
+              url: 'https://vk.ru/doc' + saveCount,
+              preview: { photo: { sizes: preview } },
+            },
+          },
+        });
+      }
+      return Promise.reject(new Error('unexpected ' + method));
+    };
+
+    const uploads = [];
+    const xhrState = { mode: 'ok' };
+    class FakeXHR {
+      constructor() {
+        this.upload = {};
+        this.status = 0;
+        this.responseText = '';
+      }
+      open(method, url) {
+        this.method = method;
+        this.url = url;
+      }
+      send(form) {
+        const file = form.get('file');
+        uploads.push({ url: this.url, method: this.method, form, file, name: file.name, type: file.type, size: file.size });
+        if (xhrState.mode === 'network') {
+          setTimeout(() => this.onerror(), 0);
+          return;
+        }
+        setTimeout(() => {
+          this.upload.onprogress({ lengthComputable: true, loaded: file.size, total: file.size });
+          this.status = 200;
+          this.responseText = JSON.stringify({ file: 'file-' + uploads.length });
+          this.onload();
+        }, 0);
+      }
+      abort() {
+        if (this.onabort) this.onabort();
+      }
+    }
+    window.XMLHttpRequest = FakeXHR;
+
+    async function fixture(name) {
+      const res = await nativeFetch('fixtures/' + name);
+      return new Uint8Array(await res.arrayBuffer());
+    }
+  </script>
+  <script src="../vk-docs.js"></script>
+  <script>
+    T.run(async () => {
+      const DOCS = window.VK7TV_DOCS;
+      const job = (id) => DOCS.getState().uploads.find((u) => u.id === id);
+      const waitJob = (id, stage) =>
+        T.waitFor(`задание ${id}: ${stage}`, () => {
+          const found = job(id);
+          return !!found && found.stage === stage;
+        });
+      const waitError = (id, kind) =>
+        T.waitFor(`ошибка ${id}: ${kind}`, () => {
+          const found = job(id);
+          return !!found && found.stage === 'error' && found.error.kind === kind;
+        });
+      const enqueue = (name, bytes) =>
+        DOCS.enqueueUploads([
+          new File([bytes], name, { type: 'image/webp', lastModified: 1 }),
+        ])[0];
+
+      const staticBytes = await fixture('static.webp');
+      const animBytes = await fixture('anim-transparent.webp');
+      const singleBytes = await fixture('anim-single.webp');
+
+      // Статичный WebP идёт в VK исходным файлом.
+      converterMode = 'real';
+      const staticId = enqueue('static.webp', staticBytes);
+      await waitJob(staticId, 'success');
+      T.eq('статичный WebP не конвертировался', converterCalls, 0);
+      T.eq('статичный WebP отправлен как webp', uploads[0].name, 'static.webp');
+      T.eq('MIME статичного WebP', uploads[0].type, 'image/webp');
+      T.eq('title статичного WebP', savedDocs[0], 'static.webp');
+
+      // Анимированный WebP: подсказка, прогресс, GIF в multipart.
+      const animId = enqueue('reaction.WEBP', animBytes);
+      await waitJob(animId, 'converting');
+      const converting = job(animId);
+      T.check(
+        'подсказка перед конвертацией',
+        converting.note.includes('WebP будет преобразован в GIF'),
+        converting.note
+      );
+      T.eq('этап преобразования виден', converting.stage, 'converting');
+      await waitJob(animId, 'success');
+      T.eq('анимированный WebP конвертирован', converterCalls, 1);
+      const gifUpload = uploads[1];
+      T.eq('multipart: новое имя', gifUpload.name, 'reaction.gif');
+      T.eq('multipart: MIME GIF', gifUpload.type, 'image/gif');
+      const gifHead = new Uint8Array(await gifUpload.file.slice(0, 3).arrayBuffer());
+      T.eq('multipart: содержимое GIF', String.fromCharCode(...gifHead), 'GIF');
+      T.eq('docs.save: имя GIF', savedDocs[1], 'reaction.gif');
+      const animJob = job(animId);
+      T.eq('размер задания стал размером GIF', animJob.size, gifUpload.size);
+      T.eq('исходное имя сохранено', animJob.originalName, 'reaction.WEBP');
+      T.check('исходный размер сохранён отдельно', animJob.size !== animBytes.length, `${animJob.size}`);
+
+      // Один кадр с флагом анимации тоже становится GIF.
+      const singleId = enqueue('single.webp', singleBytes);
+      await waitJob(singleId, 'success');
+      T.eq('один кадр — тоже GIF', uploads[2].name, 'single.gif');
+      T.eq('один кадр — MIME GIF', uploads[2].type, 'image/gif');
+
+      // Сетевая ошибка после конвертации: повтор не конвертирует заново.
+      const callsBeforeRetry = converterCalls;
+      xhrState.mode = 'network';
+      const retryId = enqueue('retry.webp', animBytes);
+      await waitError(retryId, 'network');
+      T.check('сеть: повтор доступен', job(retryId).canRetry, 'да');
+      T.eq('сеть: конвертация была один раз', converterCalls, callsBeforeRetry + 1);
+      xhrState.mode = 'ok';
+      const uploadsBefore = uploads.length;
+      DOCS.retryUpload(retryId);
+      await waitJob(retryId, 'success');
+      T.eq('сеть: повтор не конвертировал заново', converterCalls, callsBeforeRetry + 1);
+      T.eq('сеть: повтор отправил GIF', uploads[uploadsBefore].name, 'retry.gif');
+      T.eq('сеть: MIME повтора', uploads[uploadsBefore].type, 'image/gif');
+
+      // Нет декодера: исходный анимированный WebP не загружается запасным путём.
+      converterMode = 'unsupported';
+      const uploadsBeforeUnsupported = uploads.length;
+      const unsupportedId = enqueue('unsupported.webp', animBytes);
+      await waitError(unsupportedId, 'convert-unsupported');
+      const unsupported = job(unsupportedId);
+      T.eq('нет декодера: повтор не предлагается', unsupported.canRetry, false);
+      T.eq('нет декодера: файл не ушёл в VK', uploads.length, uploadsBeforeUnsupported);
+      T.eq(
+        'нет декодера: понятный текст',
+        unsupported.error.message,
+        'Этот браузер не поддерживает преобразование анимированного WebP. Загрузите GIF.'
+      );
+      DOCS.dismissUpload(unsupportedId);
+
+      // Авария worker: задание можно повторить, очередь продолжает работу.
+      converterMode = 'worker';
+      const workerId = enqueue('worker.webp', animBytes);
+      await waitError(workerId, 'convert-worker');
+      T.check('авария worker: повтор доступен', job(workerId).canRetry, 'да');
+      T.eq('авария worker: в VK ничего не ушло', uploads.length, uploadsBeforeUnsupported);
+      converterMode = 'real';
+      DOCS.retryUpload(workerId);
+      await waitJob(workerId, 'success');
+      T.eq('после аварии задание продолжилось', uploads.at(-1).name, 'worker.gif');
+
+      // Отмена во время конвертации освобождает задание, очередь идёт дальше.
+      converterMode = 'hold';
+      const cancelId = enqueue('cancel.webp', animBytes);
+      await waitJob(cancelId, 'converting');
+      DOCS.cancelUpload(cancelId);
+      await waitJob(cancelId, 'canceled');
+      T.check('отмена остановила конвертер', converterCancels >= 1, converterCancels);
+      const uploadsBeforeAfter = uploads.length;
+      converterMode = 'real';
+      const afterId = enqueue('after.png', new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]));
+      await waitJob(afterId, 'success');
+      T.eq('после отмены очередь работает', uploads.length, uploadsBeforeAfter + 1);
+      T.eq('следующий файл после отмены', uploads.at(-1).name, 'after.png');
+
+      // Смена аккаунта отменяет текущую конвертацию.
+      converterMode = 'hold';
+      enqueue('account.webp', animBytes);
+      await T.waitFor('конвертация нового аккаунта', () =>
+        DOCS.getState().uploads.some((u) => u.stage === 'converting')
+      );
+      const cancelsBefore = converterCancels;
+      localStorage.setItem(
+        AUTH_KEY,
+        JSON.stringify({
+          access_token: 'other-token',
+          user_id: 99,
+          expires: Math.floor(Date.now() / 1000) + 3600,
+        })
+      );
+      window.dispatchEvent(new StorageEvent('storage', { key: AUTH_KEY }));
+      T.eq('смена аккаунта очистила очередь', DOCS.getState().uploads.length, 0);
+      T.check('конвертер отменён при смене аккаунта', converterCancels > cancelsBefore, converterCancels);
+    });
+  </script>
+</body>

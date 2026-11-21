@@ -1,0 +1,329 @@
+<!doctype html>
+<meta charset="utf-8" />
+<title>VK7TV — удержание крестика и удаление</title>
+<link rel="stylesheet" href="../picker.css" />
+<body style="margin: 0; background: #141519">
+  <div id="draft" contenteditable="true" style="min-height: 20px"></div>
+  <script src="harness.js"></script>
+  <script>
+    const T = window.VK7TV_TEST;
+    const AUTH_KEY = '6287487:web_token:login:auth';
+    localStorage.clear();
+    localStorage.setItem(
+      AUTH_KEY,
+      JSON.stringify({
+        access_token: 'test-token',
+        user_id: 42,
+        expires: Math.floor(Date.now() / 1000) + 3600,
+      })
+    );
+
+    const sizes = [{ type: 's', src: 'https://sun9-1.userapi.com/s.jpg', width: 64, height: 48 }];
+    const docs = [1, 2, 3, 4, 5].map((id) => ({
+      owner_id: 42,
+      id,
+      title: `doc-${id}.png`,
+      ext: 'png',
+      type: 4,
+      size: 1,
+      date: 1,
+      url: `https://vk.ru/doc42_${id}`,
+      preview: { photo: { sizes } },
+    }));
+
+    const deleteCalls = [];
+    let getMode = 'ok';
+    window.fetch = (url, opts) => {
+      const method = String(url).split('/').pop();
+      const body = new URLSearchParams(opts && opts.body);
+      if (method === 'docs.get') {
+        if (getMode === 'fail') {
+          return Promise.resolve({
+            ok: true,
+            status: 200,
+            json: () => Promise.resolve({ error: { error_code: 15 } }),
+          });
+        }
+        return Promise.resolve({
+          ok: true,
+          status: 200,
+          json: () =>
+            Promise.resolve({
+              response: { count: docs.length, total_count: docs.length, items: docs.slice() },
+            }),
+        });
+      }
+      if (method === 'docs.delete') {
+        const owner = Number(body.get('owner_id'));
+        const id = Number(body.get('doc_id'));
+        deleteCalls.push(`${owner}:${id}`);
+        const at = docs.findIndex((d) => d.owner_id === owner && d.id === id);
+        if (at >= 0) docs.splice(at, 1);
+        return Promise.resolve({
+          ok: true,
+          status: 200,
+          json: () => Promise.resolve({ response: 1 }),
+        });
+      }
+      return Promise.reject(new Error('unexpected ' + method));
+    };
+
+    const attached = [];
+    window.addEventListener('message', (e) => {
+      if (e.source !== window || e.origin !== location.origin) return;
+      const d = e.data;
+      if (!d || d.__vk7tvDocsBridge !== 1 || d.to !== 'page') return;
+      let result;
+      if (d.type === 'get-context') {
+        result = { ok: true, peerId: '123', userId: 42, docs: attached.slice() };
+      } else if (d.type === 'attach-doc') {
+        const key = `${d.payload.doc.ownerId}:${d.payload.doc.id}`;
+        if (!attached.includes(key)) attached.push(key);
+        result = { ok: true, status: 'added' };
+      } else {
+        result = { ok: false, reason: 'unknown' };
+      }
+      window.postMessage({ __vk7tvDocsBridge: 1, to: 'extension', id: d.id, result }, location.origin);
+    });
+
+    T.install({
+      sync: {
+        enabled: true,
+        useGlobal: false,
+        widget: true,
+        sets: [],
+        customEmotes: {},
+        favorites: [],
+      },
+      local: { setEmotes: {}, globalEmotes: null, recent: [], collapsedGroups: [], stripTab: 'recent' },
+      respond: () => ({}),
+    });
+  </script>
+  <script src="../default-emotes.js"></script>
+  <script src="../emotes.js"></script>
+  <script src="../vk-docs.js"></script>
+  <script src="../vk-docs-media.js"></script>
+  <script src="../picker.js"></script>
+  <script>
+    T.run(async () => {
+      const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+      const group = () => document.querySelector('.vk7tv-docs-group');
+      const cells = () => [...document.querySelectorAll('.vk7tv-doc-cell')];
+      const cell = (key) => document.querySelector(`.vk7tv-doc-cell[data-key="${key}"]`);
+      const cross = (key) => cell(key) && cell(key).querySelector('.vk7tv-doc-delete');
+      const waitDocs = () =>
+        T.waitFor('карточки файлов', () => cells().length === docs.length);
+      const waitDeletes = (count) =>
+        T.waitFor(`запросов удаления: ${count}`, () => deleteCalls.length === count);
+      const point = (el, type, extra) => {
+        const r = el.getBoundingClientRect();
+        return new PointerEvent(type, {
+          bubbles: true,
+          cancelable: true,
+          button: 0,
+          pointerId: 7,
+          pointerType: 'mouse',
+          clientX: r.left + r.width / 2,
+          clientY: r.top + r.height / 2,
+          ...(extra || {}),
+        });
+      };
+      const down = (el, extra) => el.dispatchEvent(point(el, 'pointerdown', extra));
+      const up = (el, extra) => document.dispatchEvent(point(el, 'pointerup', extra));
+
+      await T.waitFor('виджет появился', () => document.querySelector('.vk7tv-widget'));
+      document.dispatchEvent(
+        new KeyboardEvent('keydown', { code: 'KeyE', ctrlKey: true, shiftKey: true, bubbles: true })
+      );
+      await T.waitFor('секция файлов', () => group());
+      group().querySelector('.vk7tv-picker-group-title').click();
+      await waitDocs();
+
+      const first = cross('42:1');
+      T.check('крестик есть на карточке', !!first, 'да');
+      T.eq(
+        'подсказка с удержанием',
+        first.title,
+        'Удерживайте 1 секунду, чтобы удалить из документов VK'
+      );
+      const box = first.getBoundingClientRect();
+      T.check('область нажатия не меньше 24×24', box.width >= 24 && box.height >= 24, `${box.width}×${box.height}`);
+      T.check('крестик доступен с клавиатуры', first.tabIndex >= 0, first.tabIndex);
+
+      // Обычный и двойной клик, ПКМ — без удаления и без прикрепления.
+      first.click();
+      first.dispatchEvent(new MouseEvent('dblclick', { bubbles: true }));
+      first.dispatchEvent(point(first, 'pointerdown', { button: 2 }));
+      await sleep(120);
+      T.eq('клики по крестику не удаляют', deleteCalls.length, 0);
+      T.eq('клики по крестику не прикрепляют', attached.length, 0);
+
+      // Короткое удержание мышью.
+      down(first);
+      await sleep(700);
+      up(first);
+      await sleep(400);
+      T.eq('короткое удержание не удалило', deleteCalls.length, 0);
+      T.check('после отмены нет кольца', !first.classList.contains('vk7tv-doc-holding'), 'да');
+
+      // Уход за границы кнопки отменяет; возврат не продолжает.
+      down(first);
+      await sleep(200);
+      document.querySelector('.vk7tv-picker').dispatchEvent(
+        new PointerEvent('pointermove', {
+          bubbles: true,
+          pointerId: 7,
+          pointerType: 'mouse',
+          clientX: 2000,
+          clientY: 2000,
+        })
+      );
+      await sleep(200);
+      const r1 = first.getBoundingClientRect();
+      document.querySelector('.vk7tv-picker').dispatchEvent(
+        new PointerEvent('pointermove', {
+          bubbles: true,
+          pointerId: 7,
+          pointerType: 'mouse',
+          clientX: r1.left + 2,
+          clientY: r1.top + 2,
+        })
+      );
+      await sleep(700);
+      T.eq('возврат курсора не продолжил удержание', deleteCalls.length, 0);
+
+      // Потеря pointer capture, Escape, blur и скрытие вкладки.
+      for (const [name, cancel] of [
+        ['потеря захвата', () => first.dispatchEvent(new PointerEvent('lostpointercapture', { bubbles: true }))],
+        ['Escape', () => document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))],
+        ['потеря фокуса окна', () => window.dispatchEvent(new Event('blur'))],
+        [
+          'скрытие вкладки',
+          () => {
+            Object.defineProperty(document, 'hidden', { configurable: true, get: () => true });
+            document.dispatchEvent(new Event('visibilitychange'));
+            delete document.hidden;
+          },
+        ],
+      ]) {
+        down(first);
+        await sleep(150);
+        cancel();
+        await sleep(950);
+        T.eq(`отмена: ${name}`, deleteCalls.length, 0);
+      }
+
+      // Поиск, прокрутка и сворачивание раздела отменяют удержание.
+      const search = document.querySelector('.vk7tv-picker-search');
+      down(first);
+      await sleep(150);
+      search.value = 'doc';
+      search.dispatchEvent(new Event('input', { bubbles: true }));
+      await sleep(950);
+      T.eq('поиск отменил удержание', deleteCalls.length, 0);
+      search.value = '';
+      search.dispatchEvent(new Event('input', { bubbles: true }));
+      await waitDocs();
+
+      down(cross('42:1'));
+      await sleep(150);
+      document.querySelector('.vk7tv-picker-body').dispatchEvent(new Event('scroll'));
+      await sleep(950);
+      T.eq('прокрутка отменила удержание', deleteCalls.length, 0);
+
+      down(cross('42:1'));
+      await sleep(150);
+      group().querySelector('.vk7tv-picker-group-title').click();
+      await sleep(950);
+      T.eq('сворачивание отменило удержание', deleteCalls.length, 0);
+      group().querySelector('.vk7tv-picker-group-title').click();
+      await waitDocs();
+
+      // Удержание ровно секунду отправляет один запрос.
+      down(cross('42:1'));
+      await sleep(1080);
+      await waitDeletes(1);
+      T.eq('удержание секунду удалило документ', deleteCalls[0], '42:1');
+      await T.waitFor('карточка удалена', () => !cell('42:1'));
+      T.eq('после удаления не прикрепилось', attached.length, 0);
+
+      // Повторные pointerdown/up во время запроса второй запрос не шлют.
+      // Запрос уже завершился, поэтому проверяем карточку, которой нет.
+      T.eq('повторное удаление недоступно', cross('42:1'), null);
+
+      // Клавиатура: короткое нажатие не удаляет.
+      const second = cross('42:2');
+      second.focus();
+      second.dispatchEvent(new KeyboardEvent('keydown', { key: ' ', code: 'Space', bubbles: true }));
+      await sleep(300);
+      document.dispatchEvent(new KeyboardEvent('keyup', { key: ' ', code: 'Space', bubbles: true }));
+      await sleep(800);
+      T.eq('короткий Space не удалил', deleteCalls.length, 1);
+
+      // Автоповтор не запускает второе удержание.
+      second.dispatchEvent(
+        new KeyboardEvent('keydown', { key: ' ', code: 'Space', bubbles: true, repeat: true })
+      );
+      await sleep(1100);
+      T.eq('автоповтор не удалил', deleteCalls.length, 1);
+
+      // Space на секунду удаляет.
+      second.dispatchEvent(new KeyboardEvent('keydown', { key: ' ', code: 'Space', bubbles: true }));
+      await sleep(1080);
+      await waitDeletes(2);
+      T.eq('Space удалил документ', deleteCalls[1], '42:2');
+      document.dispatchEvent(new KeyboardEvent('keyup', { key: ' ', code: 'Space', bubbles: true }));
+      await T.waitFor('карточка 42:2 удалена', () => !cell('42:2'));
+
+      // Touch/pen: удержание работает так же; прокрутка отменяет.
+      const third = cross('42:3');
+      down(third, { pointerType: 'touch' });
+      await sleep(150);
+      document.querySelector('.vk7tv-picker-body').dispatchEvent(new Event('scroll'));
+      await sleep(950);
+      T.eq('прокрутка отменила touch-удержание', deleteCalls.length, 2);
+
+      down(cross('42:3'), { pointerType: 'touch' });
+      await sleep(1080);
+      await waitDeletes(3);
+      T.eq('touch-удержание удалило', deleteCalls[2], '42:3');
+      await T.waitFor('карточка 42:3 удалена', () => !cell('42:3'));
+
+      // Подсказка про текущий черновик.
+      const fourth = cross('42:4');
+      attached.push('42:4');
+      down(fourth);
+      await T.waitFor(
+        'предупреждение о черновике',
+        () => fourth.title.includes('уже прикреплён'),
+        1500
+      );
+      T.check(
+        'подсказка сообщает о черновике',
+        fourth.title.includes('Документ уже прикреплён к текущему черновику'),
+        fourth.title
+      );
+      up(fourth);
+      await sleep(200);
+
+      // Закрытие пикера отменяет удержание.
+      down(cross('42:4'));
+      await sleep(150);
+      document.dispatchEvent(new KeyboardEvent('keydown', { code: 'KeyE', ctrlKey: true, shiftKey: true, bubbles: true }));
+      await sleep(950);
+      T.eq('закрытие пикера отменило удержание', deleteCalls.length, 3);
+
+      // Удаление во время поиска: карточка уходит из выдачи.
+      document.dispatchEvent(new KeyboardEvent('keydown', { code: 'KeyE', ctrlKey: true, shiftKey: true, bubbles: true }));
+      await waitDocs();
+      search.value = 'doc-4';
+      search.dispatchEvent(new Event('input', { bubbles: true }));
+      await T.waitFor('поиск оставил одну карточку', () => cells().length === 1);
+      down(cross('42:4'));
+      await sleep(1080);
+      await waitDeletes(4);
+      await T.waitFor('после удаления поиск пуст', () => cells().length === 0);
+      T.eq('документ удалён из поисковой выдачи', deleteCalls[3], '42:4');
+    });
+  </script>
+</body>

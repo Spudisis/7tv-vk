@@ -1,0 +1,282 @@
+<!doctype html>
+<meta charset="utf-8" />
+<title>VK7TV — удаление документов VK</title>
+<body>
+  <script src="harness.js"></script>
+  <script>
+    const T = window.VK7TV_TEST;
+    const AUTH_KEY = '6287487:web_token:login:auth';
+    const authValue = (userId, token) =>
+      JSON.stringify({
+        access_token: token || 'test-token',
+        user_id: userId,
+        expires: Math.floor(Date.now() / 1000) + 3600,
+      });
+    localStorage.clear();
+    localStorage.setItem(AUTH_KEY, authValue(42));
+
+    const preview = [
+      { type: 's', src: 'https://sun9-1.userapi.com/s.png', width: 64, height: 64 },
+    ];
+    const doc = (owner, id, title) => ({
+      owner_id: owner,
+      id,
+      title,
+      ext: 'png',
+      type: 4,
+      size: 10,
+      date: 1,
+      url: `https://vk.ru/doc${owner}_${id}`,
+      preview: { photo: { sizes: preview } },
+    });
+
+    let allDocs = [doc(42, 1, 'one.png'), doc(77, 2, 'other.png'), doc(42, 3, 'three.png')];
+    let deleteMode = 'ok';
+    let heldDelete = null;
+    let failGetFrom = null;
+    const offsets = [];
+    const deleteCalls = [];
+    let deleteBodies = [];
+
+    const reply = (json, status) =>
+      Promise.resolve({
+        ok: (status || 200) < 400,
+        status: status || 200,
+        json: () => Promise.resolve(json),
+      });
+
+    window.fetch = (url, opts) => {
+      const method = String(url).split('/').pop();
+      const body = new URLSearchParams(opts && opts.body);
+      if (method === 'docs.get') {
+        const offset = Number(body.get('offset')) || 0;
+        offsets.push(offset);
+        if (failGetFrom != null && offset >= failGetFrom) {
+          return reply({ error: { error_code: 15, error_msg: 'Access denied' } });
+        }
+        return reply({
+          response: {
+            count: allDocs.length,
+            total_count: allDocs.length,
+            items: allDocs.slice(offset, offset + 50),
+          },
+        });
+      }
+      if (method === 'docs.delete') {
+        deleteCalls.push(body.toString());
+        deleteBodies.push(body);
+        const options = opts || {};
+        if (!options.credentials || options.credentials !== 'omit') {
+          return reply({ error: { error_code: 15, error_msg: 'credentials' } });
+        }
+        if (deleteMode === 'zero') return reply({ response: 0 });
+        if (deleteMode === 'empty') return reply({ response: {} });
+        if (deleteMode === 'invalid') return reply({});
+        if (deleteMode === 'captcha') {
+          return reply({ error: { error_code: 14, error_msg: 'Captcha needed' } });
+        }
+        if (deleteMode === '401' || deleteMode === '403' || deleteMode === '429' || deleteMode === '500') {
+          return reply({}, Number(deleteMode));
+        }
+        if (deleteMode === 'network') return Promise.reject(new Error('network'));
+        if (deleteMode === 'abort') {
+          return Promise.reject(new DOMException('aborted', 'AbortError'));
+        }
+        if (deleteMode === 'hold') {
+          return new Promise((resolve, reject) => {
+            const onAbort = () => reject(new DOMException('aborted', 'AbortError'));
+            if (options.signal) options.signal.addEventListener('abort', onAbort, { once: true });
+            heldDelete = {
+              resolve: () => {
+                if (options.signal) options.signal.removeEventListener('abort', onAbort);
+                resolve(reply({ response: 1 }));
+              },
+            };
+          });
+        }
+        return reply({ response: 1 });
+      }
+      return Promise.reject(new Error('unexpected ' + method));
+    };
+  </script>
+  <script src="../vk-docs.js"></script>
+  <script>
+    T.run(async () => {
+      const DOCS = window.VK7TV_DOCS;
+      const keys = () => DOCS.getItems().map((d) => d.key).join(',');
+      const getDeletion = (key) => DOCS.getDeletion(key);
+      const waitState = (key, status) =>
+        T.waitFor(`состояние ${key}: ${status}`, () => {
+          const state = getDeletion(key);
+          return !!state && state.status === status;
+        });
+      const loadAll = async () => {
+        await DOCS.refresh();
+        await DOCS.loadAll();
+      };
+
+      await loadAll();
+      T.eq('библиотека загружена', keys(), '42:1,77:2,42:3');
+
+      // Успешное удаление: запрос один, карточка остаётся до ответа.
+      deleteMode = 'hold';
+      const pending = DOCS.deleteDocument('42:1');
+      T.eq('во время запроса состояние — ожидание', getDeletion('42:1').status, 'pending');
+      T.check('документ ещё в библиотеке', keys().includes('42:1'), keys());
+      T.check('блокируется повторное удаление', DOCS.isDeleting('42:1'), 'да');
+      const duplicate = DOCS.deleteDocument('42:1');
+      const deleteCountBefore = deleteCalls.length;
+      T.eq('второй вызов не отправляет запрос', deleteCalls.length, deleteCountBefore);
+      T.check('второй вызов отклонён', (await duplicate).reason === 'pending', 'pending');
+      heldDelete.resolve();
+      T.eq('успешное удаление завершилось', (await pending).ok, true);
+      T.eq('документ убран из списка', keys(), '77:2,42:3');
+      T.eq('документ недоступен по ключу', DOCS.getDocument('42:1'), null);
+      T.eq('состояние после успеха снято', getDeletion('42:1'), null);
+      T.eq('запрос docs.delete отправлен', deleteCalls.length, 1);
+      const body = deleteBodies[0];
+      T.eq('owner_id из библиотеки', body.get('owner_id'), '42');
+      T.eq('doc_id из библиотеки', body.get('doc_id'), '1');
+      T.eq('версия API', body.get('v'), '5.289');
+      T.eq('client_id', body.get('client_id'), '6287487');
+      T.eq('access_token в теле', body.get('access_token'), 'test-token');
+      T.eq('после удаления пагинация с нуля', DOCS.getState().rawLoaded, 0);
+
+      // Поздняя страница не возвращает удалённый документ.
+      offsets.length = 0;
+      await DOCS.loadMore();
+      T.eq('поздняя страница не вернула удалённый', keys(), '77:2,42:3');
+
+      // response: 0 — неопределённый результат, а не ошибка загрузки.
+      deleteMode = 'zero';
+      const zero = await DOCS.deleteDocument('77:2');
+      T.eq('response 0 не успех', zero.ok, false);
+      T.eq('response 0 — неопределённость', getDeletion('77:2').status, 'unknown');
+      T.eq(
+        'текст не про загрузку',
+        getDeletion('77:2').message,
+        'Не удалось подтвердить удаление'
+      );
+      T.check('карточка осталась', keys().includes('77:2'), keys());
+
+      // Полная проверка нашла документ — обычная карточка, состояние снято.
+      offsets.length = 0;
+      deleteMode = 'ok';
+      const found = await DOCS.verifyDeletion('77:2');
+      T.eq('проверка нашла документ', found.found, true);
+      T.eq('чтение началось с первой страницы', offsets[0], 0);
+      T.eq('состояние после находки снято', getDeletion('77:2'), null);
+      T.check('документ снова обычный', keys().includes('77:2'), keys());
+
+      // HTTP 200 с ошибкой капчи — текст именно для удаления.
+      deleteMode = 'captcha';
+      const captcha = await DOCS.deleteDocument('42:3');
+      T.eq('капча не успех', captcha.ok, false);
+      T.eq('капча — ошибка', getDeletion('42:3').status, 'error');
+      T.check(
+        'капча просит проверку',
+        getDeletion('42:3').message.includes('проверку'),
+        getDeletion('42:3').message
+      );
+      T.check(
+        'капча не говорит про загрузку',
+        !getDeletion('42:3').message.includes('загрузк'),
+        getDeletion('42:3').message
+      );
+      T.check('карточка осталась после ошибки', keys().includes('42:3'), keys());
+
+      // 401/403/429/5xx — ошибки для удаления, без автоповтора.
+      for (const [mode, status] of [
+        ['401', 'error'],
+        ['403', 'error'],
+        ['429', 'error'],
+        ['500', 'error'],
+      ]) {
+        deleteMode = mode;
+        const before = deleteCalls.length;
+        await DOCS.deleteDocument('42:3');
+        T.eq(`HTTP ${mode} — состояние`, getDeletion('42:3').status, status);
+        T.eq(`HTTP ${mode} — ровно один запрос`, deleteCalls.length, before + 1);
+        T.check(
+          `HTTP ${mode} — текст удаления`,
+          !getDeletion('42:3').message.includes('загрузк'),
+          getDeletion('42:3').message
+        );
+      }
+
+      // Обрыв и abort — неопределённый результат.
+      for (const mode of ['network', 'abort']) {
+        deleteMode = mode;
+        await DOCS.deleteDocument('42:3');
+        T.eq(`${mode} — неопределённость`, getDeletion('42:3').status, 'unknown');
+        T.eq(
+          `${mode} — текст`,
+          getDeletion('42:3').message,
+          'Не удалось подтвердить удаление'
+        );
+      }
+
+      // Неполное чтение не доказывает удаление: состояние остаётся unknown.
+      allDocs = [doc(77, 2, 'other.png'), doc(42, 3, 'three.png'), doc(42, 4, 'four.png')];
+      for (let i = 0; i < 60; i++) allDocs.push(doc(42, 100 + i, `filler-${i}.png`));
+      await loadAll();
+      deleteMode = 'network';
+      await DOCS.deleteDocument('42:4');
+      T.eq('перед проверкой — unknown', getDeletion('42:4').status, 'unknown');
+      failGetFrom = 50;
+      allDocs = allDocs.filter((d) => !(d.owner_id === 42 && d.id === 4));
+      const partial = await DOCS.verifyDeletion('42:4');
+      T.eq('частичное чтение не подтверждает', partial.reason, 'incomplete');
+      T.eq('состояние осталось unknown', getDeletion('42:4').status, 'unknown');
+      T.check('карточка осталась при неполной проверке', keys().includes('42:4'), keys());
+
+      failGetFrom = null;
+      offsets.length = 0;
+      const verified = await DOCS.verifyDeletion('42:4');
+      T.eq('полное чтение подтвердило отсутствие', verified.deleted, true);
+      T.eq('проверка началась с нуля', offsets[0], 0);
+      T.eq('состояние снято после подтверждения', getDeletion('42:4'), null);
+      T.check('подтверждённо удалённый не вернулся', !keys().includes('42:4'), keys());
+
+      // Поздний ответ списка всё равно не возвращает удалённый ключ.
+      allDocs = [doc(77, 2, 'other.png'), doc(42, 3, 'three.png')];
+      await loadAll();
+      allDocs.push(doc(42, 4, 'four.png'));
+      await DOCS.loadMore();
+      T.check('поздний ответ не вернул ключ', !keys().includes('42:4'), keys());
+      allDocs = allDocs.filter((d) => !(d.owner_id === 42 && d.id === 4));
+
+      // Документ с чужим ownerId удаляется тем же API, без проверки на себя.
+      deleteMode = 'ok';
+      const foreign = await DOCS.deleteDocument('77:2');
+      T.eq('чужой ownerId удалён', foreign.ok, true);
+      T.eq('чужой документ убран', keys(), '42:3');
+
+      // Смена аккаунта не переносит состояние операции.
+      allDocs = [doc(99, 10, 'other-account.png')];
+      localStorage.setItem(AUTH_KEY, authValue(99, 'token-99'));
+      window.dispatchEvent(new StorageEvent('storage', { key: AUTH_KEY }));
+      await loadAll();
+      T.eq('библиотека нового аккаунта', keys(), '99:10');
+      deleteMode = 'hold';
+      const accountDelete = DOCS.deleteDocument('99:10');
+      T.eq('ожидание нового аккаунта', getDeletion('99:10').status, 'pending');
+      localStorage.setItem(AUTH_KEY, authValue(42, 'token-42'));
+      window.dispatchEvent(new StorageEvent('storage', { key: AUTH_KEY }));
+      T.eq('смена аккаунта очистила состояние', getDeletion('99:10'), null);
+      T.eq('старый запрос не применился', (await accountDelete).reason, 'stale');
+
+      // Удаление последнего документа — пустое состояние.
+      localStorage.setItem(AUTH_KEY, authValue(99, 'token-99'));
+      window.dispatchEvent(new StorageEvent('storage', { key: AUTH_KEY }));
+      allDocs = [doc(99, 10, 'last.png')];
+      await loadAll();
+      deleteMode = 'ok';
+      await DOCS.deleteDocument('99:10');
+      T.eq('последний документ убран', keys(), '');
+      const st = DOCS.getState();
+      T.eq('счётчик после последнего', st.count, 0);
+      T.eq('статус пустой библиотеки', st.status, 'empty');
+    });
+  </script>
+</body>

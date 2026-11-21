@@ -1,0 +1,142 @@
+<!doctype html>
+<meta charset="utf-8" />
+<title>VK7TV — интеграция в установленном расширении</title>
+<body style="margin: 0; background: #141519">
+  <script>
+    const AUTH_KEY = '6287487:web_token:login:auth';
+    localStorage.clear();
+    localStorage.setItem(
+      AUTH_KEY,
+      JSON.stringify({
+        access_token: 'integration-token',
+        user_id: 42,
+        expires: Math.floor(Date.now() / 1000) + 3600,
+      })
+    );
+
+    const result = { lines: [], ok: true };
+    const check = (name, ok, got) => {
+      result.lines.push((ok ? '  ok  ' : '  FAIL') + ' ' + name + ' — ' + (got == null ? '' : got));
+      if (!ok) result.ok = false;
+    };
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const waitFor = async (what, fn, ms) => {
+      const started = Date.now();
+      while (Date.now() - started < (ms || 8000)) {
+        try {
+          if (fn()) return true;
+        } catch (e) {}
+        await sleep(20);
+      }
+      check(what, false, 'не дождались');
+      return false;
+    };
+    const report = () => {
+      const box = document.createElement('textarea');
+      box.id = 'result';
+      box.textContent = 'RESULT ' + JSON.stringify({ ok: result.ok, lines: result.lines });
+      document.body.appendChild(box);
+    };
+
+    async function run() {
+      await waitFor('виджет расширения появился', () => {
+        const w = document.querySelector('.vk7tv-widget');
+        return w && getComputedStyle(w).display !== 'none';
+      }, 15000);
+      document.dispatchEvent(
+        new KeyboardEvent('keydown', { code: 'KeyE', ctrlKey: true, shiftKey: true, bubbles: true })
+      );
+      await waitFor('пикер открылся', () => {
+        const p = document.querySelector('.vk7tv-picker');
+        return p && p.style.display !== 'none';
+      });
+      const groupTitle = document.querySelector('.vk7tv-docs-group .vk7tv-picker-group-title');
+      check('секция файлов есть', !!groupTitle, groupTitle ? 'да' : 'нет');
+      if (groupTitle) groupTitle.click();
+      await waitFor('серверные документы пришли', () => {
+        const cell = document.querySelector('.vk7tv-doc-cell[data-key="42:1"]');
+        return !!cell;
+      });
+
+      // Анимированный WebP проходит через iframe расширения и worker.
+      const res = await fetch('fixtures/anim-transparent.webp');
+      const bytes = await res.arrayBuffer();
+      const file = new File([bytes], 'reaction.WEBP', { type: 'image/webp', lastModified: 1 });
+      const input = document.querySelector('.vk7tv-docs-upload-input');
+      const dt = new DataTransfer();
+      dt.items.add(file);
+      input.files = dt.files;
+      input.dispatchEvent(new Event('change', { bubbles: true }));
+
+      await waitFor('загрузка дошла до успеха', () => {
+        const row = document.querySelector('.vk7tv-docs-upload-row.is-success');
+        return !!row;
+      }, 20000);
+      const successRow = document.querySelector('.vk7tv-docs-upload-row.is-success');
+      check('анимированный WebP загружен', !!successRow, successRow ? successRow.textContent.trim() : 'нет');
+      if (successRow) {
+        const name = successRow.querySelector('.vk7tv-docs-upload-name');
+        check('в очереди имя GIF', name && name.textContent === 'reaction.gif', name && name.textContent);
+        check(
+          'размер задания — GIF',
+          successRow.querySelector('.vk7tv-docs-upload-name').title.includes('reaction.WEBP → reaction.gif'),
+          successRow.querySelector('.vk7tv-docs-upload-name').title
+        );
+      }
+
+      // Лента загрузок меняет высоту при смене этапа. Убираем её до
+      // удержания, чтобы карточки не сдвинулись под курсором.
+      const dismiss = successRow && successRow.querySelector('[data-upload-action="dismiss"]');
+      if (dismiss) dismiss.click();
+      await waitFor('лента загрузок скрыта', () => !document.querySelector('.vk7tv-docs-upload-row'));
+      // В headless-вкладке requestAnimationFrame может не приходить: секция
+      // пересобирается только по кадру. Сворачивание и раскрытие вызывают
+      // синхронный рендер, как это сделал бы пользователь.
+      const docsHead = document.querySelector('.vk7tv-docs-group .vk7tv-picker-group-title');
+      docsHead.click();
+      docsHead.click();
+      await new Promise((r) => setTimeout(r, 200));
+
+      // Удаление специально созданного тестового документа. Карточка
+      // локальной загрузки стоит первой и не сдвигается от догрузки
+      // серверных страниц.
+      await waitFor('карточка загруженного GIF', () =>
+        !!document.querySelector('.vk7tv-doc-cell[data-name="reaction.gif"]')
+      , 20000);
+      const targetCell = document.querySelector('.vk7tv-doc-cell[data-name="reaction.gif"]');
+      check('карточка загруженного GIF появилась', !!targetCell, targetCell ? 'да' : 'нет');
+      const cross = targetCell && targetCell.querySelector('.vk7tv-doc-delete');
+      check('крестик на карточке', !!cross, cross ? 'да' : 'нет');
+      if (cross) {
+        const r = cross.getBoundingClientRect();
+        const x = r.left + r.width / 2;
+        const y = r.top + r.height / 2;
+        const hit = document.elementFromPoint(x, y);
+        check(
+          'точка нажатия — именно крестик',
+          !!hit && hit.closest('.vk7tv-doc-delete') === cross,
+          hit ? hit.className : 'нет'
+        );
+        await waitFor('карточка удалена после удержания', () =>
+          !document.querySelector('.vk7tv-doc-cell[data-name="reaction.gif"]')
+        , 15000);
+        check(
+          'удалённый документ убран из списка',
+          !document.querySelector('.vk7tv-doc-cell[data-name="reaction.gif"]'),
+          'нет карточки'
+        );
+        check(
+          'серверная карточка осталась',
+          !!document.querySelector('.vk7tv-doc-cell[data-key="42:1"]'),
+          '42:1'
+        );
+      }
+      report();
+    }
+
+    run().catch((e) => {
+      check('интеграционный стенд доработал', false, e && (e.stack || e.message || e));
+      report();
+    });
+  </script>
+</body>

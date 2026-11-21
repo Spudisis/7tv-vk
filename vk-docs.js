@@ -26,6 +26,21 @@
   const MAX_PAGES = 200; // 10 000 документов за один проход, защита от цикла
   const UPLOAD_IDLE_TIMEOUT = 60000; // нет прогресса передачи — запрос снимаем
 
+  const WEBP_PARSER = window.VK7TV_WEBP_PARSE;
+  const WEBP_CONVERT = window.VK7TV_WEBP_CONVERT;
+  const LIMITS = WEBP_PARSER
+    ? WEBP_PARSER.LIMITS
+    : {
+        sourceBytes: 32 * 1024 * 1024,
+        framePixels: 4 * 1000 * 1000,
+        frameCount: 1000,
+        totalPixels: 100 * 1000 * 1000,
+        gifBytes: 50 * 1024 * 1024,
+        timeoutMs: 60000,
+      };
+  const WEBP_HINT =
+    'WebP будет преобразован в GIF; цвета и полупрозрачность могут измениться';
+
   // Форматы, которые VK сохраняет как документ и которые умеет показать
   // пикер. MP4 подтверждён на живом ВК: docs.save возвращает doc с type 6,
   // docs.get отдаёт его в личной библиотеке, штатный dispatch принимает его
@@ -57,6 +72,30 @@
     response: 'VK вернул некорректный ответ. Повтори загрузку.',
     file: 'Не удалось получить файл для загрузки.',
     unconfirmed: 'Не удалось подтвердить сохранение.',
+    'convert-unsupported':
+      'Этот браузер не поддерживает преобразование анимированного WebP. Загрузите GIF.',
+    'convert-limit':
+      'Анимированный WebP превышает лимит преобразования (32 МиБ, 4 млн пикселей на кадр, 1000 кадров или 100 млн пикселей суммарно).',
+    'convert-gif-size': 'Получившийся GIF больше 50 МиБ.',
+    'convert-timeout': 'Преобразование WebP в GIF заняло больше 60 секунд.',
+    'convert-worker': 'Не удалось запустить преобразование WebP в GIF.',
+    'convert-corrupt':
+      'Файл повреждён или его содержимое не совпадает с расширением.',
+    'convert-decode': 'Не удалось декодировать анимированный WebP.',
+    'convert-failed': 'Не удалось преобразовать анимированный WebP в GIF.',
+  };
+
+  const DELETE_MESSAGES = {
+    auth: 'Не удалось подтвердить вход в VK для удаления документа.',
+    access: 'Недостаточно прав для удаления этого документа.',
+    captcha: 'VK просит подтвердить действие. Заверши проверку в VK.',
+    rate: 'VK ограничил частоту удалений. Подожди и повтори.',
+    server: 'VK временно не принял удаление. Повтори позже.',
+    api: 'VK отклонил удаление документа.',
+    network: 'Не удалось подтвердить удаление',
+    timeout: 'Не удалось подтвердить удаление',
+    response: 'Не удалось подтвердить удаление',
+    aborted: 'Не удалось подтвердить удаление',
   };
 
   const listeners = new Set();
@@ -88,6 +127,15 @@
   let refreshing = false;
   const aborts = new Set();
   let abortEpoch = 0;
+
+  // Подтверждённые удаления текущего аккаунта. Карточка не должна
+  // возвращаться ни поздней страницей, ни старым ответом обновления.
+  let deletedKeys = new Set();
+  let deletedKeyCycles = new Map();
+  let readCycle = 0;
+  // key -> { key, status, message, errorKind, doc, accountEpoch, userId,
+  //          ctrl, checking, startedAt }
+  let deletions = new Map();
 
   let uploads = new Map();
   let uploadSeq = 0;
@@ -150,6 +198,11 @@
     generation++;
     accountEpoch++;
     abortCurrent();
+    abortDeletions();
+    deletions = new Map();
+    deletedKeys = new Set();
+    deletedKeyCycles = new Map();
+    readCycle++;
     serverItems = [];
     localUploads = new Map();
     byKey = new Map();
@@ -167,6 +220,20 @@
     inFlight = null;
     inFlightGen = 0;
     rebuildLibrary();
+  }
+
+  // Смена аккаунта и потеря сессии делают поздние ответы удаления
+  // недействительными: запросы обрываются, состояние операций сбрасывается.
+  function abortDeletions() {
+    for (const state of deletions.values()) {
+      if (!state.ctrl) continue;
+      try {
+        state.ctrl.abort();
+      } catch (e) {
+        // запрос уже завершён
+      }
+      state.ctrl = null;
+    }
   }
 
   // Смена пользователя не должна смешивать старую и новую библиотеку.
@@ -446,7 +513,7 @@
     return body.toString();
   }
 
-  const API_METHODS = new Set(['docs.get', 'docs.getUploadServer', 'docs.save']);
+  const API_METHODS = new Set(['docs.get', 'docs.getUploadServer', 'docs.save', 'docs.delete']);
 
   async function apiRequest(method, params, token, opts) {
     if (!API_METHODS.has(method)) throw apiError('api', 'api', false);
@@ -549,12 +616,20 @@
     const merged = [];
     const seen = new Set();
     for (const doc of localUploads.values()) {
-      if (!doc || seen.has(doc.key)) continue;
+      if (!doc || seen.has(doc.key) || deletedKeys.has(doc.key)) continue;
       seen.add(doc.key);
       merged.push(doc);
     }
     for (const doc of serverItems) {
-      if (!doc || seen.has(doc.key)) continue;
+      if (!doc || seen.has(doc.key) || deletedKeys.has(doc.key)) continue;
+      seen.add(doc.key);
+      merged.push(doc);
+    }
+    // Пока результат удаления не подтверждён, карточка остаётся на месте:
+    // иначе частичное обновление библиотеки выглядело бы как успех.
+    for (const state of deletions.values()) {
+      const doc = state.doc;
+      if (!doc || seen.has(doc.key) || deletedKeys.has(doc.key)) continue;
       seen.add(doc.key);
       merged.push(doc);
     }
@@ -570,6 +645,19 @@
     loaded = false;
     replaceOnNextPage = true;
     paginationStale = false;
+    readCycle++;
+  }
+
+  // Исключение снимаем только после полного успешного чтения, начатого
+  // после удаления: пока список не прочитан целиком, отсутствие документа
+  // ничего не доказывает.
+  function clearConfirmedExclusions() {
+    for (const [key, cycle] of [...deletedKeyCycles]) {
+      if (readCycle > cycle && !rawSeen.has(key)) {
+        deletedKeys.delete(key);
+        deletedKeyCycles.delete(key);
+      }
+    }
   }
 
   // Если чтение уже в пути, смещение не трогаем на середине: следующий
@@ -594,6 +682,207 @@
       status = 'partial';
     }
     notify();
+  }
+
+  // --- удаление документов VK ---
+
+  const DELETE_FATAL = new Set(['auth', 'access', 'captcha', 'rate', 'server', 'api']);
+
+  function deletionPublic(state) {
+    return {
+      key: state.key,
+      status: state.status,
+      message: state.message,
+      errorKind: state.errorKind,
+      checking: !!state.checking,
+    };
+  }
+
+  function getDeletion(key) {
+    const state = deletions.get(key);
+    return state ? deletionPublic(state) : null;
+  }
+
+  function isDeleting(key) {
+    const state = deletions.get(key);
+    return !!state && state.status === 'pending';
+  }
+
+  function deletionCurrent(state, key, epoch, userId) {
+    if (deletions.get(key) !== state) return false;
+    if (epoch !== accountEpoch) return false;
+    if (userId && auth.userId && userId !== auth.userId) return false;
+    return true;
+  }
+
+  function dropDocumentKey(key) {
+    serverItems = serverItems.filter((doc) => doc.key !== key);
+    localUploads.delete(key);
+    byKey.delete(key);
+  }
+
+  function applyDeletionSuccess(state, key) {
+    if (deletions.get(key) === state) deletions.delete(key);
+    const cycle = readCycle;
+    deletedKeys.add(key);
+    deletedKeyCycles.set(key, cycle);
+    const wasLoaded = loaded;
+    dropDocumentKey(key);
+    rebuildLibrary();
+    // Смещения серверной библиотеки после удаления сдвинулись: продолжать
+    // со старым offset нельзя, иначе часть документов будет пропущена.
+    markPaginationStale();
+    if (wasLoaded && !items.length) status = 'empty';
+    else if (items.length && status === 'empty') status = 'ready';
+    notify();
+  }
+
+  function setDeletionFailure(state, key, cause) {
+    if (deletions.get(key) !== state) return;
+    let kind = cause && cause.kind ? cause.kind : '';
+    if (!kind) {
+      kind = cause && cause.name === 'AbortError' ? 'aborted' : 'network';
+    }
+    state.ctrl = null;
+    state.errorKind = kind;
+    if (DELETE_FATAL.has(kind)) {
+      state.status = 'error';
+      state.message = DELETE_MESSAGES[kind] || DELETE_MESSAGES.api;
+    } else {
+      state.status = 'unknown';
+      state.message = DELETE_MESSAGES[kind] || DELETE_MESSAGES.network;
+    }
+    notify();
+  }
+
+  // Ровно один запрос на подтверждённое удержание. Повторный вызов, пока
+  // запрос в пути, ничего не отправляет.
+  function deleteDocument(key) {
+    if (typeof key !== 'string' || !key) {
+      return Promise.resolve({ ok: false, reason: 'key' });
+    }
+    const current = deletions.get(key);
+    if (current && current.status === 'pending') {
+      return Promise.resolve({ ok: false, reason: 'pending' });
+    }
+    if (!checkAuth()) {
+      return Promise.resolve({ ok: false, reason: 'auth' });
+    }
+    const doc = byKey.get(key);
+    if (!doc) return Promise.resolve({ ok: false, reason: 'stale' });
+
+    const epoch = accountEpoch;
+    const userId = auth.userId;
+    const state = {
+      key,
+      status: 'pending',
+      message: '',
+      errorKind: '',
+      doc,
+      accountEpoch: epoch,
+      userId,
+      ctrl: null,
+      checking: false,
+    };
+    deletions.set(key, state);
+    rebuildLibrary();
+    notify();
+
+    return apiRequest(
+      'docs.delete',
+      { owner_id: doc.ownerId, doc_id: doc.id },
+      auth.token,
+      {
+        timeout: REQUEST_TIMEOUT,
+        register: (ctrl) => {
+          state.ctrl = ctrl;
+        },
+        unregister: () => {
+          state.ctrl = null;
+        },
+      }
+    )
+      .then((response) => {
+        if (!deletionCurrent(state, key, epoch, userId)) {
+          return { ok: false, reason: 'stale' };
+        }
+        if (response !== 1) {
+          setDeletionFailure(state, key, { kind: 'response' });
+          return { ok: false, reason: 'response' };
+        }
+        applyDeletionSuccess(state, key);
+        return { ok: true };
+      })
+      .catch((e) => {
+        if (!deletionCurrent(state, key, epoch, userId)) {
+          return { ok: false, reason: 'stale' };
+        }
+        setDeletionFailure(state, key, e);
+        return { ok: false, reason: 'failed' };
+      });
+  }
+
+  // После обрыва связи операция могла выполниться на сервере. Отсутствие
+  // документа принимаем только после полного чтения с первой страницы.
+  async function verifyDeletion(key) {
+    const state = deletions.get(key);
+    if (!state || state.status !== 'unknown' || state.checking) {
+      return { ok: false, reason: 'state' };
+    }
+    if (!checkAuth() || deletions.get(key) !== state) {
+      return { ok: false, reason: 'auth' };
+    }
+    const epoch = accountEpoch;
+    const userId = auth.userId;
+    state.checking = true;
+    notify();
+
+    let incomplete = false;
+    try {
+      await refresh();
+      if (!deletionCurrent(state, key, epoch, userId)) {
+        return { ok: false, reason: 'stale' };
+      }
+      if (error || !auth.token) {
+        incomplete = true;
+      } else {
+        await loadAll();
+      }
+    } catch (e) {
+      incomplete = true;
+    }
+
+    if (!deletionCurrent(state, key, epoch, userId)) {
+      return { ok: false, reason: 'stale' };
+    }
+    state.checking = false;
+
+    if (incomplete || !loaded || loading || error) {
+      notify();
+      return { ok: false, reason: 'incomplete' };
+    }
+
+    if (rawSeen.has(key)) {
+      // Документ на месте: возвращаем обычную карточку и снимаем состояние.
+      deletedKeys.delete(key);
+      deletedKeyCycles.delete(key);
+      deletions.delete(key);
+      rebuildLibrary();
+      notify();
+      return { ok: true, found: true };
+    }
+
+    deletedKeys.add(key);
+    deletedKeyCycles.set(key, readCycle);
+    deletions.delete(key);
+    dropDocumentKey(key);
+    rebuildLibrary();
+    notify();
+    return { ok: true, deleted: true };
+  }
+
+  function deletionsState() {
+    return [...deletions.values()].map(deletionPublic);
   }
 
   // --- загрузка библиотеки ---
@@ -710,6 +999,9 @@
           if (!key || rawSeen.has(key)) continue;
           rawSeen.add(key);
           newRaw++;
+          // Подтверждённое удаление не отменяем поздней страницей. Ключ
+          // уже в rawSeen, поэтому повторно ту же страницу не запрашиваем.
+          if (deletedKeys.has(key)) continue;
           const doc = normalizeDoc(raw);
           if (doc) matched.push(doc);
         }
@@ -731,7 +1023,10 @@
             localUploads.set(doc.key, doc);
             continue;
           }
-          if (byKey.has(doc.key)) continue;
+          // Плейсхолдер незавершённого удаления не должен мешать серверной
+          // странице заново положить документ в serverItems: иначе после
+          // проверки он исчезнет из списка, хотя фактически найден.
+          if (byKey.has(doc.key) && !deletions.has(doc.key)) continue;
           byKey.set(doc.key, doc);
           serverItems.push(doc);
           added++;
@@ -742,6 +1037,7 @@
 
         if (rawCount === 0) {
           loaded = true;
+          clearConfirmedExclusions();
           break;
         }
         if (newRaw === 0) {
@@ -750,6 +1046,7 @@
         }
         if (total > 0 && offset >= total) {
           loaded = true;
+          clearConfirmedExclusions();
           break;
         }
 
@@ -830,6 +1127,7 @@
     total = 0;
     rawSeen = new Set();
     loaded = false;
+    readCycle++;
     error = null;
     wantAll = false;
     inFlight = null;
@@ -879,6 +1177,7 @@
       job &&
       (job.stage === 'queued' ||
         job.stage === 'checking' ||
+        job.stage === 'converting' ||
         job.stage === 'server' ||
         job.stage === 'uploading' ||
         job.stage === 'saving')
@@ -893,10 +1192,16 @@
     return {
       id: job.id,
       name: job.name,
+      originalName: job.originalName || job.name,
+      mime: job.mime || '',
       size: job.size,
       stage: job.stage,
       loaded: job.loaded,
       total: job.total,
+      note: job.note || '',
+      converted: !!job.converted,
+      convertedFrame: job.convertedFrame || 0,
+      convertedTotal: job.convertedTotal || 0,
       error: job.error ? { kind: job.error.kind, message: job.error.message } : null,
       canCancel: uploadStageActive(job),
       canRetry: !!job.canRetry,
@@ -951,6 +1256,14 @@
 
   function abortJob(job) {
     if (!job) return;
+    if (job.convertCancel) {
+      try {
+        job.convertCancel('canceled', 'Загрузка отменена');
+      } catch (e) {
+        // конвертер уже завершён
+      }
+      job.convertCancel = null;
+    }
     if (job.xhr) {
       try {
         job.xhr.abort();
@@ -1011,7 +1324,13 @@
       kind !== 'corrupt' &&
       kind !== 'size' &&
       kind !== 'access' &&
-      kind !== 'file'
+      kind !== 'file' &&
+      kind !== 'convert-unsupported' &&
+      kind !== 'convert-limit' &&
+      kind !== 'convert-gif-size' &&
+      kind !== 'convert-corrupt' &&
+      kind !== 'convert-decode' &&
+      kind !== 'convert-failed'
     );
   }
 
@@ -1019,7 +1338,12 @@
     const kind = jobErrorKind(e);
     if (kind === 'canceled') return;
     job.stage = 'error';
-    job.error = { kind, message: UPLOAD_ERRORS[kind] || UPLOAD_ERRORS.response };
+    job.note = '';
+    const fallback = UPLOAD_ERRORS[kind] || UPLOAD_ERRORS.response;
+    job.error = {
+      kind,
+      message: kind.startsWith('convert-') && e && e.message ? e.message : fallback,
+    };
     job.canRetry = canRetryKind(kind);
     job.canDismiss = true;
     job.xhr = null;
@@ -1031,6 +1355,7 @@
 
   function finishUnconfirmed(job, message) {
     job.stage = 'unconfirmed';
+    job.note = '';
     job.error = {
       kind: 'unconfirmed',
       message: message || UPLOAD_ERRORS.unconfirmed,
@@ -1045,6 +1370,7 @@
 
   function finishCanceled(job, message) {
     job.stage = 'canceled';
+    job.note = '';
     job.error = message ? { kind: 'canceled', message } : null;
     job.canRetry = false;
     job.canDismiss = true;
@@ -1128,6 +1454,13 @@
     return ext === detected;
   }
 
+  function gifNameFor(name) {
+    const value = String(name || '');
+    const dot = value.lastIndexOf('.');
+    const base = dot > 0 ? value.slice(0, dot) : value;
+    return (base || 'file') + '.gif';
+  }
+
   async function validateUploadFile(file, name) {
     if (!file || typeof file.size !== 'number') throw uploadError('file');
     if (!file.size) throw uploadError('empty');
@@ -1139,6 +1472,105 @@
     if (!detected) throw uploadError('corrupt');
     if (ext === 'mp4' && !MP4) throw uploadError('format');
     if (!formatMatches(ext, detected)) throw uploadError('corrupt');
+
+    let webp = null;
+    if (detected === 'webp' && WEBP_PARSER) {
+      try {
+        webp = await WEBP_PARSER.inspectFile(file);
+      } catch (e) {
+        if (e && e.code === 'limit') {
+          throw uploadError('convert-limit', UPLOAD_ERRORS['convert-limit']);
+        }
+        throw uploadError('corrupt');
+      }
+    }
+    return { ext, detected, webp };
+  }
+
+  async function convertJob(job, info) {
+    requireUploadAuth(job);
+    job.stage = 'converting';
+    job.error = null;
+    job.canRetry = false;
+    job.canDismiss = false;
+    job.note = WEBP_HINT;
+    job.convertedFrame = 0;
+    job.convertedTotal = info && info.webp ? info.webp.frameCount : 0;
+    notify();
+
+    if (!WEBP_CONVERT) {
+      throw uploadError('convert-unsupported', UPLOAD_ERRORS['convert-unsupported']);
+    }
+
+    let data;
+    try {
+      data = await job.file.arrayBuffer();
+    } catch (e) {
+      throw uploadError('file');
+    }
+    requireUploadAuth(job);
+
+    let conversion;
+    try {
+      conversion = WEBP_CONVERT.startConversion({
+        data,
+        fileSize: job.file.size,
+        onProgress: (progress) => {
+          if (!owned(job) || job.stage !== 'converting') return;
+          job.convertedFrame = Number(progress.frame) || 0;
+          job.convertedTotal = Number(progress.total) || job.convertedTotal;
+          notify();
+        },
+      });
+    } catch (e) {
+      throw uploadError('convert-worker', UPLOAD_ERRORS['convert-worker']);
+    }
+    job.convertCancel = conversion.cancel;
+
+    let buffer;
+    try {
+      buffer = await conversion.promise;
+    } catch (e) {
+      if (!owned(job) || job.stage === 'canceled') throw uploadError('canceled');
+      const code = e && e.kind ? e.kind : 'failed';
+      const kind = 'convert-' + (UPLOAD_ERRORS['convert-' + code] ? code : 'failed');
+      throw uploadError(kind, (e && e.message) || UPLOAD_ERRORS[kind]);
+    } finally {
+      job.convertCancel = null;
+    }
+
+    requireUploadAuth(job);
+    if (!buffer || !buffer.byteLength) {
+      throw uploadError('convert-failed', UPLOAD_ERRORS['convert-failed']);
+    }
+    if (buffer.byteLength > LIMITS.gifBytes) {
+      throw uploadError('convert-gif-size', UPLOAD_ERRORS['convert-gif-size']);
+    }
+
+    const gifName = gifNameFor(job.originalName || job.name);
+    let gifFile;
+    try {
+      gifFile = new File([buffer], gifName, {
+        type: 'image/gif',
+        lastModified: job.file.lastModified || Date.now(),
+      });
+    } catch (e) {
+      throw uploadError('convert-failed', UPLOAD_ERRORS['convert-failed']);
+    }
+    if (!gifFile.size) {
+      throw uploadError('convert-failed', UPLOAD_ERRORS['convert-failed']);
+    }
+
+    // Исходный WebP больше не нужен. Дальше очередь работает только с GIF.
+    job.file = gifFile;
+    job.name = gifName;
+    job.mime = 'image/gif';
+    job.size = gifFile.size;
+    job.total = gifFile.size;
+    job.loaded = 0;
+    job.converted = true;
+    job.note = '';
+    notify();
   }
 
   async function getUploadUrl(job) {
@@ -1413,8 +1845,13 @@
       job.canDismiss = false;
       notify();
       if (!job.file) throw uploadError('file');
-      await validateUploadFile(job.file, job.name);
+      const info = await validateUploadFile(job.file, job.name);
       requireUploadAuth(job);
+
+      if (info.webp && info.webp.animated) {
+        await convertJob(job, info);
+        requireUploadAuth(job);
+      }
 
       const uploadUrl = await getUploadUrl(job);
       requireUploadAuth(job);
@@ -1502,11 +1939,18 @@
       uploads.set(id, {
         id,
         name: file.name,
+        originalName: file.name,
+        originalSize: Number(file.size) || 0,
+        mime: file.type || '',
         size: Number(file.size) || 0,
         stage: 'queued',
         loaded: 0,
         total: Number(file.size) || 0,
         error: null,
+        note: '',
+        converted: false,
+        convertedFrame: 0,
+        convertedTotal: 0,
         canRetry: false,
         canDismiss: false,
         docKey: '',
@@ -1541,6 +1985,9 @@
       uploads.set(id, {
         id,
         name: String(entry.name),
+        originalName: String(entry.name),
+        originalSize: Number(entry.size) || 0,
+        mime: '',
         size: Number(entry.size) || 0,
         stage: 'error',
         loaded: 0,
@@ -1549,6 +1996,10 @@
           kind,
           message: entry.message || UPLOAD_ERRORS[kind] || UPLOAD_ERRORS.file,
         },
+        note: '',
+        converted: false,
+        convertedFrame: 0,
+        convertedTotal: 0,
         canRetry: false,
         canDismiss: true,
         docKey: '',
@@ -1588,11 +2039,16 @@
     if (job.accountEpoch !== uploadEpoch) return false;
     job.stage = 'queued';
     job.error = null;
+    job.note = '';
     job.canRetry = false;
     job.canDismiss = false;
     // При fileId повтор начнётся сразу с docs.save; старый file для этого
     // уже не нужен и был освобождён после передачи.
     if (!job.fileId) job.loaded = 0;
+    if (!job.converted) {
+      job.convertedFrame = 0;
+      job.convertedTotal = 0;
+    }
     updateUploadLifecycle();
     notify();
     pumpUploads();
@@ -1632,6 +2088,7 @@
       libraryVersion,
       auth: { status: auth.status, userId: auth.userId, expires: auth.expires },
       uploads: uploadsState(),
+      deletions: deletionsState(),
       uploadsPaused: uploadAuthHold
         ? { kind: 'auth', message: AUTH_TEXT }
         : null,
@@ -1748,6 +2205,10 @@
     cancelUpload,
     retryUpload,
     dismissUpload,
+    deleteDocument,
+    verifyDeletion,
+    getDeletion,
+    isDeleting,
     formats: FORMATS.slice(),
     mp4: MP4,
   };

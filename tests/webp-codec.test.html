@@ -1,0 +1,425 @@
+<!doctype html>
+<meta charset="utf-8" />
+<title>VK7TV — WebP в GIF, кодек</title>
+<body>
+  <script src="harness.js"></script>
+  <script src="../webp-parse.js"></script>
+  <script>
+    const T = window.VK7TV_TEST;
+    const PARSER = window.VK7TV_WEBP_PARSE;
+
+    async function fixture(name) {
+      const res = await fetch('fixtures/' + name);
+      if (!res.ok) throw new Error('fixture ' + name + ': ' + res.status);
+      return new Uint8Array(await res.arrayBuffer());
+    }
+
+    function convertWithWorker(bytes) {
+      return new Promise((resolve, reject) => {
+        const worker = new Worker(new URL('../webp-convert-worker.js', location.href), {
+          type: 'module',
+        });
+        const progress = [];
+        let settled = false;
+        const done = (fn, value) => {
+          if (settled) return;
+          settled = true;
+          try {
+            worker.terminate();
+          } catch (e) {}
+          fn(value);
+        };
+        worker.onmessage = (e) => {
+          const msg = e.data || {};
+          if (msg.type === 'progress') progress.push({ frame: msg.frame, total: msg.total });
+          else if (msg.type === 'done') done(resolve, { bytes: new Uint8Array(msg.bytes), progress });
+          else if (msg.type === 'error') done(reject, Object.assign(new Error(msg.message), { kind: msg.kind }));
+          else if (msg.type === 'canceled') done(reject, Object.assign(new Error('canceled'), { kind: 'canceled' }));
+        };
+        worker.onerror = (e) => done(reject, new Error('worker: ' + (e.message || 'error')));
+        const copy = bytes.slice();
+        worker.postMessage({ type: 'convert', data: copy.buffer, fileSize: copy.length }, [
+          copy.buffer,
+        ]);
+      });
+    }
+
+    async function decodeGif(bytes, expectedWidth, expectedHeight) {
+      const decoder = new ImageDecoder({ data: bytes, type: 'image/gif' });
+      if (!decoder.complete) await decoder.completed;
+      await decoder.tracks.ready;
+      const track = decoder.tracks.selectedTrack;
+      let width = expectedWidth;
+      let height = expectedHeight;
+      if (!width || !height) {
+        const probe = await decoder.decode({ frameIndex: 0 });
+        width = probe.image.displayWidth;
+        height = probe.image.displayHeight;
+        probe.image.close();
+      }
+      const canvas = new OffscreenCanvas(width, height);
+      const ctx = canvas.getContext('2d', { willReadFrequently: true });
+      const frames = [];
+      for (let i = 0; i < track.frameCount; i++) {
+        const result = await decoder.decode({ frameIndex: i });
+        const frame = result.image;
+        ctx.clearRect(0, 0, width, height);
+        ctx.drawImage(frame, 0, 0);
+        const data = ctx.getImageData(0, 0, width, height).data;
+        frames.push({
+          duration: Number(frame.duration) || 0,
+          pixel: (x, y) => {
+            const at = (y * width + x) * 4;
+            return [data[at], data[at + 1], data[at + 2], data[at + 3]];
+          },
+        });
+        frame.close();
+      }
+      const info = {
+        width,
+        height,
+        count: track.frameCount,
+        repeat: track.repetitionCount,
+        frames,
+      };
+      decoder.close();
+      return info;
+    }
+
+    function near(value, want, delta) {
+      return Math.abs(value - want) <= (delta == null ? 24 : delta);
+    }
+
+    function rgbaNear(got, want, delta) {
+      return (
+        near(got[0], want[0], delta) &&
+        near(got[1], want[1], delta) &&
+        near(got[2], want[2], delta) &&
+        near(got[3], want[3], delta)
+      );
+    }
+
+    function corruptCopy(bytes, mutate) {
+      const copy = new Uint8Array(bytes);
+      mutate(copy);
+      return copy;
+    }
+
+    function findTag(bytes, tag) {
+      const chars = [...tag].map((c) => c.charCodeAt(0));
+      for (let i = 12; i + 4 <= bytes.length - 8; i++) {
+        if (chars.every((c, j) => bytes[i + j] === c)) return i;
+      }
+      return -1;
+    }
+
+    function le32(value) {
+      return [value & 255, (value >>> 8) & 255, (value >>> 16) & 255, (value >>> 24) & 255];
+    }
+
+    function u24(value) {
+      return [value & 255, (value >>> 8) & 255, (value >>> 16) & 255];
+    }
+
+    function riffChunk(tag, payload) {
+      const head = [...tag].map((c) => c.charCodeAt(0)).concat(le32(payload.length));
+      const out = head.concat(payload);
+      if (payload.length & 1) out.push(0);
+      return out;
+    }
+
+    function makeRiff(chunks) {
+      const body = [0x57, 0x45, 0x42, 0x50].concat(...chunks);
+      return new Uint8Array([0x52, 0x49, 0x46, 0x46].concat(le32(body.length), body));
+    }
+
+    function syntheticAnimated(width, height, frames, loop, duration) {
+      const vp8x = riffChunk('VP8X', [0x02, 0, 0, 0].concat(u24(width - 1), u24(height - 1)));
+      const anim = riffChunk('ANIM', [0, 0, 0, 0, loop & 255, (loop >>> 8) & 255]);
+      const frameChunks = [];
+      for (let i = 0; i < frames; i++) {
+        const data = riffChunk('VP8L', [0]);
+        const payload = u24(0)
+          .concat(u24(0), u24(0), u24(0), u24(duration == null ? 10 : duration), [0])
+          .concat(data);
+        frameChunks.push(riffChunk('ANMF', payload));
+      }
+      return makeRiff([vp8x, anim, ...frameChunks]);
+    }
+
+    function largeAnimated(bytes, targetSize) {
+      // Тело файла — один неизвестный JUNK-чанк: inspectFile пропускает его
+      // по размеру и не читает в память.
+      const header = new Uint8Array(bytes);
+      const fileSize = targetSize;
+      const junkSize = fileSize - header.length - 8;
+      const out = new Uint8Array(fileSize);
+      out.set(header, 0);
+      out.set([0x4a, 0x55, 0x4e, 0x4b], header.length);
+      out.set(le32(junkSize), header.length + 4);
+      out.set(le32(fileSize - 8), 4);
+      return out;
+    }
+
+    T.run(async () => {
+      T.check('ImageDecoder доступен', typeof ImageDecoder !== 'undefined', 'да');
+      if (typeof ImageDecoder === 'undefined') return;
+
+      // Статичный WebP остаётся статичным и не требует конвертера.
+      const staticBytes = await fixture('static.webp');
+      const staticInfo = PARSER.parse(staticBytes);
+      T.eq('статичный WebP не анимация', staticInfo.animated, false);
+      const staticFile = new File([staticBytes], 'static.webp', { type: 'image/webp' });
+      const inspected = await PARSER.inspectFile(staticFile);
+      T.eq('inspectFile: статичный WebP', inspected.animated, false);
+
+      // Один кадр с флагом анимации всё равно конвертируется.
+      const single = await fixture('anim-single.webp');
+      T.eq('один ANMF — анимация', PARSER.parse(single).animated, true);
+      const singleOut = await convertWithWorker(single);
+      const singleGif = await decodeGif(singleOut.bytes, 9, 7);
+      T.eq('один кадр: число кадров', singleGif.count, 1);
+      T.eq('один кадр: размеры', singleGif.width + 'x' + singleGif.height, '9x7');
+      T.check('один кадр: прогресс дошёл до 1/1', singleOut.progress.some((p) => p.frame === 1 && p.total === 1), JSON.stringify(singleOut.progress));
+
+      // Lossless + прозрачность + нулевая задержка + бесконечный цикл.
+      const transparent = await fixture('anim-transparent.webp');
+      const transparentInfo = PARSER.parse(transparent);
+      T.eq('transparent: метаданные кадров', transparentInfo.frameCount, 3);
+      const transparentOut = await convertWithWorker(transparent);
+      const transparentGif = await decodeGif(transparentOut.bytes, 12, 10);
+      T.eq('transparent: размеры', transparentGif.width + 'x' + transparentGif.height, '12x10');
+      T.eq('transparent: число кадров', transparentGif.count, 3);
+      T.eq('transparent: бесконечный цикл', transparentGif.repeat, Infinity);
+      T.eq(
+        'transparent: длительности с минимальной 10 мс',
+        transparentGif.frames.map((f) => Math.round(f.duration / 1000)).join(','),
+        '10,60,110'
+      );
+      T.check(
+        'transparent: прозрачный угол первого кадра',
+        transparentGif.frames[0].pixel(11, 9)[3] === 0,
+        transparentGif.frames[0].pixel(11, 9).join(',')
+      );
+      T.check(
+        'transparent: цвет кадра на месте',
+        rgbaNear(transparentGif.frames[0].pixel(1, 1), [220, 40, 40, 255]),
+        transparentGif.frames[0].pixel(1, 1).join(',')
+      );
+      T.check(
+        'полупрозрачность выше 128 стала непрозрачной',
+        transparentGif.frames[1].pixel(2, 2)[3] === 255,
+        transparentGif.frames[1].pixel(2, 2).join(',')
+      );
+      T.check(
+        'бесконечный цикл WebP переведён в GIF',
+        transparentOut.bytes.some((_, i, all) =>
+          String.fromCharCode(...all.slice(i, i + 11)) === 'NETSCAPE2.0'
+        ),
+        'NETSCAPE2.0'
+      );
+
+      // Конечный цикл: WebP 2 проигрывания -> GIF 1 дополнительный повтор.
+      const lossless = await fixture('anim-lossless.webp');
+      const losslessOut = await convertWithWorker(lossless);
+      const losslessGif = await decodeGif(losslessOut.bytes, 14, 12);
+      T.eq('lossless: число кадров', losslessGif.count, 3);
+      T.eq('lossless: конечный цикл', losslessGif.repeat, 1);
+      T.eq('lossless: размеры', losslessGif.width + 'x' + losslessGif.height, '14x12');
+
+      // Длительная пауза: поле задержки GIF 16-битное, значение не должно
+      // завернуться на маленькое.
+      const longFrame = corruptCopy(single, (b) => {
+        const at = findTag(b, 'ANMF');
+        const duration = 700000;
+        b[at + 20] = duration & 255;
+        b[at + 21] = (duration >>> 8) & 255;
+        b[at + 22] = (duration >>> 16) & 255;
+      });
+      const longOut = await convertWithWorker(longFrame);
+      const longGif = await decodeGif(longOut.bytes, 9, 7);
+      T.eq(
+        'длительная пауза ограничена максимумом GIF',
+        Math.round(longGif.frames[0].duration / 1000),
+        655350
+      );
+
+      // Один проход WebP -> GIF без NETSCAPE (иначе браузер зациклит).
+      const lossy = await fixture('anim-lossy.webp');
+      const lossyOut = await convertWithWorker(lossy);
+      const lossyGif = await decodeGif(lossyOut.bytes, 16, 12);
+      T.eq('lossy: число кадров', lossyGif.count, 3);
+      T.eq('lossy: один проход', lossyGif.repeat, 0);
+      T.check(
+        'lossy: нет расширения бесконечного цикла',
+        !lossyOut.bytes.some((_, i, all) =>
+          String.fromCharCode(...all.slice(i, i + 11)) === 'NETSCAPE2.0'
+        ),
+        'без NETSCAPE'
+      );
+
+      // Частичные кадры: полный GIF-кадр должен содержать результат
+      // blending/disposal исходного WebP, без следов предыдущего кадра.
+      const partial = await fixture('anim-partial.webp');
+      const partialOut = await convertWithWorker(partial);
+      const partialGif = await decodeGif(partialOut.bytes, 20, 10);
+      T.eq('partial: число кадров', partialGif.count, 3);
+      T.check(
+        'partial: первый кадр — красный слева',
+        rgbaNear(partialGif.frames[0].pixel(0, 0), [220, 30, 30, 255]),
+        partialGif.frames[0].pixel(0, 0).join(',')
+      );
+      T.check(
+        'partial: второй кадр — синий справа, красный слева',
+        rgbaNear(partialGif.frames[1].pixel(19, 0), [30, 60, 220, 255]) &&
+          rgbaNear(partialGif.frames[1].pixel(0, 0), [220, 30, 30, 255]),
+        partialGif.frames[1].pixel(19, 0).join(',') + ' / ' + partialGif.frames[1].pixel(0, 0).join(',')
+      );
+      T.check(
+        'partial: третий кадр — зелёный поверх красного, синий справа',
+        rgbaNear(partialGif.frames[2].pixel(1, 1), [30, 200, 60, 255]) &&
+          rgbaNear(partialGif.frames[2].pixel(1, 9), [220, 30, 30, 255]) &&
+          rgbaNear(partialGif.frames[2].pixel(19, 0), [30, 60, 220, 255]),
+        [partialGif.frames[2].pixel(1, 1), partialGif.frames[2].pixel(1, 9), partialGif.frames[2].pixel(19, 0)]
+          .map((p) => p.join(','))
+          .join(' / ')
+      );
+
+      // Disposal к фону: синий кадр не должен остаться под следующим.
+      const dispose = await fixture('anim-dispose.webp');
+      const disposeOut = await convertWithWorker(dispose);
+      const disposeGif = await decodeGif(disposeOut.bytes, 20, 10);
+      T.check(
+        'dispose: синий кадр целиком',
+        rgbaNear(disposeGif.frames[1].pixel(0, 0), [30, 60, 220, 255]) &&
+          rgbaNear(disposeGif.frames[1].pixel(19, 9), [30, 60, 220, 255]),
+        disposeGif.frames[1].pixel(0, 0).join(',') + ' / ' + disposeGif.frames[1].pixel(19, 9).join(',')
+      );
+      T.check(
+        'dispose: после очистки нет синего',
+        rgbaNear(disposeGif.frames[2].pixel(1, 1), [30, 200, 60, 255]) &&
+          disposeGif.frames[2].pixel(19, 9)[3] === 0 &&
+          disposeGif.frames[2].pixel(10, 0)[3] === 0,
+        [disposeGif.frames[2].pixel(1, 1), disposeGif.frames[2].pixel(19, 9), disposeGif.frames[2].pixel(10, 0)]
+          .map((p) => p.join(','))
+          .join(' / ')
+      );
+
+      // Повреждённый RIFF и несогласованные признаки анимации.
+      for (const [name, bytes] of [
+        ['обрезанный RIFF', transparent.slice(0, 20)],
+        [
+          'неверный размер RIFF',
+          corruptCopy(transparent, (b) => {
+            b[4] = (b[4] + 1) & 255;
+          }),
+        ],
+        [
+          'ANMF без флага анимации',
+          corruptCopy(single, (b) => {
+            const at = findTag(b, 'VP8X');
+            b[at + 8] &= ~0x02;
+          }),
+        ],
+        [
+          'флаг анимации без ANMF',
+          corruptCopy(single, (b) => {
+            const at = findTag(b, 'ANMF');
+            b[at] = 0x4a;
+            b[at + 1] = 0x55;
+            b[at + 2] = 0x4b;
+            b[at + 3] = 0x4b;
+          }),
+        ],
+        [
+          'размер чанка больше файла',
+          corruptCopy(transparent, (b) => {
+            const at = findTag(b, 'VP8X');
+            b[at + 4] = 0xff;
+            b[at + 5] = 0xff;
+            b[at + 6] = 0xff;
+            b[at + 7] = 0x7f;
+          }),
+        ],
+      ]) {
+        let code = '';
+        try {
+          PARSER.parse(bytes);
+        } catch (e) {
+          code = e.code || e.message;
+        }
+        T.eq('повреждённый файл: ' + name, code, 'corrupt');
+      }
+
+      // Предел площади кадра считается по canvas, до декодирования.
+      const hugeCanvas = corruptCopy(single, (b) => {
+        const at = findTag(b, 'VP8X');
+        const w = 2999;
+        b[at + 12] = w & 255;
+        b[at + 13] = (w >> 8) & 255;
+        b[at + 14] = (w >> 16) & 255;
+        b[at + 15] = w & 255;
+        b[at + 16] = (w >> 8) & 255;
+        b[at + 17] = (w >> 16) & 255;
+      });
+      let hugeCode = '';
+      try {
+        PARSER.parse(hugeCanvas);
+      } catch (e) {
+        hugeCode = e.code || e.message;
+      }
+      T.eq('предел площади кадра', hugeCode, 'limit');
+
+      // Границы лимитов: ровно предел проходит, на байт/кадр больше — нет.
+      const limitValue = (bytes) => {
+        try {
+          return PARSER.parse(bytes).animated ? 'ok' : 'static';
+        } catch (e) {
+          return e.code || e.message;
+        }
+      };
+      T.eq('площадь 4 млн — граница', limitValue(syntheticAnimated(2000, 2000, 1, 0)), 'ok');
+      T.eq('площадь больше 4 млн', limitValue(syntheticAnimated(2001, 2000, 1, 0)), 'limit');
+      T.eq('1000 кадров — граница', limitValue(syntheticAnimated(10, 10, 1000, 0)), 'ok');
+      T.eq('1001 кадр', limitValue(syntheticAnimated(10, 10, 1001, 0)), 'limit');
+      T.eq('100 млн пикселей — граница', limitValue(syntheticAnimated(2000, 2000, 25, 0)), 'ok');
+      T.eq('100 млн пикселей превышены', limitValue(syntheticAnimated(2000, 2000, 26, 0)), 'limit');
+
+      // Исходный WebP 32 МиБ — граница; больше — отказ до декодирования.
+      const baseLarge = syntheticAnimated(10, 10, 3, 0);
+      const exactFile = new File(
+        [largeAnimated(baseLarge, PARSER.LIMITS.sourceBytes)],
+        'exact.webp',
+        { type: 'image/webp' }
+      );
+      const exactInfo = await PARSER.inspectFile(exactFile);
+      T.eq('32 МиБ — граница исходника', exactInfo.animated, true);
+      const overFile = new File(
+        [largeAnimated(baseLarge, PARSER.LIMITS.sourceBytes + 2)],
+        'over.webp',
+        { type: 'image/webp' }
+      );
+      let overCode = '';
+      try {
+        await PARSER.inspectFile(overFile);
+      } catch (e) {
+        overCode = e.code || e.message;
+      }
+      T.eq('WebP больше 32 МиБ', overCode, 'limit');
+
+      // Ошибка конвертера не подменяется загрузкой исходного WebP.
+      let workerError = null;
+      try {
+        await convertWithWorker(transparent.slice(0, 30));
+      } catch (e) {
+        workerError = e;
+      }
+      T.check('битый WebP не даёт готовый GIF', !!workerError, workerError ? workerError.kind : 'нет ошибки');
+      T.check(
+        'ошибка конвертера названа',
+        !!workerError && (workerError.kind === 'corrupt' || workerError.kind === 'decode'),
+        workerError ? workerError.kind : 'нет'
+      );
+    });
+  </script>
+</body>

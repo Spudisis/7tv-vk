@@ -13,12 +13,12 @@ cd "$(dirname "$0")"
 STORE=0
 [ "${1:-}" = "--store" ] && STORE=1
 
-VERSION=$(python3 -c 'import json;print(json.load(open("manifest.json"))["version"])')
+VERSION=$(python3 -c 'import json;print(json.load(open("manifest.json"))["version"])' | tr -d '\r')
 OUT="dist/vk7tv-${VERSION}.zip"
 STAGE="dist/vk7tv"
 
 # все пути, которые манифест обязывает иметь на диске
-REQUIRED=$(python3 - <<'PY'
+REQUIRED=$(python3 - <<'PY' | tr -d '\r'
 import json
 m = json.load(open("manifest.json"))
 files = ["manifest.json"]
@@ -31,6 +31,8 @@ popup = m.get("action", {}).get("default_popup")
 if popup:
     files.append(popup)
 files += list(m.get("icons", {}).values())
+for war in m.get("web_accessible_resources", []):
+    files += war.get("resources", [])
 print("\n".join(dict.fromkeys(files)))
 PY
 )
@@ -48,6 +50,39 @@ done <<< "$REQUIRED"
 mkdir -p dist
 rm -rf "$OUT" "$STAGE"
 mkdir -p "$STAGE"
+# zip/unzip есть не везде (например, в Git Bash на Windows), а Python уже
+# нужен выше. Собираем и проверяем архив им, чтобы build.sh не зависел от
+# внешнего zip.
+pack_zip() { # каталог, архив, префикс внутри архива
+  python3 - "$1" "$2" "$3" <<'PY'
+import os, sys, zipfile
+stage, out, prefix = sys.argv[1:4]
+with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED) as z:
+    for root, _dirs, files in os.walk(stage):
+        for name in files:
+            full = os.path.join(root, name)
+            rel = os.path.relpath(full, stage).replace(os.sep, "/")
+            z.write(full, (prefix + "/" + rel) if prefix else rel)
+PY
+}
+
+has_zip_entry() { # архив, путь
+  python3 - "$1" "$2" <<'PY'
+import sys, zipfile
+with zipfile.ZipFile(sys.argv[1]) as z:
+    sys.exit(0 if sys.argv[2] in z.namelist() else 1)
+PY
+}
+
+list_zip() {
+  python3 - "$1" <<'PY'
+import sys, zipfile
+with zipfile.ZipFile(sys.argv[1]) as z:
+    for name in z.namelist():
+        print("  " + name)
+PY
+}
+
 # Внутри архива всё лежит в папке vk7tv — имя не зависит от версии.
 # Это важно: у распакованного расширения ID считается от пути к папке,
 # поэтому «vk7tv-0.8.1» рядом со старой папкой браузер посчитал бы другим
@@ -62,24 +97,24 @@ git ls-files -z | grep -zv -e '^build\.sh$' -e '^run-tests\.sh$' -e '^\.gitignor
   mkdir -p "$STAGE/$(dirname "$f")"
   cp "$f" "$STAGE/$f"
 done
-(cd dist && zip -qXr "vk7tv-${VERSION}.zip" vk7tv)
+pack_zip "$STAGE" "$OUT" vk7tv
 
 # контрольная проверка: файлы манифеста действительно внутри архива
 while IFS= read -r f; do
   [ -n "$f" ] || continue
-  unzip -l "$OUT" "vk7tv/$f" >/dev/null 2>&1 || { echo "В архиве нет $f" >&2; exit 1; }
+  has_zip_entry "$OUT" "vk7tv/$f" || { echo "В архиве нет $f" >&2; exit 1; }
 done <<< "$REQUIRED"
 
 echo "Готово: $OUT"
-unzip -Z1 "$OUT" | sed 's/^/  /'
+list_zip "$OUT"
 
 # Плоский архив для Chrome Web Store: те же файлы, но в корне zip.
 if [ "$STORE" -eq 1 ]; then
   STORE_OUT="dist/vk7tv-${VERSION}-store.zip"
   rm -f "$STORE_OUT"
-  (cd "$STAGE" && zip -qXr "../vk7tv-${VERSION}-store.zip" .)
-  unzip -l "$STORE_OUT" manifest.json >/dev/null 2>&1 || {
+  pack_zip "$STAGE" "$STORE_OUT" ''
+  has_zip_entry "$STORE_OUT" manifest.json || {
     echo "В store-архиве manifest.json не в корне" >&2; exit 1; }
   echo "Для стора: $STORE_OUT"
-  unzip -Z1 "$STORE_OUT" | sed 's/^/  /'
+  list_zip "$STORE_OUT"
 fi
