@@ -11,7 +11,10 @@
 
   const WIDGET_SIZE = 46;
   const DOCS = window.VK7TV_DOCS;
+  const DOCS_MEDIA = window.VK7TV_DOCS_MEDIA;
   const DOCS_KEY = 'docs:files'; // отдельный ключ: наборы 7TV его не двигают
+  const DOC_HOVER_DELAY = 150; // столько курсор должен задержаться до загрузки анимации
+  const DOC_MEDIA_MARGIN = 100; // запас видимости для паузы/возобновления видео
 
   let widget = null;
   let picker = null;
@@ -41,8 +44,11 @@
   let docsGrid = null;
   let docsStatus = null;
   let docsCount = null;
+  let docsLoadingTail = null;
+  let docsRefresh = null;
   let docsSentinel = null;
   let docsObserver = null;
+  let docsVideoObserver = null;
   let docsCollapsed = true;
   let docsBuildToken = 0;
   let docsRenderQueued = false;
@@ -52,6 +58,10 @@
   let docsRenderedKeys = new Set();
   let docsAttachQueue = Promise.resolve();
   let docsAttaching = new Set();
+  let docsRefreshBusy = false;
+  let docsMediaEpoch = null;
+  let docHoverCell = null;
+  let docHoverTimer = 0;
 
   // --- последнее поле ввода ВК: куда вставлять эмоут ---
 
@@ -303,6 +313,21 @@
       { root: body, rootMargin: '600px 0px' }
     );
 
+    // Видео и крупные анимации файлов играют только в видимой части списка;
+    // при уходе за неё ставим на паузу, при возврате продолжаем с того же места.
+    docsVideoObserver = new IntersectionObserver(
+      (entries) => {
+        for (const e of entries) {
+          const cell = e.target;
+          if (!cell.classList || !cell.classList.contains('vk7tv-doc-cell')) continue;
+          cell._vkVisible = e.isIntersecting;
+          if (!cell._mediaReady) continue;
+          setDocAnimVisible(cell, e.isIntersecting && mediaPlaybackAllowed());
+        }
+      },
+      { root: body, rootMargin: DOC_MEDIA_MARGIN + 'px 0px' }
+    );
+
     foot = document.createElement('div');
     foot.className = 'vk7tv-picker-foot';
     foot.textContent = FOOT_HINT;
@@ -439,16 +464,35 @@
       video.style.display = 'none';
     }
 
-    if (doc.ext === 'gif' && doc.video && video) {
-      img.style.display = 'none';
-      video.style.display = '';
-      video.src = doc.video.url;
-      const play = video.play();
-      if (play && typeof play.catch === 'function') play.catch(() => {});
+    const st = docsSnapshot();
+    const account = docsAccountKey(st);
+    const preferred = mediaSourceFor(doc, false);
+    const prepared = preferred && DOCS_MEDIA ? DOCS_MEDIA.peek(account, doc, preferred) : null;
+    const original = mediaSourceFor(doc, true);
+    const preparedOriginal =
+      original && DOCS_MEDIA ? DOCS_MEDIA.peek(account, doc, original) : null;
+    const ready = (rec) => rec && rec.state === 'ready' && rec.url;
+
+    if (doc.ext === 'gif' && video) {
+      const videoUrl =
+        (preferred && preferred.kind === 'video' && ready(prepared) && prepared.url) ||
+        (doc.video && doc.video.url) ||
+        '';
+      if (videoUrl) {
+        img.style.display = 'none';
+        video.style.display = '';
+        video.src = videoUrl;
+        const play = video.play();
+        if (play && typeof play.catch === 'function') play.catch(() => {});
+      } else if (doc.url) {
+        img.src = ready(preparedOriginal) ? preparedOriginal.url : doc.url;
+      }
     } else if (doc.url) {
       // GIF без видео и WEBP показываем оригиналом: в сетке он не нужен,
       // а при увеличении это единственный способ увидеть анимацию.
-      img.src = doc.url;
+      img.src = ready(prepared) ? prepared.url : doc.url;
+    } else if (doc.preview) {
+      img.src = doc.preview.url;
     }
     placePreview(cell, box);
   }
@@ -529,10 +573,13 @@
     cell.dataset.key = doc.key;
     cell.dataset.name = doc.title;
 
+    const media = document.createElement('span');
+    media.className = 'vk7tv-doc-media';
+
     const img = document.createElement('img');
+    img.className = 'vk7tv-doc-poster';
     if (doc.preview) {
       img.src = doc.preview.url;
-      img.style.aspectRatio = String(VK7TV.displayRatio({ r: doc.ratio }));
     } else {
       img.style.display = 'none';
     }
@@ -548,7 +595,9 @@
     fallback.title = doc.title;
     fallback.style.display = doc.preview ? 'none' : 'flex';
 
-    cell.append(img, fallback);
+    media.append(img, fallback);
+    cell.appendChild(media);
+    applyReadyDocMedia(cell, doc);
     return cell;
   }
 
@@ -561,6 +610,315 @@
     }
   }
 
+  function docsAccountKey(st) {
+    const s = st || docsSnapshot();
+    if (!s) return '';
+    return `${(s.auth && s.auth.userId) || 0}:${s.accountEpoch || 0}`;
+  }
+
+  function mediaSourceFor(doc, forceOriginal) {
+    if (!doc) return null;
+    if (!forceOriginal && doc.ext === 'gif' && doc.video && doc.video.url) {
+      return { kind: 'video', url: doc.video.url, size: doc.video.size || 0 };
+    }
+    if (doc.url) return { kind: 'image', url: doc.url, size: doc.size || 0 };
+    return null;
+  }
+
+  function mediaPlaybackAllowed() {
+    return open && !docsCollapsed && !document.hidden;
+  }
+
+  function docCellInView(cell) {
+    if (!cell || !body) return false;
+    const br = body.getBoundingClientRect();
+    const cr = cell.getBoundingClientRect();
+    return cr.bottom > br.top - DOC_MEDIA_MARGIN && cr.top < br.bottom + DOC_MEDIA_MARGIN;
+  }
+
+  function playDocVideo(video) {
+    if (!video) return;
+    const p = video.play();
+    if (p && typeof p.catch === 'function') p.catch(() => {});
+  }
+
+  // Показ подготовленного медиа и постер — взаимозаменяемые состояния одной
+  // карточки. Скрытие анимации у GIF/WEBP не гарантирует остановку кадров,
+  // поэтому на время паузы возвращаем постер.
+  function setDocAnimVisible(cell, visible) {
+    if (!cell) return;
+    const anim = cell.querySelector('.vk7tv-doc-anim');
+    const poster = cell.querySelector('.vk7tv-doc-poster');
+    const fallback = cell.querySelector('.vk7tv-doc-fallback');
+    if (!cell._mediaReady || !anim) {
+      if (poster) poster.style.display = poster.dataset.failed || !poster.getAttribute('src') ? 'none' : '';
+      if (fallback) {
+        fallback.style.display = poster && !poster.dataset.failed && poster.getAttribute('src') ? 'none' : 'flex';
+      }
+      return;
+    }
+    if (visible) {
+      anim.style.display = '';
+      if (poster) poster.style.display = 'none';
+      if (fallback) fallback.style.display = 'none';
+      if (anim.tagName === 'VIDEO' && mediaPlaybackAllowed()) playDocVideo(anim);
+      return;
+    }
+    anim.style.display = 'none';
+    if (anim.tagName === 'VIDEO') anim.pause();
+    const hasPoster = poster && !poster.dataset.failed && !!poster.getAttribute('src');
+    if (poster) poster.style.display = hasPoster ? '' : 'none';
+    if (fallback) fallback.style.display = hasPoster ? 'none' : 'flex';
+  }
+
+  function observeDocMedia(cell) {
+    if (docsVideoObserver && cell) docsVideoObserver.observe(cell);
+  }
+
+  function pauseDocMedia() {
+    if (!body) return;
+    for (const cell of body.querySelectorAll('.vk7tv-doc-cell')) {
+      if (cell._mediaReady) setDocAnimVisible(cell, false);
+    }
+  }
+
+  function resumeDocMedia() {
+    if (!body) return;
+    for (const cell of body.querySelectorAll('.vk7tv-doc-cell')) {
+      if (!cell._mediaReady) continue;
+      cell._vkVisible = docCellInView(cell);
+      setDocAnimVisible(cell, cell._vkVisible && mediaPlaybackAllowed());
+    }
+  }
+
+  function cleanupDocCell(cell) {
+    if (!cell) return;
+    const key = cell._mediaKey || cell._mediaPending;
+    cell._mediaKey = '';
+    cell._mediaPending = '';
+    cell._mediaReady = false;
+    cell._mediaKind = '';
+    cell._mediaSource = null;
+    cell._mediaAccount = '';
+    if (docsVideoObserver) docsVideoObserver.unobserve(cell);
+    const anim = cell.querySelector('.vk7tv-doc-anim');
+    if (anim) {
+      if (anim.tagName === 'VIDEO') {
+        anim.pause();
+        anim.removeAttribute('src');
+        if (anim.load) anim.load();
+      }
+      anim.remove();
+    }
+    if (key && DOCS_MEDIA) DOCS_MEDIA.release(key);
+    setDocAnimVisible(cell, false);
+  }
+
+  function cleanupDocCells(root) {
+    const scope = root || docsGrid;
+    if (!scope) return;
+    for (const cell of scope.querySelectorAll('.vk7tv-doc-cell')) cleanupDocCell(cell);
+  }
+
+  function handleDocAnimError(cell, kind) {
+    if (!cell) return;
+    const key = cell._mediaKey;
+    const doc = DOCS ? DOCS.getDocument(cell.dataset.key) : null;
+    const anim = cell.querySelector('.vk7tv-doc-anim');
+    if (anim) {
+      if (anim.tagName === 'VIDEO') {
+        anim.pause();
+        anim.removeAttribute('src');
+        if (anim.load) anim.load();
+      }
+      anim.remove();
+    }
+    cell._mediaKey = '';
+    cell._mediaReady = false;
+    if (key && DOCS_MEDIA) {
+      DOCS_MEDIA.markError(key);
+      DOCS_MEDIA.release(key);
+    }
+    // У GIF сначала пробуем видео-превью; если оно не открылось — один раз
+    // переходим на оригинал. Ошибка другого источника уже не даёт цикла.
+    if (kind === 'video' && doc && doc.ext === 'gif' && doc.url && !cell._mediaTriedOriginal) {
+      cell._mediaTriedOriginal = true;
+      activateDocMedia(cell, true);
+      return;
+    }
+    setDocAnimVisible(cell, false);
+  }
+
+  function showDocRecord(cell, doc, source, rec, account, key) {
+    if (!cell || !rec || !rec.url) {
+      if (DOCS_MEDIA) DOCS_MEDIA.release(key);
+      return;
+    }
+    if (cell._mediaKey && cell._mediaKey !== key) cleanupDocCell(cell);
+    if (cell._mediaKey === key) {
+      setDocAnimVisible(cell, cell._mediaReady && cell._vkVisible && mediaPlaybackAllowed());
+      return;
+    }
+
+    const media = cell.querySelector('.vk7tv-doc-media');
+    if (!media) {
+      if (DOCS_MEDIA) DOCS_MEDIA.release(key);
+      return;
+    }
+
+    cell._mediaKey = key;
+    cell._mediaPending = '';
+    cell._mediaReady = false;
+    cell._mediaKind = source.kind;
+    cell._mediaSource = source;
+    cell._mediaAccount = account;
+    cell._mediaTriedOriginal = cell._mediaTriedOriginal || source.kind === 'image';
+
+    const old = cell.querySelector('.vk7tv-doc-anim');
+    if (old) old.remove();
+
+    let anim;
+    if (source.kind === 'video') {
+      anim = document.createElement('video');
+      anim.className = 'vk7tv-doc-anim';
+      anim.muted = true;
+      anim.loop = true;
+      anim.playsInline = true;
+      anim.preload = 'auto';
+      anim.setAttribute('playsinline', '');
+      anim.style.display = 'none';
+      anim.addEventListener(
+        'loadeddata',
+        () => {
+          if (cell._mediaKey !== key) return;
+          cell._mediaReady = true;
+          observeDocMedia(cell);
+          cell._vkVisible = docCellInView(cell);
+          setDocAnimVisible(cell, cell._vkVisible && mediaPlaybackAllowed());
+        },
+        { once: true }
+      );
+      anim.addEventListener('error', () => handleDocAnimError(cell, 'video'), { once: true });
+      anim.src = rec.url;
+      media.appendChild(anim);
+      if (anim.load) anim.load();
+    } else {
+      anim = document.createElement('img');
+      anim.className = 'vk7tv-doc-anim';
+      anim.alt = doc.title;
+      anim.title = doc.title;
+      anim.decoding = 'async';
+      anim.draggable = false;
+      anim.style.display = 'none';
+      anim.addEventListener(
+        'load',
+        () => {
+          if (cell._mediaKey !== key) return;
+          cell._mediaReady = true;
+          observeDocMedia(cell);
+          cell._vkVisible = docCellInView(cell);
+          setDocAnimVisible(cell, cell._vkVisible && mediaPlaybackAllowed());
+        },
+        { once: true }
+      );
+      anim.addEventListener('error', () => handleDocAnimError(cell, 'image'), { once: true });
+      anim.src = rec.url;
+      media.appendChild(anim);
+    }
+  }
+
+  function activateDocMedia(cell, forceOriginal) {
+    if (!cell || !DOCS || !DOCS_MEDIA) return;
+    if (cell._mediaReady || cell._mediaPending) return;
+    const doc = DOCS.getDocument(cell.dataset.key);
+    if (!doc) return;
+    const st = docsSnapshot();
+    if (!st) return;
+    const account = docsAccountKey(st);
+    const source = mediaSourceFor(doc, forceOriginal || cell._mediaTriedOriginal);
+    if (!source) return;
+
+    const acq = DOCS_MEDIA.acquire(account, doc, source);
+    if (!acq || !acq.key) {
+      if (acq && acq.promise) acq.promise.catch(() => {});
+      return;
+    }
+    if (acq.record && acq.record.state === 'error') {
+      DOCS_MEDIA.release(acq.key);
+      if (!forceOriginal && doc.ext === 'gif' && doc.url && !cell._mediaTriedOriginal) {
+        cell._mediaTriedOriginal = true;
+        activateDocMedia(cell, true);
+      }
+      return;
+    }
+
+    cell._mediaPending = acq.key;
+    acq.promise
+      .then((rec) => {
+        if (cell._mediaPending !== acq.key) return;
+        if (!cell.parentNode || cell.dataset.key !== doc.key) {
+          cell._mediaPending = '';
+          DOCS_MEDIA.release(acq.key);
+          return;
+        }
+        if (!docsGrid || !docsGrid.contains(cell)) {
+          cell._mediaPending = '';
+          DOCS_MEDIA.release(acq.key);
+          return;
+        }
+        const nowSt = docsSnapshot();
+        if (!nowSt || docsAccountKey(nowSt) !== account || !rec || rec.state !== 'ready') {
+          cell._mediaPending = '';
+          DOCS_MEDIA.release(acq.key);
+          return;
+        }
+        showDocRecord(cell, doc, source, rec, account, acq.key);
+      })
+      .catch(() => {
+        if (cell._mediaPending === acq.key) cell._mediaPending = '';
+        DOCS_MEDIA.release(acq.key);
+      });
+  }
+
+  // Карточка, пересозданная после поиска или сворачивания, сразу берёт
+  // готовый источник из кэша. Новую загрузку это не запускает.
+  function applyReadyDocMedia(cell, doc) {
+    if (!DOCS || !DOCS_MEDIA || !cell || !doc) return;
+    const st = docsSnapshot();
+    if (!st) return;
+    const account = docsAccountKey(st);
+    const preferred = mediaSourceFor(doc, cell._mediaTriedOriginal);
+    const rec = preferred && DOCS_MEDIA.peek(account, doc, preferred);
+    if (rec && (rec.state === 'ready' || rec.state === 'loading')) {
+      activateDocMedia(cell, !!cell._mediaTriedOriginal);
+      return;
+    }
+    if (!cell._mediaTriedOriginal && doc.ext === 'gif' && doc.video && doc.url) {
+      const original = mediaSourceFor(doc, true);
+      const orig = original && DOCS_MEDIA.peek(account, doc, original);
+      if (orig && (orig.state === 'ready' || orig.state === 'loading')) {
+        cell._mediaTriedOriginal = true;
+        activateDocMedia(cell, true);
+      }
+    }
+  }
+
+  function scheduleDocHover(cell) {
+    cancelDocHover(cell);
+    docHoverCell = cell;
+    docHoverTimer = setTimeout(() => {
+      docHoverTimer = 0;
+      if (docHoverCell === cell && cell.isConnected) activateDocMedia(cell, false);
+    }, DOC_HOVER_DELAY);
+  }
+
+  function cancelDocHover(cell) {
+    if (docHoverCell !== cell) return;
+    clearTimeout(docHoverTimer);
+    docHoverTimer = 0;
+    docHoverCell = null;
+  }
+
   function docsCountText() {
     const st = docsSnapshot();
     if (!st || st.status === 'idle') return '…';
@@ -568,6 +926,7 @@
       return '—';
     }
     if (st.status === 'loading' && !st.totalDocuments) return '…';
+    if (st.loading && !st.totalDocuments) return '…';
     return `${st.count}${st.partial ? '+' : ''}`;
   }
 
@@ -583,15 +942,17 @@
       }
       if (st.error.search && st.totalDocuments) return 'Поиск выполнен не полностью';
       if (st.error.message) return st.error.message;
-      return 'Не удалось загрузить файлы';
+      return 'Не удалось загрузить остальные файлы';
     }
     if (st.query && !st.loaded) return 'Поиск по остальным файлам…';
     if (st.query && st.loaded && st.count === 0) return 'Ничего не найдено';
-    if (st.status === 'loading') return 'Загружаем файлы…';
-    if (st.status === 'partial') return 'Показаны не все файлы';
+    if (st.loading && !st.totalDocuments) return 'Загружаем файлы…';
     if (st.status === 'empty') return 'В документах нет GIF и WEBP';
-    if (st.status === 'ready') return '';
-    return 'Загружаем файлы…';
+    return '';
+  }
+
+  function docsLoadingVisible(st) {
+    return !!st && st.loading && st.totalDocuments > 0 && !st.query && !st.error;
   }
 
   function setDocsCollapsed(next) {
@@ -603,6 +964,7 @@
       try {
         if (DOCS) DOCS.setPaused(true);
       } catch (e) {}
+      pauseDocMedia();
       if (docsObserver) docsObserver.disconnect();
     } else if (DOCS) {
       try {
@@ -611,6 +973,7 @@
       } catch (e) {}
     }
     renderDocsSection();
+    if (!docsCollapsed) resumeDocMedia();
   }
 
   function toggleDocs() {
@@ -622,7 +985,10 @@
   function ensureDocsLoad() {
     if (!DOCS || docsCollapsed || !open) return;
     try {
-      if (DOCS.getState().status === 'unauthorized' && !DOCS.checkAuth()) return;
+      const st = DOCS.getState();
+      if (st.error) return; // автоматически после ошибки не повторяем
+      if (st.status === 'unauthorized' && !DOCS.checkAuth()) return;
+      if (st.loaded || st.paused) return;
       if (searchInput && searchInput.value.trim()) DOCS.loadAll();
       else DOCS.loadMore();
     } catch (e) {
@@ -630,16 +996,59 @@
     }
   }
 
+  function docSentinelInZone() {
+    if (!docsSentinel || !body) return false;
+    const br = body.getBoundingClientRect();
+    const sr = docsSentinel.getBoundingClientRect();
+    return sr.bottom >= br.top - 400 && sr.top <= br.bottom + 400;
+  }
+
+  function maybeLoadNext() {
+    if (!DOCS || !open || docsCollapsed || !docsSentinel) return;
+    const st = docsSnapshot();
+    if (!st || st.loaded || st.loading || st.paused || st.error) return;
+    if (st.status === 'unauthorized' || st.query) return;
+    if (!docSentinelInZone()) return;
+    try {
+      DOCS.loadMore();
+    } catch (e) {
+      // следующая страница не должна ломать уже показанные файлы
+    }
+  }
+
+  function setDocsRefreshBusy(busy) {
+    docsRefreshBusy = !!busy;
+    if (!docsRefresh) return;
+    docsRefresh.disabled = docsRefreshBusy;
+    docsRefresh.classList.toggle('vk7tv-docs-refresh-busy', docsRefreshBusy);
+    if (docsRefreshBusy) docsRefresh.setAttribute('aria-busy', 'true');
+    else docsRefresh.removeAttribute('aria-busy');
+  }
+
   function refreshDocs() {
-    if (!DOCS) return;
+    if (!DOCS || docsRefreshBusy) return;
     if (docsCollapsed) setDocsCollapsed(false);
+    setDocsRefreshBusy(true);
+    let job;
     try {
       DOCS.checkAuth();
       DOCS.setPaused(false);
-      DOCS.refresh().then(queueDocsRender).catch(() => {});
+      job = DOCS.refresh();
     } catch (e) {
+      setDocsRefreshBusy(false);
       flash('Не удалось обновить файлы');
+      queueDocsRender();
+      return;
     }
+    Promise.resolve(job)
+      .then(() => {
+        if (DOCS && searchInput.value.trim()) DOCS.loadAll();
+      })
+      .catch(() => {})
+      .finally(() => {
+        setDocsRefreshBusy(false);
+        queueDocsRender();
+      });
     queueDocsRender();
   }
 
@@ -678,9 +1087,10 @@
     const refresh = document.createElement('button');
     refresh.className = 'vk7tv-docs-refresh';
     refresh.type = 'button';
-    refresh.textContent = 'Обновить';
     refresh.title = 'Обновить список файлов';
+    refresh.setAttribute('aria-label', 'Обновить список файлов');
     refresh.dataset.action = 'refresh';
+    refresh.appendChild(refreshIcon());
     head.append(chevron, name, count, refresh);
 
     const status = document.createElement('div');
@@ -696,10 +1106,14 @@
 
     const grid = document.createElement('div');
     grid.className = 'vk7tv-picker-grid vk7tv-docs-grid';
+    const tail = document.createElement('div');
+    tail.className = 'vk7tv-docs-loading';
+    tail.textContent = 'Загружаем файлы…';
+    tail.style.display = 'none';
     const sentinel = document.createElement('div');
     sentinel.className = 'vk7tv-docs-sentinel';
 
-    sec.append(head, status, grid, sentinel);
+    sec.append(head, status, grid, tail, sentinel);
 
     docsSection = sec;
     docsGrid = grid;
@@ -707,10 +1121,13 @@
     docsStatus._text = statusText;
     docsStatus._retry = retry;
     docsCount = count;
+    docsLoadingTail = tail;
+    docsRefresh = refresh;
     docsSentinel = sentinel;
     docsRenderedQuery = null;
     docsRenderedGen = -1;
     docsRenderedKeys = new Set();
+    setDocsRefreshBusy(docsRefreshBusy);
 
     if (!docsObserver) {
       docsObserver = new IntersectionObserver(
@@ -718,7 +1135,9 @@
           if (!open || docsCollapsed || !DOCS) return;
           if (!entries.some((e) => e.isIntersecting)) return;
           const st = DOCS.getState();
-          if (st.loaded || st.status === 'unauthorized' || st.paused) return;
+          if (st.loaded || st.loading || st.error || st.status === 'unauthorized' || st.paused) {
+            return;
+          }
           ensureDocsLoad();
         },
         { root: body, rootMargin: '400px 0px' }
@@ -732,9 +1151,24 @@
     return sec;
   }
 
+  function syncDocsMediaSession(st) {
+    if (!DOCS_MEDIA || !st) return;
+    const epoch = st.accountEpoch || 0;
+    if (docsMediaEpoch === null) {
+      docsMediaEpoch = epoch;
+      return;
+    }
+    if (epoch !== docsMediaEpoch) {
+      docsMediaEpoch = epoch;
+      cleanupDocCells();
+      DOCS_MEDIA.clear();
+    }
+  }
+
   function renderDocsSection() {
     if (!docsSection || !docsSection.isConnected) return;
     const st = docsSnapshot();
+    syncDocsMediaSession(st);
     docsSection.classList.toggle('vk7tv-collapsed', docsCollapsed);
     if (docsCount) docsCount.textContent = docsCountText();
 
@@ -742,23 +1176,36 @@
     const retry = docsStatus._retry;
     if (docsCollapsed) {
       docsStatus.style.display = 'none';
+      if (docsLoadingTail) docsLoadingTail.style.display = 'none';
       if (docsObserver) docsObserver.disconnect();
       return;
+    }
+
+    if (st && st.loaded && !st.loading && DOCS && DOCS_MEDIA) {
+      try {
+        DOCS_MEDIA.retainDocs(docsAccountKey(st), DOCS.getItems());
+      } catch (e) {
+        // кэш не должен ломать отрисовку
+      }
     }
 
     docsStatus.style.display = 'flex';
     const text = docsStatusText();
     docsStatus._text.textContent = text;
-    const showRetry =
-      !!st && !st.query && !st.loaded && st.status !== 'unauthorized' && st.status !== 'loading';
+    const showRetry = !!st && !!st.error && !st.loading && st.error.kind !== 'auth';
     retry.style.display = showRetry ? '' : 'none';
-    retry.textContent = st && st.status === 'partial' ? 'Догрузить' : 'Повторить';
+    retry.textContent = 'Повторить';
     retry.dataset.action = 'retry';
     if (!text && !showRetry) docsStatus.style.display = 'none';
+
+    if (docsLoadingTail) {
+      docsLoadingTail.style.display = docsLoadingVisible(st) ? '' : 'none';
+    }
 
     if (docsCollapsed) return;
     renderDocsGrid();
     observeDocs();
+    maybeLoadNext();
     if (DOCS && st && st.status === 'idle') ensureDocsLoad();
   }
 
@@ -766,6 +1213,7 @@
     const token = ++docsBuildToken;
     if (!docsGrid) return;
     if (!DOCS || docsCollapsed) {
+      cleanupDocCells();
       docsGrid.innerHTML = '';
       docsRenderedQuery = null;
       docsRenderedGen = -1;
@@ -784,6 +1232,7 @@
     const gen = st ? st.generation : -1;
     if (docsRenderedQuery !== q || docsRenderedGen !== gen) {
       if (selCell && selCell.classList.contains('vk7tv-doc-cell')) selectCell(null);
+      cleanupDocCells();
       docsGrid.innerHTML = '';
       docsRenderedQuery = q;
       docsRenderedGen = gen;
@@ -796,6 +1245,7 @@
     const fresh = found.filter((d) => !docsRenderedKeys.has(d.key));
     if (!fresh.length) {
       observeDocs();
+      maybeLoadNext();
       return;
     }
 
@@ -813,7 +1263,10 @@
       }
       docsGrid.appendChild(frag);
       if (at < fresh.length) requestAnimationFrame(step);
-      else observeDocs();
+      else {
+        observeDocs();
+        maybeLoadNext();
+      }
     };
     step();
   }
@@ -825,10 +1278,12 @@
   }
 
   function docImageFailed(img) {
+    const cell = img.closest('.vk7tv-doc-cell');
+    // Поздняя ошибка старого постера не должна скрывать уже готовую анимацию.
+    if (!cell || cell._mediaReady) return;
     img.dataset.failed = '1';
     img.style.display = 'none';
-    const cell = img.parentElement;
-    const fallback = cell && cell.querySelector('.vk7tv-doc-fallback');
+    const fallback = cell.querySelector('.vk7tv-doc-fallback');
     if (fallback) fallback.style.display = 'flex';
   }
 
@@ -969,7 +1424,8 @@
         if (docsAction.dataset.action === 'refresh') refreshDocs();
         else if (DOCS) {
           DOCS.setPaused(false);
-          DOCS.loadMore();
+          if (searchInput.value.trim()) DOCS.loadAll();
+          else DOCS.loadMore();
         }
         return;
       }
@@ -996,6 +1452,21 @@
     const NO_FOCUS =
       '.vk7tv-fav, .vk7tv-picker-group-title, .vk7tv-strip-tab, .vk7tv-picker-cell, ' +
       '.vk7tv-docs-action, .vk7tv-docs-refresh';
+
+    // Наведение на файл только готовит анимацию в самой карточке. Оно не
+    // трогает previewShown и не мешает следующему клику прикрепить документ.
+    picker.addEventListener('pointerover', (e) => {
+      const cell = e.target.closest('.vk7tv-doc-cell');
+      if (!cell) return;
+      if (e.relatedTarget && cell.contains(e.relatedTarget)) return;
+      scheduleDocHover(cell);
+    });
+    picker.addEventListener('pointerout', (e) => {
+      const cell = e.target.closest('.vk7tv-doc-cell');
+      if (!cell) return;
+      if (e.relatedTarget && cell.contains(e.relatedTarget)) return;
+      cancelDocHover(cell);
+    });
 
     picker.addEventListener('pointerdown', (e) => {
       if (e.target.closest(NO_FOCUS)) e.preventDefault();
@@ -1042,14 +1513,19 @@
       (e) => {
         const img = e.target;
         if (!(img instanceof HTMLImageElement)) return;
-        const cell = img.parentElement;
-        if (!cell || !cell.classList.contains('vk7tv-picker-cell')) return;
-        if (cell.classList.contains('vk7tv-doc-cell')) {
+
+        const docCell = img.closest('.vk7tv-doc-cell');
+        if (docCell) {
           // Документ уже есть в VK, даже если превью не загрузилось:
-          // ячейку не удаляем, оставляем расширение файла.
-          if (!img.dataset.failed) docImageFailed(img);
+          // ячейку не удаляем, оставляем расширение файла. Ошибка готовой
+          // анимации обрабатывается отдельно и постер не трогает.
+          if (img.classList.contains('vk7tv-doc-anim')) handleDocAnimError(docCell, 'image');
+          else if (!img.dataset.failed) docImageFailed(img);
           return;
         }
+
+        const cell = img.parentElement;
+        if (!cell || !cell.classList.contains('vk7tv-picker-cell')) return;
         if (img.dataset.fb) return cell.remove();
         img.dataset.fb = '1';
         const st = window.__vk7tv;
@@ -1083,6 +1559,28 @@
   const STAR_PATH =
     'M12.00 2.95 L14.70 9.23 L21.51 9.86 L16.37 14.38 L17.88 21.05 ' +
     'L12.00 17.55 L6.12 21.05 L7.63 14.38 L2.49 9.86 L9.30 9.23 Z';
+
+  function refreshIcon() {
+    const NS = 'http://www.w3.org/2000/svg';
+    const svg = document.createElementNS(NS, 'svg');
+    svg.setAttribute('viewBox', '0 0 24 24');
+    svg.setAttribute('width', '16');
+    svg.setAttribute('height', '16');
+    svg.setAttribute('aria-hidden', 'true');
+    const box = document.createElementNS(NS, 'path');
+    box.setAttribute('d', 'M0 0h24v24H0z');
+    box.setAttribute('fill', 'none');
+    const path = document.createElementNS(NS, 'path');
+    path.setAttribute('fill', 'none');
+    path.setAttribute('stroke', 'currentColor');
+    path.setAttribute('stroke-width', '2');
+    path.setAttribute(
+      'd',
+      'M1.75 16.002C3.353 20.098 7.338 23 12 23c6.075 0 11-4.925 11-11m-.75-4.002C20.649 3.901 16.663 1 12 1C5.925 1 1 5.925 1 12m8 4H1v8M23 0v8h-8'
+    );
+    svg.append(box, path);
+    return svg;
+  }
 
   function starIcon() {
     const NS = 'http://www.w3.org/2000/svg';
@@ -1294,6 +1792,7 @@
     const token = ++buildToken; // отменяет незаконченную прошлую сборку
     selCell = null;
     nearObserver.disconnect();
+    cleanupDocCells();
     body.innerHTML = '';
     const q = searchInput.value.trim().toLowerCase();
     if (DOCS) {
@@ -1652,15 +2151,21 @@
           if (!docsCollapsed) {
             DOCS.setPaused(false);
             ensureDocsLoad();
+            maybeLoadNext();
           }
         } catch (e) {
           // сбой файлов не должен закрывать поповер с эмоутами
         }
       }
-    } else if (DOCS) {
-      try {
-        DOCS.setPaused(true);
-      } catch (e) {}
+      resumeDocMedia();
+    } else {
+      pauseDocMedia();
+      if (DOCS_MEDIA) DOCS_MEDIA.cancelPending();
+      if (DOCS) {
+        try {
+          DOCS.setPaused(true);
+        } catch (e) {}
+      }
     }
   }
 
@@ -1771,6 +2276,21 @@
       if (!show) setOpen(false);
       refreshGrid();
     }, 200);
+  });
+
+  // Скрытая вкладка не должна крутить видео и GIF в фоне. Постеры остаются
+  // на месте, поэтому карточки не дёргаются при возврате.
+  document.addEventListener('visibilitychange', () => {
+    if (document.hidden) {
+      pauseDocMedia();
+      hidePreview();
+    } else {
+      resumeDocMedia();
+    }
+  });
+  window.addEventListener('pagehide', () => {
+    pauseDocMedia();
+    if (DOCS_MEDIA) DOCS_MEDIA.cancelPending();
   });
 
   window.addEventListener('resize', () => {

@@ -30,6 +30,8 @@
   let total = 0; // response.total_count, справочно
   let loaded = false; // достоверно дошли до конца библиотеки
   let status = 'idle';
+  let loading = false;
+  let accountEpoch = 0;
   let error = null; // { kind, message, retryable }
   let auth = { status: 'unknown', token: '', userId: 0, expires: 0 };
   let generation = 0;
@@ -97,6 +99,7 @@
 
   function clearSession() {
     generation++;
+    accountEpoch++;
     abortCurrent();
     items = [];
     byKey = new Map();
@@ -104,6 +107,7 @@
     offset = 0;
     total = 0;
     loaded = false;
+    loading = false;
     error = null;
     status = 'idle';
     wantAll = false;
@@ -246,6 +250,7 @@
       url,
       width: positive(v.width) || 0,
       height: positive(v.height) || 0,
+      size: positive(v.file_size) || positive(v.size) || 0,
     };
   }
 
@@ -447,7 +452,10 @@
   }
 
   async function runLoop(all) {
-    if (!checkAuth()) return;
+    if (!checkAuth()) {
+      loading = false;
+      return;
+    }
     const gen = generation;
 
     try {
@@ -554,6 +562,7 @@
         wantAll = false;
         cancelAll = false;
         refreshing = false;
+        loading = false;
         if (status !== 'unauthorized') {
           status = paused && !items.length ? 'idle' : partialStatus();
         }
@@ -563,20 +572,28 @@
   }
 
   function start(all) {
-    if (!checkAuth()) return Promise.resolve();
-    if (loaded && !all) return Promise.resolve();
+    if (!checkAuth()) {
+      loading = false;
+      return Promise.resolve();
+    }
+    if (loaded && !all) {
+      loading = false;
+      return Promise.resolve();
+    }
     const gen = generation;
     if (inFlight && inFlightGen === gen) {
       if (all) {
         wantAll = true;
         cancelAll = false;
       }
+      loading = true;
       return inFlight;
     }
     if (all) {
       wantAll = true;
       cancelAll = false;
     }
+    loading = true;
     inFlightGen = gen;
     inFlight = runLoop(all);
     return inFlight;
@@ -661,6 +678,8 @@
       rawLoaded: offset,
       total,
       paused,
+      loading,
+      accountEpoch,
       generation,
       auth: { status: auth.status, userId: auth.userId, expires: auth.expires },
     };

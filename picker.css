@@ -46,6 +46,7 @@
   min-height: 300px;
   max-width: min(560px, 90vw);
   max-height: min(640px, 80vh);
+  container-type: inline-size;
 }
 
 .vk7tv-picker-head {
@@ -265,7 +266,6 @@
 }
 
 /* «Файлы» — такой же заголовок, но с компактным обновлением справа */
-.vk7tv-docs-refresh,
 .vk7tv-docs-action {
   margin: 0;
   padding: 2px 5px;
@@ -281,14 +281,43 @@
 }
 
 .vk7tv-docs-refresh {
-  margin-left: 6px;
-  text-transform: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  margin: 0 0 0 6px;
+  padding: 0;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: #7a8090;
+  cursor: pointer;
+  -webkit-appearance: none;
+  appearance: none;
 }
 
-.vk7tv-docs-refresh:hover,
-.vk7tv-docs-action:hover {
+.vk7tv-docs-refresh svg {
+  display: block;
+  width: 16px;
+  height: 16px;
+}
+
+.vk7tv-docs-action:hover,
+.vk7tv-docs-refresh:hover {
   background: #2c2e36;
   color: #4c8bf5;
+}
+
+.vk7tv-docs-refresh:disabled,
+.vk7tv-docs-refresh.vk7tv-docs-refresh-busy {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.vk7tv-docs-refresh.vk7tv-docs-refresh-busy:hover {
+  background: transparent;
+  color: #7a8090;
 }
 
 .vk7tv-docs-status {
@@ -305,7 +334,15 @@
   min-width: 0;
 }
 
+.vk7tv-docs-loading {
+  padding: 5px 2px 3px;
+  font-size: 11px;
+  line-height: 1.4;
+  color: #7a8090;
+}
+
 .vk7tv-docs-group.vk7tv-collapsed .vk7tv-docs-status,
+.vk7tv-docs-group.vk7tv-collapsed .vk7tv-docs-loading,
 .vk7tv-docs-group.vk7tv-collapsed .vk7tv-docs-sentinel,
 .vk7tv-docs-group.vk7tv-collapsed .vk7tv-docs-grid {
   display: none;
@@ -315,8 +352,51 @@
   height: 1px;
 }
 
+/* Сетка файлов отдельная: эмоуты остаются на прежних 32px. Число колонок
+   зависит от ширины самого поповера, а не окна браузера. */
+.vk7tv-docs-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 6px;
+  align-items: stretch;
+}
+
+@container (min-width: 438px) {
+  /* 438 = 440 минус рамка панели: контейнер считает content-box. */
+  .vk7tv-docs-grid {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+  }
+}
+
 .vk7tv-doc-cell {
+  display: flex;
+  box-sizing: border-box;
+  width: 100%;
+  min-width: 0;
+  max-width: none;
+  padding: 4px;
   cursor: pointer;
+}
+
+.vk7tv-doc-media {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  height: 88px;
+  min-width: 0;
+}
+
+.vk7tv-docs-grid .vk7tv-doc-cell .vk7tv-doc-poster,
+.vk7tv-docs-grid .vk7tv-doc-cell .vk7tv-doc-anim {
+  display: block;
+  width: 100%;
+  height: 88px;
+  min-width: 0;
+  max-width: 100%;
+  object-fit: contain;
+  border-radius: 6px;
 }
 
 .vk7tv-doc-cell.vk7tv-doc-busy {
@@ -327,12 +407,12 @@
   display: flex;
   align-items: center;
   justify-content: center;
-  width: 32px;
-  height: 32px;
+  width: 100%;
+  height: 88px;
   border-radius: 6px;
   background: #2c2e36;
   color: #9aa0ab;
-  font-size: 9px;
+  font-size: 11px;
   font-weight: 600;
   letter-spacing: 0.3px;
   overflow: hidden;

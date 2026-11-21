@@ -1,0 +1,235 @@
+<!doctype html>
+<meta charset="utf-8" />
+<title>VK7TV — крупные файлы и анимация</title>
+<link rel="stylesheet" href="../picker.css" />
+<body style="margin: 0; background: #141519">
+  <div id="draft" contenteditable="true"></div>
+  <script src="harness.js"></script>
+  <script>
+    const T = window.VK7TV_TEST;
+    const AUTH_KEY = '6287487:web_token:login:auth';
+    localStorage.clear();
+    localStorage.setItem(
+      AUTH_KEY,
+      JSON.stringify({ access_token: 'test', user_id: 42, expires: Math.floor(Date.now() / 1000) + 3600 })
+    );
+
+    const svg = (w, h) =>
+      new Blob(
+        [`<svg xmlns="http://www.w3.org/2000/svg" width="${w}" height="${h}"><rect width="100%" height="100%" fill="#4c8bf5"/></svg>`],
+        { type: 'image/svg+xml' }
+      );
+    const preview = [{ type: 's', src: 'https://media.test/poster.svg', width: 64, height: 48 }];
+    const doc = (id, ext, title, video) => ({
+      owner_id: 42,
+      id,
+      title,
+      ext,
+      type: ext === 'gif' ? 3 : 4,
+      size: 100,
+      date: 1,
+      url: `https://media.test/${id}.${ext}`,
+      preview: { photo: { sizes: preview }, ...(video ? { video } : {}) },
+    });
+    const docs = [
+      doc(1, 'gif', 'one.gif', { src: 'https://media.test/1.mp4', width: 100, height: 100, file_size: 100 }),
+      doc(2, 'webp', 'two.webp'),
+    ];
+    const next = [doc(3, 'gif', 'three.gif'), doc(4, 'webp', 'four.webp'), doc(5, 'gif', 'five.gif'), doc(6, 'webp', 'six.webp')];
+
+    const docCalls = [];
+    const mediaCalls = [];
+    const response = (items, total) => ({
+      ok: true,
+      status: 200,
+      json: () => Promise.resolve({ response: { count: items.length, total_count: total, items } }),
+    });
+    window.fetch = (url, opts) => {
+      if (url.indexOf('web.api.vk.ru/method/docs.get') >= 0) {
+        const body = new URLSearchParams(opts.body);
+        const offset = Number(body.get('offset')) || 0;
+        docCalls.push(offset);
+        return Promise.resolve(offset === 0 ? response(docs, 6) : response(next, 6));
+      }
+      if (url === 'https://media.test/1.mp4') {
+        mediaCalls.push(url);
+        return Promise.resolve({
+          ok: true,
+          headers: { get: () => '5' },
+          blob: () => Promise.resolve(new Blob(['bad'], { type: 'text/plain' })),
+        });
+      }
+      if (url === 'https://media.test/1.gif' || url === 'https://media.test/2.webp' || url === 'https://media.test/3.gif') {
+        mediaCalls.push(url);
+        return Promise.resolve({
+          ok: true,
+          headers: { get: () => '100' },
+          blob: () => Promise.resolve(svg(120, 80)),
+        });
+      }
+      return Promise.reject(new Error('unexpected ' + url));
+    };
+
+    const attached = [];
+    window.addEventListener('message', (e) => {
+      if (e.source !== window || e.origin !== location.origin) return;
+      const d = e.data;
+      if (!d || d.__vk7tvDocsBridge !== 1 || d.to !== 'page') return;
+      let result;
+      if (d.type === 'get-context') {
+        result = { ok: true, peerId: '123', userId: 42, docs: attached.slice() };
+      } else if (d.type === 'attach-doc') {
+        const key = `${d.payload.doc.ownerId}:${d.payload.doc.id}`;
+        if (attached.includes(key)) result = { ok: true, status: 'already' };
+        else {
+          attached.push(key);
+          result = { ok: true, status: 'added' };
+        }
+      } else result = { ok: false, reason: 'unknown' };
+      window.postMessage({ __vk7tvDocsBridge: 1, to: 'extension', id: d.id, result }, location.origin);
+    });
+
+    T.install({
+      sync: { enabled: true, useGlobal: false, widget: true, sets: [], customEmotes: {}, favorites: [] },
+      local: { setEmotes: {}, globalEmotes: null, recent: [], collapsedGroups: [], stripTab: 'recent' },
+      respond: () => ({}),
+    });
+  </script>
+  <script src="../default-emotes.js"></script>
+  <script src="../emotes.js"></script>
+  <script src="../vk-docs.js"></script>
+  <script src="../vk-docs-media.js"></script>
+  <script src="../picker.js"></script>
+  <script>
+    const sel = (s) => [...document.querySelectorAll(s)];
+    const group = () => document.querySelector('.vk7tv-docs-group');
+    const cellFor = (id) => group() && group().querySelector(`.vk7tv-doc-cell[data-key="42:${id}"]`);
+    const hover = (cell) => cell.dispatchEvent(new Event('pointerover', { bubbles: true }));
+    const leave = (cell) => cell.dispatchEvent(new Event('pointerout', { bubbles: true }));
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+    T.run(async () => {
+      await T.waitFor('виджет появился', () => document.querySelector('.vk7tv-widget'));
+      document.dispatchEvent(new KeyboardEvent('keydown', { code: 'KeyE', ctrlKey: true, shiftKey: true, bubbles: true }));
+      await T.waitFor('файлы появились', () => group());
+      T.check('до раскрытия страницы не грузились', docCalls.length === 0, docCalls.join(','));
+      group().querySelector('.vk7tv-picker-group-title').click();
+      await T.waitFor('первые файлы загрузились', () => cellFor(1) && cellFor(2));
+
+      // Первая страница не заполнила панель — вторая должна прийти сама.
+      await T.waitFor('список догрузился сам', () => window.VK7TV_DOCS.getItems().length === 6);
+      T.eq('страницы догружены без прокрутки', docCalls.join(','), '0,2');
+      T.check('нет кнопки «Догрузить»', !group().textContent.includes('Догрузить'), 'нет');
+      T.check('нет предупреждения о неполном списке', !group().textContent.includes('Показаны не все файлы'), 'нет');
+
+      const grid = group().querySelector('.vk7tv-docs-grid');
+      const cols = () => {
+        const value = getComputedStyle(grid).gridTemplateColumns;
+        const repeat = value.match(/repeat\((\d+)/);
+        return repeat ? Number(repeat[1]) : value.split(' ').length;
+      };
+      T.eq('три колонки при 340px', cols(), 3);
+      const picker = document.querySelector('.vk7tv-picker');
+      picker.style.width = '440px';
+      await sleep(50);
+      T.eq('четыре колонки при 440px', cols(), 4);
+      picker.style.width = '560px';
+      await sleep(50);
+      T.eq('четыре колонки при 560px', cols(), 4);
+      picker.style.width = '280px';
+      await sleep(50);
+      T.eq('три колонки при 280px', cols(), 3);
+      picker.style.width = '440px';
+      await sleep(50);
+      T.check('сетка не переполняется', grid.scrollWidth <= grid.clientWidth + 1, `${grid.scrollWidth}/${grid.clientWidth}`);
+      picker.style.width = '340px';
+      await sleep(50);
+      T.eq('обратно три колонки', cols(), 3);
+
+      const mediaHeight = cellFor(1).querySelector('.vk7tv-doc-media').getBoundingClientRect().height;
+      T.eq('высота медиа 88px', Math.round(mediaHeight), 88);
+      T.eq(
+        'изображение вписывается целиком',
+        getComputedStyle(cellFor(1).querySelector('.vk7tv-doc-poster')).objectFit,
+        'contain'
+      );
+
+      // Короткий проход курсора не запускает загрузку.
+      const two = cellFor(2);
+      hover(two);
+      leave(two);
+      await sleep(220);
+      T.check('короткое наведение не грузит оригинал', !mediaCalls.includes('https://media.test/2.webp'), 'нет');
+
+      // Наведение на GIF: сначала видео-превью, при ошибке — оригинал.
+      const one = cellFor(1);
+      hover(one);
+      await T.waitFor('анимация GIF появилась', () => one.querySelector('img.vk7tv-doc-anim'));
+      T.check('видео-ошибка перешла на оригинал', mediaCalls.includes('https://media.test/1.mp4') && mediaCalls.includes('https://media.test/1.gif'), 'да');
+      T.eq('после готовности видео не осталось', one.querySelectorAll('video').length, 0);
+      leave(one);
+      await sleep(50);
+      T.check('после ухода курсора анимация играет', one.querySelector('img.vk7tv-doc-anim').style.display !== 'none', 'да');
+
+      // Повторное наведение не повторяет загрузку.
+      const before = mediaCalls.length;
+      hover(one);
+      await sleep(220);
+      T.eq('повторное наведение без сети', mediaCalls.length, before);
+
+      // Второй файл и повторное использование после поиска.
+      const twoAgain = cellFor(2);
+      hover(twoAgain);
+      await T.waitFor('WEBP заменился оригиналом', () => twoAgain.querySelector('img.vk7tv-doc-anim'));
+      const callsBeforeSearch = mediaCalls.length;
+
+      const search = document.querySelector('.vk7tv-picker-search');
+      search.value = 'two';
+      search.dispatchEvent(new Event('input', { bubbles: true }));
+      await T.waitFor('поиск оставил один файл', () => group() && group().querySelectorAll('.vk7tv-doc-cell').length === 1);
+      T.check('поиск взял готовый кадр из кэша', !!cellFor(2).querySelector('img.vk7tv-doc-anim'), 'да');
+      T.eq('поиск не сходил в сеть заново', mediaCalls.length, callsBeforeSearch);
+
+      search.value = '';
+      search.dispatchEvent(new Event('input', { bubbles: true }));
+      await T.waitFor('файлы вернулись', () => group() && group().querySelectorAll('.vk7tv-doc-cell').length === 6);
+      T.check('после поиска кадр тоже из кэша', !!cellFor(1).querySelector('img.vk7tv-doc-anim'), 'да');
+
+      // Стрелки должны видеть строки CSS Grid, а не flex-поток.
+      search.focus();
+      search.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true }));
+      const firstSelected = document.querySelector('.vk7tv-doc-cell.vk7tv-sel');
+      search.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true }));
+      const secondSelected = document.querySelector('.vk7tv-doc-cell.vk7tv-sel');
+      search.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true }));
+      const belowSelected = document.querySelector('.vk7tv-doc-cell.vk7tv-sel');
+      T.check(
+        'стрелки переходят на следующую строку сетки',
+        !!firstSelected && !!secondSelected && !!belowSelected && belowSelected.offsetTop > secondSelected.offsetTop,
+        belowSelected ? `${secondSelected.offsetTop}->${belowSelected.offsetTop}` : 'нет выбора'
+      );
+
+      // Сворачивание возвращает постер, раскрытие — готовый кадр.
+      group().querySelector('.vk7tv-picker-group-title').click();
+      await sleep(30);
+      T.check('при сворачивании анимация скрыта', cellFor(1).querySelector('img.vk7tv-doc-anim').style.display === 'none', 'да');
+      group().querySelector('.vk7tv-picker-group-title').click();
+      await T.waitFor('при раскрытии анимация вернулась', () => cellFor(1).querySelector('img.vk7tv-doc-anim').style.display !== 'none');
+
+      // Клик после наведения по-прежнему прикрепляет.
+      cellFor(1).click();
+      await T.waitFor('файл прикреплён', () => document.querySelector('.vk7tv-picker-foot').textContent === 'Файл прикреплён');
+
+      const refresh = group().querySelector('.vk7tv-docs-refresh');
+      T.check('обновление — SVG-иконка', !!refresh.querySelector('svg'), 'да');
+      T.eq('у кнопки нет текста', refresh.textContent.trim(), '');
+      T.eq('у кнопки есть доступное имя', refresh.getAttribute('aria-label'), 'Обновить список файлов');
+      const beforeRefresh = docCalls.length;
+      refresh.click();
+      await sleep(30);
+      T.check('обновление не свернуло секцию', !group().classList.contains('vk7tv-collapsed'), 'да');
+      await T.waitFor('обновление запросило первую страницу', () => docCalls[beforeRefresh] === 0);
+      T.check('обновление ушло с нулевого смещения', docCalls[beforeRefresh] === 0, docCalls.join(','));
+    });
+  </script>
+</body>

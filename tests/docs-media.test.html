@@ -1,0 +1,92 @@
+<!doctype html>
+<meta charset="utf-8" />
+<title>VK7TV — кэш анимаций документов</title>
+<body>
+  <script src="harness.js"></script>
+  <script>
+    const T = window.VK7TV_TEST;
+    const calls = [];
+    const pending = new Map();
+    window.fetch = (url) => {
+      calls.push(url);
+      if (url === 'https://media.test/7.gif') return Promise.reject(new Error('cors'));
+      return new Promise((resolve) => {
+        pending.set(url, () => {
+          const blob = new Blob(['media'], { type: 'image/gif' });
+          resolve({
+            ok: true,
+            headers: { get: () => String(blob.size) },
+            blob: () => Promise.resolve(blob),
+          });
+        });
+      });
+    };
+    const doc = (id) => ({ ownerId: 1, id, url: `https://media.test/${id}.gif`, video: null });
+    const source = (id) => ({ kind: 'image', url: `https://media.test/${id}.gif`, size: 5 });
+    const flush = () => new Promise((r) => setTimeout(r, 0));
+  </script>
+  <script src="../vk-docs-media.js"></script>
+  <script>
+    T.run(async () => {
+      const M = window.VK7TV_DOCS_MEDIA;
+      const a = M.acquire('1:0', doc(1), source(1));
+      const b = M.acquire('1:0', doc(1), source(1));
+      T.eq('один источник — один запрос', calls.length, 1);
+      T.check('повторное обращение ждёт тот же Promise', a.promise === b.promise, 'да');
+      pending.get('https://media.test/1.gif')();
+      const ra = await a.promise;
+      const rb = await b.promise;
+      T.eq('оба обращения дали одну запись', ra, rb);
+      T.eq('Blob подготовлен', ra.url.startsWith('blob:'), true);
+      T.eq('состояние ready', ra.state, 'ready');
+      M.release(a.key);
+      M.release(b.key);
+      T.eq('после отпускания запись остаётся', M.stats().records, 1);
+
+      const again = M.acquire('1:0', doc(1), source(1));
+      T.eq('повторное наведение не идёт в сеть', calls.length, 1);
+      await again.promise;
+      M.release(again.key);
+
+      // Не больше двух одновременных загрузок.
+      const jobs = [2, 3, 4].map((id) => M.acquire('1:0', doc(id), source(id)));
+      await flush();
+      T.eq('одновременно стартуют две загрузки', calls.length, 3);
+      pending.get('https://media.test/2.gif')();
+      await flush();
+      T.eq('после освобождения слота стартует третья', calls.length, 4);
+      pending.get('https://media.test/3.gif')();
+      pending.get('https://media.test/4.gif')();
+      await Promise.all(jobs.map((j) => j.promise));
+      jobs.forEach((j) => M.release(j.key));
+
+      // Ошибка не повторяется при каждом наведении.
+      const failed = M.acquire('1:0', doc(5), source(5));
+      const before = calls.length;
+      M.markError(failed.key);
+      M.release(failed.key);
+      const retry = M.acquire('1:0', doc(5), source(5));
+      T.eq('после ошибки запрос не повторяется', calls.length, before);
+      M.release(retry.key);
+
+      // Удалённый или изменившийся URL освобождает запись.
+      const old = M.acquire('1:0', doc(6), source(6));
+      pending.get('https://media.test/6.gif')();
+      await old.promise;
+      M.release(old.key);
+      M.retainDocs('1:0', [{ ownerId: 1, id: 6, url: 'https://media.test/new.gif', video: null }]);
+      T.check('старый URL выброшен из кэша', !M.peek('1:0', doc(6), source(6)), 'да');
+
+      // CORS/fetch запрещён — остаётся прямой URL, а не ошибка кэша.
+      const direct = M.acquire('1:0', doc(7), source(7));
+      const directRec = await direct.promise;
+      T.eq('при запрете fetch остаётся прямой источник', directRec.url, 'https://media.test/7.gif');
+      T.eq('прямой источник не считается Blob', directRec.blob, false);
+      M.release(direct.key);
+
+      M.clear();
+      T.eq('очистка кэша', M.stats().records, 0);
+      T.eq('лимит записей', M.stats().maxRecords, 64);
+    });
+  </script>
+</body>

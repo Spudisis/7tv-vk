@@ -1,0 +1,94 @@
+<!doctype html>
+<meta charset="utf-8" />
+<title>VK7TV — автодогрузка и повтор файлов</title>
+<link rel="stylesheet" href="../picker.css" />
+<body style="margin: 0; background: #141519">
+  <script src="harness.js"></script>
+  <script>
+    const T = window.VK7TV_TEST;
+    const AUTH_KEY = '6287487:web_token:login:auth';
+    localStorage.clear();
+    localStorage.setItem(
+      AUTH_KEY,
+      JSON.stringify({ access_token: 'test', user_id: 42, expires: Math.floor(Date.now() / 1000) + 3600 })
+    );
+
+    const preview = [{ type: 's', src: 'https://media.test/p.svg', width: 64, height: 64 }];
+    const doc = (id, ext, title) => ({
+      owner_id: 42,
+      id,
+      title,
+      ext,
+      type: ext === 'gif' ? 3 : 4,
+      size: 1,
+      date: 1,
+      url: `https://media.test/${id}.${ext}`,
+      preview: { photo: { sizes: preview } },
+    });
+    const filler = (n) => doc(9000 + n, 'pdf', `file-${n}.pdf`);
+    const page0 = [doc(1, 'gif', 'one.gif')];
+    while (page0.length < 50) page0.push(filler(page0.length));
+    const page50 = [doc(2, 'webp', 'two.webp')];
+    while (page50.length < 50) page50.push(filler(100 + page50.length));
+
+    let fail = true;
+    const calls = [];
+    window.fetch = (url, opts) => {
+      if (url.indexOf('web.api.vk.ru/method/docs.get') >= 0) {
+        const body = new URLSearchParams(opts.body);
+        const offset = Number(body.get('offset')) || 0;
+        calls.push(offset);
+        if (offset === 50 && fail) {
+          return Promise.resolve({ ok: false, status: 503, json: () => Promise.resolve({}) });
+        }
+        const items = offset === 0 ? page0 : page50;
+        return Promise.resolve({
+          ok: true,
+          status: 200,
+          json: () => Promise.resolve({ response: { count: items.length, total_count: 100, items } }),
+        });
+      }
+      return Promise.reject(new Error('unexpected'));
+    };
+
+    T.install({
+      sync: { enabled: true, useGlobal: false, widget: true, sets: [], customEmotes: {}, favorites: [] },
+      local: { setEmotes: {}, globalEmotes: null, recent: [], collapsedGroups: [], stripTab: 'recent' },
+      respond: () => ({}),
+    });
+  </script>
+  <script src="../default-emotes.js"></script>
+  <script src="../emotes.js"></script>
+  <script src="../vk-docs.js"></script>
+  <script src="../vk-docs-media.js"></script>
+  <script src="../picker.js"></script>
+  <script>
+    const group = () => document.querySelector('.vk7tv-docs-group');
+    T.run(async () => {
+      await T.waitFor('виджет появился', () => document.querySelector('.vk7tv-widget'));
+      document.dispatchEvent(new KeyboardEvent('keydown', { code: 'KeyE', ctrlKey: true, shiftKey: true, bubbles: true }));
+      await T.waitFor('файлы появились', () => group());
+      group().querySelector('.vk7tv-picker-group-title').click();
+      await T.waitFor('первый файл появился', () => group().querySelector('.vk7tv-doc-cell'));
+
+      // Ошибка второй страницы: один автоматический повтор 5xx, затем стоп.
+      await T.waitFor('ошибка видна', () => {
+        const btn = group().querySelector('.vk7tv-docs-action');
+        return btn && btn.style.display !== 'none';
+      }, 5000);
+      T.eq('запросы остановились после повтора', calls.join(','), '0,50,50');
+      T.check('текст ошибки не про неполный список', !group().textContent.includes('Показаны не все файлы'), 'да');
+      T.eq('кнопка называется «Повторить»', group().querySelector('.vk7tv-docs-action').textContent, 'Повторить');
+
+      await new Promise((r) => setTimeout(r, 350));
+      T.eq('автоматического повтора после ошибки нет', calls.join(','), '0,50,50');
+
+      fail = false;
+      group().querySelector('.vk7tv-docs-action').click();
+      await T.waitFor('второй файл догрузился', () => window.VK7TV_DOCS.getItems().length === 2);
+      T.eq('повтор продолжил с неуспешного смещения', calls.join(','), '0,50,50,50');
+      T.eq('после повтора кнопка скрыта', group().querySelector('.vk7tv-docs-action').style.display, 'none');
+      T.eq('после повтора список полный', window.VK7TV_DOCS.getState().loaded, true);
+    });
+  </script>
+</body>
