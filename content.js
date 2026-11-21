@@ -177,7 +177,7 @@
     }
 
     // общее состояние для autocomplete.js и picker.js (один isolated world)
-    window.__vk7tv = { emoteMap, acIndex, enabled, resolveEmote, chain };
+    window.__vk7tv = { emoteMap, acIndex, enabled, autocomplete: settings.autocomplete, resolveEmote, chain };
 
     // Подпись состояния: по ней видно, надо ли перерисовывать уже
     // показанные сообщения. Фоновое обновление наборов раз в полчаса
@@ -1177,7 +1177,7 @@
   // Избранное и позиция виджета меняются часто (в том числе из соседней
   // вкладки) — из-за них страницу перебирать незачем.
   const RENDER_KEYS = new Set([
-    'enabled', 'useGlobal', 'suggest', 'everywhere',
+    'enabled', 'useGlobal', 'suggest', 'everywhere', 'autocomplete',
     'sets', 'customEmotes', 'setEmotes', 'globalEmotes',
   ]);
 

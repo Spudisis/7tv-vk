@@ -50,6 +50,7 @@ const VK7TV = (() => {
     useGlobal: true,
     widget: true,
     suggest: true,
+    autocomplete: true,
     everywhere: false,
     sets: [],
     customEmotes: {},

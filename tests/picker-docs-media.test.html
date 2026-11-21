@@ -123,22 +123,32 @@
       T.check('нет предупреждения о неполном списке', !group().textContent.includes('Показаны не все файлы'), 'нет');
 
       const grid = group().querySelector('.vk7tv-docs-grid');
+      T.eq('файлы используют CSS Grid', getComputedStyle(grid).display, 'grid');
+      const rowCount = () => {
+        const cells = [...grid.querySelectorAll('.vk7tv-doc-cell')];
+        const top = cells[0].getBoundingClientRect().top;
+        return cells.filter((cell) => Math.abs(cell.getBoundingClientRect().top - top) < 1).length;
+      };
       const cols = () => {
         const value = getComputedStyle(grid).gridTemplateColumns;
         const repeat = value.match(/repeat\((\d+)/);
         return repeat ? Number(repeat[1]) : value.split(' ').length;
       };
       T.eq('три колонки при 340px', cols(), 3);
+      T.eq('три файла в первой строке при 340px', rowCount(), 3);
       const picker = document.querySelector('.vk7tv-picker');
       picker.style.width = '440px';
       await sleep(50);
       T.eq('четыре колонки при 440px', cols(), 4);
+      T.eq('четыре файла в первой строке при 440px', rowCount(), 4);
       picker.style.width = '560px';
       await sleep(50);
       T.eq('четыре колонки при 560px', cols(), 4);
+      T.eq('четыре файла в первой строке при 560px', rowCount(), 4);
       picker.style.width = '280px';
       await sleep(50);
       T.eq('три колонки при 280px', cols(), 3);
+      T.eq('три файла в первой строке при 280px', rowCount(), 3);
       picker.style.width = '440px';
       await sleep(50);
       T.check('сетка не переполняется', grid.scrollWidth <= grid.clientWidth + 1, `${grid.scrollWidth}/${grid.clientWidth}`);

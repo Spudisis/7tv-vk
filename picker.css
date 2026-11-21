@@ -299,8 +299,8 @@
 
 .vk7tv-docs-refresh svg {
   display: block;
-  width: 16px;
-  height: 16px;
+  width: 12px;
+  height: 12px;
 }
 
 .vk7tv-docs-action:hover,
@@ -354,7 +354,7 @@
 
 /* Сетка файлов отдельная: эмоуты остаются на прежних 32px. Число колонок
    зависит от ширины самого поповера, а не окна браузера. */
-.vk7tv-docs-grid {
+.vk7tv-picker-grid.vk7tv-docs-grid {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 6px;
@@ -363,12 +363,12 @@
 
 @container (min-width: 438px) {
   /* 438 = 440 минус рамка панели: контейнер считает content-box. */
-  .vk7tv-docs-grid {
+  .vk7tv-picker-grid.vk7tv-docs-grid {
     grid-template-columns: repeat(4, minmax(0, 1fr));
   }
 }
 
-.vk7tv-doc-cell {
+.vk7tv-picker-cell.vk7tv-doc-cell {
   display: flex;
   box-sizing: border-box;
   width: 100%;

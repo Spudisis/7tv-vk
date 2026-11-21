@@ -28,6 +28,7 @@ async function render() {
   $('#useGlobal').checked = sync.useGlobal;
   $('#widgetOn').checked = sync.widget;
   $('#suggestOn').checked = sync.suggest;
+  $('#autocompleteOn').checked = sync.autocomplete;
   $('#everywhere').checked = sync.everywhere;
   $('#globalCount').textContent = `(${Object.keys(DEFAULT_EMOTES).length})`;
 
@@ -203,6 +204,10 @@ $('#suggestOn').addEventListener('change', (e) => {
   chrome.storage.sync.set({ suggest: e.target.checked });
 });
 
+$('#autocompleteOn').addEventListener('change', (e) => {
+  chrome.storage.sync.set({ autocomplete: e.target.checked });
+});
+
 $('#everywhere').addEventListener('change', (e) => {
   chrome.storage.sync.set({ everywhere: e.target.checked });
 });
@@ -267,6 +272,7 @@ const BACKUP_DEFAULTS = {
   useGlobal: true,
   widget: true,
   suggest: true,
+  autocomplete: true,
   everywhere: false,
   sets: [],
   customEmotes: {},
@@ -317,6 +323,7 @@ $('#importFile').addEventListener('change', async (e) => {
       useGlobal: data.useGlobal !== false,
       widget: data.widget !== false,
       suggest: data.suggest !== false,
+      autocomplete: data.autocomplete !== false,
       everywhere:
         'everywhere' in data
           ? data.everywhere === true

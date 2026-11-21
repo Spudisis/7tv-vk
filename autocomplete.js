@@ -99,6 +99,7 @@
   }
 
   function accept(i) {
+    if (state()?.autocomplete === false) return hide();
     const it = items[i];
     if (!it || !ctx || !ctx.node.isConnected) return hide();
     const sel = window.getSelection();
@@ -116,7 +117,7 @@
 
   function onInput(e) {
     const st = state();
-    if (!st || !st.enabled || !st.emoteMap.size) return hide();
+    if (!st || !st.enabled || st.autocomplete === false || !st.emoteMap.size) return hide();
     const target = e.target;
     if (!(target instanceof Element) || !target.isContentEditable) return hide();
 
@@ -168,6 +169,7 @@
   }
 
   function onKeydown(e) {
+    if (state()?.autocomplete === false) return hide();
     if (!isOpen()) return;
     if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
       e.preventDefault();
@@ -188,6 +190,9 @@
   }
 
   // capture: true — чтобы отработать раньше обработчиков ВК
+  chrome.storage.onChanged.addListener((changes, area) => {
+    if (area === 'sync' && changes.autocomplete?.newValue === false) hide();
+  });
   document.addEventListener('input', onInput, true);
   document.addEventListener('keydown', onKeydown, true);
   document.addEventListener('focusout', hide, true);
