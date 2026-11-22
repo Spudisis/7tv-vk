@@ -192,8 +192,8 @@
 
   // --- диагностика загрузки ---
   //
-  // Журнал живёт только в памяти страницы и включается настройкой
-  // docsDiagnostics. В записи попадают лишь перечисленные безопасные поля:
+  // Журнал живёт только в памяти страницы и включается программно
+  // через внутренний API для тестовых стендов. В записи попадают безопасные поля:
   // без токена, куки, заголовков, тела запросов, имён файлов, полных URL и
   // сырых ответов VK. Отчёт ограничен по размеру.
 
@@ -430,27 +430,6 @@
         ...(extra || {}),
         dur: Date.now() - started,
       });
-  }
-
-  function loadDiagnosticsSetting() {
-    try {
-      const got = chrome.storage.local.get({ docsDiagnostics: false });
-      if (got && typeof got.then === 'function') {
-        got
-          .then((value) => setDiagnosticsEnabled(!!(value && value.docsDiagnostics)))
-          .catch(() => {});
-      }
-    } catch (e) {
-      // настройки недоступны — диагностика остаётся выключенной
-    }
-    try {
-      chrome.storage.onChanged.addListener((changes, area) => {
-        if (area !== 'local' || !changes.docsDiagnostics) return;
-        setDiagnosticsEnabled(!!changes.docsDiagnostics.newValue);
-      });
-    } catch (e) {
-      // без подписки диагностика не переключится до перезагрузки страницы
-    }
   }
 
   // --- авторизация ---
@@ -1855,6 +1834,7 @@
       stage: job.stage,
       loaded: job.loaded,
       total: job.total,
+      transferIdleSeconds: job.transferIdleSeconds || 0,
       note: job.note || '',
       converted: !!job.converted,
       convertedFrame: job.convertedFrame || 0,
@@ -2544,20 +2524,26 @@
       job.xhr = xhr;
       job.loaded = 0;
       job.total = job.size;
+      job.transferIdleSeconds = 0;
       notify();
 
       // Таймаут именно отсутствия прогресса: VK может отдавать ответ долго,
       // но пока байты идут, запрос прерывать нельзя.
       const timer = setInterval(() => {
         if (settled) return;
-        if (Date.now() - lastProgress > UPLOAD_IDLE_TIMEOUT) {
+        const idleMs = Date.now() - lastProgress;
+        job.transferIdleSeconds = Math.floor(idleMs / 1000);
+        if (idleMs > UPLOAD_IDLE_TIMEOUT) {
           // Сначала фиксируем таймаут: abort() синхронно вызовет onabort,
           // и без этого ошибка выглядела бы как отмена пользователем.
           fail(uploadError('timeout'));
           try {
             xhr.abort();
           } catch (e) {}
+          return;
         }
+        // Обновляем ожидание даже когда браузер не присылает progress.
+        notify();
       }, 1000);
 
       const form = new FormData();
@@ -2575,6 +2561,7 @@
           if (settled) return;
           if (!e) return;
           lastProgress = Date.now();
+          job.transferIdleSeconds = 0;
           job.loaded = Number(e.loaded) || 0;
           if (e.lengthComputable && Number(e.total)) job.total = Number(e.total);
           else if (!job.total) job.total = job.size;
@@ -3395,7 +3382,6 @@
   };
 
   startAuthWatch();
-  loadDiagnosticsSetting();
 
   window.VK7TV_DOCS = {
     getState,

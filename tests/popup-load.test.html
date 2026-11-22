@@ -108,13 +108,13 @@
 
     const IDS = [
       'toast', 'enabled', 'useGlobal', 'widgetOn', 'suggestOn', 'autocompleteOn', 'everywhere', 'globalCount',
-      'docsDiagnostics', 'setList', 'customList', 'gridNote', 'grid', 'search', 'totalCount', 'setInput',
+      'setList', 'customList', 'gridNote', 'grid', 'search', 'totalCount', 'setInput',
       'setStatus', 'addSet', 'refreshSets', 'exportSettings', 'importSettings', 'importFile',
       'backupStatus', 'addCustom', 'customName', 'customUrl', 'customStatus', 'version',
       'gridPages', 'gridPrev', 'gridNext', 'gridPage',
     ];
     for (const id of IDS) {
-      const tag = ['enabled', 'useGlobal', 'widgetOn', 'suggestOn', 'autocompleteOn', 'everywhere', 'docsDiagnostics', 'search',
+      const tag = ['enabled', 'useGlobal', 'widgetOn', 'suggestOn', 'autocompleteOn', 'everywhere', 'search',
         'setInput', 'customName', 'customUrl'].includes(id) ? 'input'
         : ['setList', 'customList'].includes(id) ? 'ul'
         : ['addSet', 'refreshSets', 'exportSettings', 'importSettings', 'addCustom', 'gridPrev', 'gridNext'].includes(id) ? 'button'

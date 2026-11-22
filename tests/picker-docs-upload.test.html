@@ -288,6 +288,16 @@
         'none'
       );
       await T.waitFor('передача очереди началась', () => !!held);
+      const transferText = () => group().querySelector(
+        '.vk7tv-docs-upload-row[data-upload-id="' + heldJob + '"] .vk7tv-docs-upload-stage'
+      ).textContent;
+      T.eq('до передачи показано подключение', transferText(), 'Подключение к VK');
+      await T.waitFor('ожидание обновляется без progress', () => /ожидание [1-9]/.test(transferText()));
+      held.upload.onprogress({ loaded: 6, total: 12, lengthComputable: true });
+      T.eq('показаны проценты и объём', transferText(), 'Передача в VK: 50% · 6 Б из 12 Б');
+      await T.waitFor('видно отсутствие прогресса', () => /нет прогресса [3-9] с/.test(transferText()), 6000);
+      held.upload.onprogress({ loaded: 12, total: 12, lengthComputable: true });
+      T.eq('передача отделена от сохранения', transferText(), 'Файл передан · ожидание ответа VK');
       held.status = 200;
       held.responseText = JSON.stringify({ file: 'queued-file' });
       held.onload();
@@ -381,41 +391,6 @@
       await T.waitFor('файл из DnD загрузился', () => uploadCalls.length > beforeDrop);
       T.check('накладка скрыта после drop', overlay().hidden, 'да');
 
-      // Диагностика: понятная кнопка, отчёт и выгрузка без секретов.
-      const diagBox = group().querySelector('.vk7tv-docs-diag');
-      T.check('блок диагностики есть', !!diagBox, 'да');
-      const diagBtn = diagBox.querySelector('.vk7tv-docs-diag-toggle');
-      const diagPanel = diagBox.querySelector('.vk7tv-docs-diag-panel');
-      const diagText = diagBox.querySelector('.vk7tv-docs-diag-report');
-      T.check('кнопка диагностики есть', !!diagBtn, 'да');
-      T.check('панель изначально скрыта', diagPanel.style.display === 'none', diagPanel.style.display);
-      diagBtn.click();
-      T.check('панель открывается', diagPanel.style.display !== 'none', diagPanel.style.display);
-      T.check(
-        'выключенная диагностика объясняет, что делать',
-        diagText.value.includes('Включи'),
-        diagText.value
-      );
-      T.eq(
-        'есть кнопка копирования',
-        !!diagBox.querySelector('[data-diag-action="copy"]'),
-        true
-      );
-      T.eq(
-        'есть кнопка выгрузки',
-        !!diagBox.querySelector('[data-diag-action="download"]'),
-        true
-      );
-      window.VK7TV_DOCS.diagnostics.setEnabled(true);
-      diagBtn.click();
-      diagBtn.click();
-      T.check(
-        'включённая диагностика показывает отчёт',
-        diagText.value.includes('"app":"VK7TV"'),
-        diagText.value.slice(0, 120)
-      );
-      T.eq('кнопка отмечена включённой', diagBtn.dataset.on, '1');
-      window.VK7TV_DOCS.diagnostics.setEnabled(false);
     });
   </script>
 </body>

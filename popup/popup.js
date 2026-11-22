@@ -72,9 +72,6 @@ async function render() {
   const tLoad = diagStart();
   const { settings: sync, groups, missing } = await VK7TV.load();
   diagTime('load', tLoad);
-  const tLocal = diagStart();
-  const local = await chrome.storage.local.get({ docsDiagnostics: false });
-  diagTime('localSettings', tLocal);
   if (popupDiag) {
     let entries = 0;
     for (const g of groups) entries += Object.keys(g.emotes).length;
@@ -89,7 +86,6 @@ async function render() {
   $('#suggestOn').checked = sync.suggest;
   $('#autocompleteOn').checked = sync.autocomplete;
   $('#everywhere').checked = sync.everywhere;
-  $('#docsDiagnostics').checked = !!local.docsDiagnostics;
   $('#globalCount').textContent = `(${Object.keys(DEFAULT_EMOTES).length})`;
 
   const setList = $('#setList');
@@ -494,10 +490,6 @@ $('#autocompleteOn').addEventListener('change', (e) => {
 
 $('#everywhere').addEventListener('change', (e) => {
   chrome.storage.sync.set({ everywhere: e.target.checked });
-});
-
-$('#docsDiagnostics').addEventListener('change', (e) => {
-  chrome.storage.local.set({ docsDiagnostics: e.target.checked });
 });
 
 $('#addSet').addEventListener('click', async () => {

@@ -77,10 +77,6 @@
   let docsBatchFiles = [];
   let docsBatchRejected = [];
   let docsBatchMode = 'original';
-  let docsDiagButton = null;
-  let docsDiagPanel = null;
-  let docsDiagText = null;
-  let docsDiagOpen = false;
   let docsDnd = null;
   let docsDndDepth = 0;
   let docsDndVisible = false;
@@ -1754,159 +1750,6 @@
     });
   }
 
-  // --- диагностика загрузки файлов ---
-
-  function docsDiagEnabled() {
-    try {
-      return !!(DOCS && DOCS.diagnostics && DOCS.diagnostics.enabled());
-    } catch (e) {
-      return false;
-    }
-  }
-
-  function docsDiagReport() {
-    try {
-      return (DOCS && DOCS.diagnostics && DOCS.diagnostics.report()) || '';
-    } catch (e) {
-      return '';
-    }
-  }
-
-  function refreshDocsDiagPanel() {
-    if (!docsDiagPanel || !docsDiagText || !docsDiagOpen) return;
-    const enabled = docsDiagEnabled();
-    docsDiagButton.dataset.on = enabled ? '1' : '0';
-    docsDiagText.value = enabled
-      ? docsDiagReport() || 'Журнал пока пуст — выполни загрузку и обнови отчёт.'
-      : 'Диагностика выключена. Включи «Диагностика загрузки файлов» в попапе расширения и повтори сценарий.';
-    docsDiagText.scrollTop = docsDiagText.scrollHeight;
-  }
-
-  function toggleDocsDiagPanel() {
-    if (!docsDiagPanel) return;
-    docsDiagOpen = !docsDiagOpen;
-    docsDiagPanel.style.display = docsDiagOpen ? '' : 'none';
-    docsDiagButton.setAttribute('aria-expanded', docsDiagOpen ? 'true' : 'false');
-    refreshDocsDiagPanel();
-  }
-
-  function copyTextFallback(text) {
-    const box = document.createElement('textarea');
-    box.value = text;
-    box.className = 'vk7tv-sr-only';
-    document.body.appendChild(box);
-    box.select();
-    let ok = false;
-    try {
-      ok = document.execCommand('copy');
-    } catch (e) {
-      ok = false;
-    }
-    box.remove();
-    return ok;
-  }
-
-  function copyDocsDiagReport() {
-    const text = docsDiagReport();
-    if (!text) {
-      flash('Диагностика выключена — включи её в попапе расширения');
-      return;
-    }
-    const done = () => flash('Отчёт диагностики скопирован');
-    const failed = () => flash('Не удалось скопировать отчёт');
-    try {
-      if (navigator.clipboard && navigator.clipboard.writeText) {
-        navigator.clipboard.writeText(text).then(done, () => {
-          if (copyTextFallback(text)) done();
-          else failed();
-        });
-      } else if (copyTextFallback(text)) done();
-      else failed();
-    } catch (e) {
-      if (copyTextFallback(text)) done();
-      else failed();
-    }
-  }
-
-  function downloadDocsDiagReport() {
-    const text = docsDiagReport();
-    if (!text) {
-      flash('Диагностика выключена — включи её в попапе расширения');
-      return;
-    }
-    try {
-      const stamp = new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-');
-      const blob = new Blob([text], { type: 'application/json' });
-      const url = URL.createObjectURL(blob);
-      const link = document.createElement('a');
-      link.href = url;
-      link.download = `vk7tv-diagnostics-${stamp}.json`;
-      document.body.appendChild(link);
-      link.click();
-      link.remove();
-      setTimeout(() => URL.revokeObjectURL(url), 1000);
-      flash('Отчёт диагностики сохранён');
-    } catch (e) {
-      flash('Не удалось сохранить отчёт');
-    }
-  }
-
-  function buildDocsDiag() {
-    const box = document.createElement('div');
-    box.className = 'vk7tv-docs-diag';
-    const button = document.createElement('button');
-    button.className = 'vk7tv-docs-diag-toggle';
-    button.type = 'button';
-    button.textContent = 'Диагностика';
-    button.title = 'Журнал этапов загрузки без токенов, имён файлов и полных адресов';
-    button.setAttribute('aria-expanded', 'false');
-    const panel = document.createElement('div');
-    panel.className = 'vk7tv-docs-diag-panel';
-    panel.style.display = 'none';
-    const text = document.createElement('textarea');
-    text.className = 'vk7tv-docs-diag-report';
-    text.readOnly = true;
-    text.rows = 8;
-    text.spellcheck = false;
-    const actions = document.createElement('div');
-    actions.className = 'vk7tv-docs-diag-actions';
-    const copy = document.createElement('button');
-    copy.type = 'button';
-    copy.textContent = 'Скопировать';
-    copy.dataset.diagAction = 'copy';
-    const save = document.createElement('button');
-    save.type = 'button';
-    save.textContent = 'Скачать';
-    save.dataset.diagAction = 'download';
-    const clear = document.createElement('button');
-    clear.type = 'button';
-    clear.textContent = 'Очистить';
-    clear.dataset.diagAction = 'clear';
-    actions.append(copy, save, clear);
-    panel.append(text, actions);
-    box.append(button, panel);
-    button.addEventListener('click', toggleDocsDiagPanel);
-    panel.addEventListener('click', (e) => {
-      const action = e.target.closest('[data-diag-action]');
-      if (!action) return;
-      e.preventDefault();
-      e.stopPropagation();
-      const what = action.dataset.diagAction;
-      if (what === 'copy') copyDocsDiagReport();
-      else if (what === 'download') downloadDocsDiagReport();
-      else if (what === 'clear') {
-        if (DOCS && DOCS.diagnostics) DOCS.diagnostics.clear();
-        refreshDocsDiagPanel();
-        flash('Журнал диагностики очищен');
-      }
-    });
-    docsDiagButton = button;
-    docsDiagPanel = panel;
-    docsDiagText = text;
-    docsDiagOpen = false;
-    return box;
-  }
-
   function buildDocsSection() {
     const sec = document.createElement('div');
     sec.className = 'vk7tv-picker-group vk7tv-docs-group';
@@ -1964,7 +1807,6 @@
     retry.style.display = 'none';
     status.append(statusText, retry);
 
-    const diag = buildDocsDiag();
 
     const grid = document.createElement('div');
     grid.className = 'vk7tv-picker-grid vk7tv-docs-grid';
@@ -1975,7 +1817,7 @@
     const sentinel = document.createElement('div');
     sentinel.className = 'vk7tv-docs-sentinel';
 
-    sec.append(head, uploads, batch, status, diag, grid, tail, sentinel);
+    sec.append(head, uploads, batch, status, grid, tail, sentinel);
 
     docsSection = sec;
     docsGrid = grid;
@@ -2038,14 +1880,20 @@
           ? `Преобразование в GIF: кадр ${job.convertedFrame} из ${job.convertedTotal}`
           : 'Преобразование в GIF';
       case 'server':
-        return 'Получение сервера VK';
+        return 'Получение адреса загрузки VK';
       case 'uploading': {
-        if (job.total > 0 && job.loaded >= job.total) return 'Сохранение в VK';
+        const seconds = job.transferIdleSeconds || 0;
+        const wait = seconds > 0 ? ` · ожидание ${seconds} с` : '';
+        if (job.total > 0 && job.loaded >= job.total) {
+          return 'Файл передан · ожидание ответа VK' + wait;
+        }
+        if (!job.loaded) return 'Подключение к VK' + wait;
         if (job.total > 0) {
           const percent = Math.max(0, Math.min(100, Math.round((job.loaded / job.total) * 100)));
-          return `Загрузка ${percent}%`;
+          return `Передача в VK: ${percent}% · ${formatBytes(job.loaded)} из ${formatBytes(job.total)}` +
+            (seconds >= 3 ? ` · нет прогресса ${seconds} с` : '');
         }
-        return 'Загрузка';
+        return 'Передача в VK' + wait;
       }
       case 'saving':
         return 'Сохранение в VK';
@@ -2266,8 +2114,6 @@
     docsSection.classList.toggle('vk7tv-collapsed', docsCollapsed);
     if (docsCount) docsCount.textContent = docsCountText();
     renderUploadQueue(st);
-    if (docsDiagButton) docsDiagButton.dataset.on = docsDiagEnabled() ? '1' : '0';
-    if (docsDiagOpen) refreshDocsDiagPanel();
 
     if (!docsStatus) return;
     const retry = docsStatus._retry;
