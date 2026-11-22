@@ -1,0 +1,431 @@
+<!doctype html>
+<meta charset="utf-8" />
+<title>VK7TV — загрузка: восстановление входа</title>
+<body>
+  <script src="harness.js"></script>
+  <script>
+    const T = window.VK7TV_TEST;
+    const AUTH_KEY = '6287487:web_token:login:auth';
+    const authValue = (userId, token) =>
+      JSON.stringify({
+        access_token: token || 'test-token',
+        user_id: userId,
+        expires: Math.floor(Date.now() / 1000) + 3600,
+      });
+    localStorage.clear();
+    localStorage.setItem(AUTH_KEY, authValue(42));
+
+    const preview = [
+      { type: 's', src: 'https://sun9-1.userapi.com/s.png', width: 64, height: 64 },
+    ];
+    const serverDoc = (id, title) => ({
+      owner_id: 42,
+      id,
+      title,
+      ext: 'gif',
+      type: 3,
+      size: 10,
+      date: 1,
+      url: `https://vk.ru/doc42_${id}`,
+      preview: { photo: { sizes: preview } },
+    });
+
+    let serverMode = 'ok';
+    let serverCalls = 0;
+    let saveCalls = 0;
+    let bridgeResult = null;
+    let bridgeCalls = 0;
+    let heldBridgeId = null;
+    let lastBridgeUserId = 42;
+
+    function replyBridge(id, result) {
+      window.postMessage(
+        { __vk7tvDocsBridge: 1, to: 'extension', id, result },
+        location.origin
+      );
+    }
+
+    // Страница VK отвечает на единственную разрешённую операцию моста.
+    window.addEventListener('message', (e) => {
+      if (e.source !== window || e.origin !== location.origin) return;
+      const d = e.data;
+      if (!d || d.__vk7tvDocsBridge !== 1 || d.to !== 'page') return;
+      if (d.type !== 'refresh-auth') return;
+      bridgeCalls++;
+      if (bridgeResult === 'hold') {
+        heldBridgeId = d.id;
+        return;
+      }
+      if (bridgeResult) {
+        replyBridge(d.id, bridgeResult);
+        return;
+      }
+      replyBridge(d.id, {
+        ok: true,
+        token: 'token-refreshed',
+        userId: lastBridgeUserId,
+        expires: Math.floor(Date.now() / 1000) + 3600,
+      });
+    });
+
+    window.fetch = (url, opts) => {
+      const method = String(url).split('/').pop();
+      const body = new URLSearchParams(opts && opts.body);
+      const token = body.get('access_token');
+      const reply = (json, status) =>
+        Promise.resolve({
+          ok: (status || 200) < 400,
+          status: status || 200,
+          json: () => Promise.resolve(json),
+        });
+
+      if (method === 'docs.get') {
+        if (serverMode === 'library-auth') {
+          if (token === 'test-token') return reply({ error: { error_code: 5 } });
+          return reply({
+            response: {
+              count: 1,
+              total_count: 1,
+              items: [
+                {
+                  owner_id: 42,
+                  id: 1,
+                  title: 'from-server.gif',
+                  ext: 'gif',
+                  size: 10,
+                  date: 1,
+                  url: 'https://vk.ru/doc42_1',
+                  preview: { photo: { sizes: preview } },
+                },
+              ],
+            },
+          });
+        }
+        return reply({ response: { count: 0, total_count: 0, items: [] } });
+      }
+
+      if (method === 'docs.getUploadServer') {
+        serverCalls++;
+        if (serverMode === 'rotate') {
+          if (token === 'test-token') {
+            localStorage.setItem(AUTH_KEY, authValue(42, 'token-2'));
+            return reply({}, 401);
+          }
+          return reply({ response: { upload_url: 'https://pu.vk.ru/upload_doc.php' } });
+        }
+        if (serverMode === 'vk5') {
+          if (token !== 'token-refreshed') return reply({ error: { error_code: 5 } });
+          return reply({ response: { upload_url: 'https://pu.vk.ru/upload_doc.php' } });
+        }
+        if (serverMode === 'same-token') {
+          return reply({
+            error: { error_code: 5, error_msg: 'User authorization failed' },
+          });
+        }
+        if (serverMode === 'always-vk5') {
+          return reply({ error: { error_code: 5 } });
+        }
+        if (serverMode === 'account-change') {
+          return reply({ error: { error_code: 5 } });
+        }
+        if (serverMode === 'html') {
+          return Promise.resolve({
+            ok: true,
+            status: 200,
+            json: () => Promise.reject(new SyntaxError('html')),
+          });
+        }
+        if (serverMode === 'vk1') {
+          return reply({ error: { error_code: 1, error_msg: 'Unknown error' } });
+        }
+        if (serverMode === 'vk4') {
+          return reply({
+            error: { error_code: 4, error_msg: 'Incorrect signature' },
+          });
+        }
+        if (serverMode === 'bad-url') {
+          return reply({
+            response: { upload_url: 'https://evil.example/upload_doc.php' },
+          });
+        }
+        if (serverMode === 'http500') {
+          return reply({}, 500);
+        }
+        return reply({ response: { upload_url: 'https://pu.vk.ru/upload_doc.php' } });
+      }
+
+      if (method === 'docs.save') {
+        saveCalls++;
+        const id = 700 + saveCalls;
+        return reply({
+          response: {
+            type: 'doc',
+            doc: serverDoc(id, body.get('title') || 'new.gif'),
+          },
+        });
+      }
+      return Promise.reject(new Error('unexpected ' + method));
+    };
+
+    const uploads = [];
+    const xhrState = { mode: 'ok', held: null };
+    class FakeXHR {
+      constructor() {
+        this.upload = {};
+        this.status = 0;
+        this.responseText = '';
+        this.aborted = false;
+      }
+      open(method, url) {
+        this.method = method;
+        this.url = url;
+      }
+      send(form) {
+        uploads.push({ url: this.url, form });
+        if (xhrState.mode === 'hold') {
+          xhrState.held = this;
+          return;
+        }
+        setTimeout(() => {
+          const file = form.get('file');
+          this.upload.onprogress({
+            lengthComputable: true,
+            loaded: file.size,
+            total: file.size,
+          });
+          if (xhrState.mode === '401') {
+            this.status = 401;
+            this.onload();
+            return;
+          }
+          this.status = 200;
+          this.responseText = JSON.stringify({ file: 'file-' + uploads.length });
+          this.onload();
+        }, 0);
+      }
+      abort() {
+        this.aborted = true;
+        if (this.onabort) this.onabort();
+      }
+    }
+    window.XMLHttpRequest = FakeXHR;
+
+    const gif = new Uint8Array([0x47, 0x49, 0x46, 0x38, 0x39, 0x61, 0x00, 0x00]);
+    const file = (name) =>
+      new File([gif], name, { type: 'image/gif', lastModified: 1 });
+  </script>
+  <script src="../vk-docs.js"></script>
+  <script>
+    T.run(async () => {
+      const DOCS = window.VK7TV_DOCS;
+      const job = (id) => DOCS.getState().uploads.find((u) => u.id === id);
+      const waitStage = (id, stage) =>
+        T.waitFor(`задание ${id}: ${stage}`, () => {
+          const found = job(id);
+          return !!found && found.stage === stage;
+        });
+
+      // 401 с обновлением localStorage тем же пользователем: один повтор.
+      serverMode = 'rotate';
+      const rotateId = DOCS.enqueueUploads([file('rotate.gif')])[0];
+      await waitStage(rotateId, 'success');
+      T.eq('401: загрузка восстановлена', job(rotateId).stage, 'success');
+      T.eq('401: сервер запрошен дважды', serverCalls, 2);
+      T.eq('401: новый токен использован', DOCS.getState().auth.userId, 42);
+      DOCS.dismissUpload(rotateId);
+
+      // VK error 5 при неизменившейся записи: мост обновляет токен.
+      localStorage.setItem(AUTH_KEY, authValue(42, 'test-token'));
+      DOCS.checkAuth();
+      serverMode = 'vk5';
+      bridgeResult = null;
+      bridgeCalls = 0;
+      serverCalls = 0;
+      const vk5Id = DOCS.enqueueUploads([file('vk5.gif')])[0];
+      await waitStage(vk5Id, 'success');
+      T.eq('код 5: загрузка восстановлена', job(vk5Id).stage, 'success');
+      T.eq('код 5: мост вызван один раз', bridgeCalls, 1);
+      T.eq('код 5: сервер запрошен дважды', serverCalls, 2);
+      DOCS.dismissUpload(vk5Id);
+
+      // Тот же токен после отказа: один запрос, ошибка с исходным кодом VK.
+      localStorage.setItem(AUTH_KEY, authValue(42, 'test-token-3'));
+      DOCS.checkAuth();
+      serverMode = 'same-token';
+      bridgeResult = { ok: false, reason: 'response' };
+      bridgeCalls = 0;
+      serverCalls = 0;
+      const sameId = DOCS.enqueueUploads([file('same.gif')])[0];
+      await waitStage(sameId, 'error');
+      const same = job(sameId);
+      T.eq('неизменившийся токен: ошибка', same.error.kind, 'auth');
+      T.eq('неизменившийся токен: код VK сохранён', same.error.vkCode, 5);
+      T.eq('неизменившийся токен: без цикла', serverCalls, 1);
+      T.eq('неизменившийся токен: мост не помог', bridgeCalls, 1);
+      T.check(
+        'сообщение не просит входить при отказе API',
+        !same.error.message.includes('Открой VK'),
+        same.error.message
+      );
+      DOCS.dismissUpload(sameId);
+
+      // Даже если мост выдал новый токен, а VK всё равно отказывает,
+      // автоматический цикл прекращается после одной попытки.
+      localStorage.setItem(AUTH_KEY, authValue(42, 'test-token-6'));
+      DOCS.checkAuth();
+      serverMode = 'always-vk5';
+      bridgeResult = null;
+      bridgeCalls = 0;
+      serverCalls = 0;
+      const loopId = DOCS.enqueueUploads([file('loop.gif')])[0];
+      await waitStage(loopId, 'error');
+      T.eq('повторный отказ: без бесконечного цикла', serverCalls, 2);
+      T.eq('повторный отказ: одно обновление входа', bridgeCalls, 1);
+      T.eq('повторный отказ: ошибка auth', job(loopId).error.kind, 'auth');
+      DOCS.dismissUpload(loopId);
+
+      // Смена аккаунта во время восстановления: очередь сбрасывается,
+      // запрос с новым аккаунтом не уходит.
+      localStorage.setItem(AUTH_KEY, authValue(42, 'test-token-4'));
+      DOCS.checkAuth();
+      serverMode = 'account-change';
+      lastBridgeUserId = 99;
+      bridgeResult = null;
+      serverCalls = 0;
+      const epoch = DOCS.getState().accountEpoch;
+      const accountId = DOCS.enqueueUploads([file('account.gif')])[0];
+      await T.waitFor('смена аккаунта очистила очередь', () => DOCS.getState().uploads.length === 0);
+      T.eq('смена аккаунта: задание удалено', job(accountId), undefined);
+      T.check('смена аккаунта: эпоха сменилась', DOCS.getState().accountEpoch !== epoch, 'да');
+      T.eq('смена аккаунта: повторного запроса нет', serverCalls, 1);
+      localStorage.setItem(AUTH_KEY, authValue(42, 'test-token'));
+      DOCS.checkAuth();
+
+      // Отмена во время ожидания моста: ответ не запускает новую передачу.
+      localStorage.setItem(AUTH_KEY, authValue(42, 'test-token-5'));
+      DOCS.checkAuth();
+      serverMode = 'vk5';
+      bridgeResult = 'hold';
+      heldBridgeId = null;
+      serverCalls = 0;
+      const cancelId = DOCS.enqueueUploads([file('cancel-bridge.gif')])[0];
+      await T.waitFor('мост удерживает ответ', () => !!heldBridgeId);
+      DOCS.cancelUpload(cancelId);
+      await waitStage(cancelId, 'canceled');
+      replyBridge(heldBridgeId, {
+        ok: true,
+        token: 'token-refreshed',
+        userId: 42,
+        expires: Math.floor(Date.now() / 1000) + 3600,
+      });
+      await new Promise((r) => setTimeout(r, 80));
+      T.eq('отмена: задание осталось отменённым', job(cancelId).stage, 'canceled');
+      T.eq('отмена: сервер не запрашивался повторно', serverCalls, 1);
+      DOCS.dismissUpload(cancelId);
+
+      // Некорректный ответ и 5xx не маскируются под авторизацию.
+      bridgeResult = null;
+      localStorage.setItem(AUTH_KEY, authValue(42, 'test-token'));
+      DOCS.checkAuth();
+      for (const [mode, kind] of [
+        ['html', 'response'],
+        ['http500', 'server'],
+        ['vk1', 'api'],
+      ]) {
+        serverMode = mode;
+        const id = DOCS.enqueueUploads([file(`${mode}.gif`)])[0];
+        await waitStage(id, 'error');
+        T.eq(`${mode}: причина`, job(id).error.kind, kind);
+        T.check(`${mode}: это не auth`, job(id).error.kind !== 'auth', job(id).error.kind);
+        DOCS.dismissUpload(id);
+      }
+
+      // Код 4 — отказ подписи, а не «открой VK заново».
+      serverMode = 'vk4';
+      bridgeResult = { ok: false, reason: 'response' };
+      const vk4Id = DOCS.enqueueUploads([file('vk4.gif')])[0];
+      await waitStage(vk4Id, 'error');
+      const vk4 = job(vk4Id);
+      T.eq('код 4: категория auth', vk4.error.kind, 'auth');
+      T.eq('код 4: код сохранён', vk4.error.vkCode, 4);
+      T.check('код 4: текст про подпись', vk4.error.message.includes('подпись'), vk4.error.message);
+      T.check('код 4: не просит входить', !vk4.error.message.includes('Открой VK'), vk4.error.message);
+      DOCS.dismissUpload(vk4Id);
+
+      // Загрузочный адрес вне разрешённых хостов не получает файл.
+      serverMode = 'bad-url';
+      const beforeBad = uploads.length;
+      const badUrlId = DOCS.enqueueUploads([file('bad-url.gif')])[0];
+      await waitStage(badUrlId, 'error');
+      T.eq('чужой загрузочный хост отклонён', job(badUrlId).error.kind, 'response');
+      T.eq('файл не ушёл на чужой хост', uploads.length, beforeBad);
+      DOCS.dismissUpload(badUrlId);
+
+      // Сетевой сбой остаётся сетевым и не просит входить.
+      serverMode = 'library-auth';
+      const fakeFetch = window.fetch;
+      window.fetch = (url, opts) => {
+        if (String(url).endsWith('/docs.get')) return Promise.reject(new Error('offline'));
+        return fakeFetch(url, opts);
+      };
+      localStorage.setItem(AUTH_KEY, authValue(42, 'test-token'));
+      DOCS.checkAuth();
+      await DOCS.refresh();
+      T.check(
+        'сеть: ошибка не auth',
+        !DOCS.getState().error || DOCS.getState().error.kind !== 'auth',
+        JSON.stringify(DOCS.getState().error)
+      );
+      T.eq(
+        'сеть: причина названа сетевой',
+        DOCS.getState().error && DOCS.getState().error.kind,
+        'network'
+      );
+      T.check(
+        'сеть: текст не про вход',
+        !DOCS.getState().error ||
+          !DOCS.getState().error.message.includes('вход'),
+        DOCS.getState().error && DOCS.getState().error.message
+      );
+      window.fetch = fakeFetch;
+
+      // Диагностика: включает только безопасные поля и не содержит секретов.
+      DOCS.diagnostics.setEnabled(true);
+      serverMode = 'ok';
+      localStorage.setItem(AUTH_KEY, authValue(42, 'secret-token-value'));
+      DOCS.checkAuth();
+      const diagId = DOCS.enqueueUploads([file('secret-file.gif')])[0];
+      await waitStage(diagId, 'success');
+      // Ошибка VK с кодом тоже должна попасть в отчёт.
+      serverMode = 'same-token';
+      bridgeResult = { ok: false, reason: 'response' };
+      const diagErrorId = DOCS.enqueueUploads([file('secret-error.gif')])[0];
+      await waitStage(diagErrorId, 'error');
+      const report = DOCS.diagnostics.report();
+      T.check('отчёт непустой', report.length > 0, String(report.length));
+      T.check('в отчёте есть идентификатор операции', /"op":"upload-/.test(report), 'да');
+      T.check('в отчёте есть этап', report.includes('"stage":"save"'), 'да');
+      T.check('в отчёте есть статус HTTP', report.includes('"http":200'), 'да');
+      T.check('в отчёте есть код VK', report.includes('"vk":5'), 'да');
+      T.check('в отчёте есть hostname загрузки', report.includes('"host":"pu.vk.ru"'), 'да');
+      T.check('в отчёте есть формат и размер', report.includes('"ext":"gif"') && report.includes('"size":8'), 'да');
+      T.check('в отчёте нет токена', !report.includes('secret-token-value'), 'да');
+      T.check('в отчёте нет имени файла', !report.includes('secret-file.gif'), 'да');
+      T.check('в отчёте нет полного URL', !report.includes('upload_doc.php'), 'да');
+      T.check('в отчёте нет access_token', !report.includes('access_token'), 'да');
+      T.check('в отчёте нет сырого error_msg', !report.includes('User authorization failed'), 'да');
+      T.check('отчёт ограничен по размеру', report.length <= 100 * 1024, String(report.length));
+      DOCS.dismissUpload(diagId);
+      DOCS.dismissUpload(diagErrorId);
+
+      // Диагностика не меняет сетевой путь: выключение не ломает загрузку.
+      DOCS.diagnostics.setEnabled(false);
+      serverMode = 'ok';
+      bridgeResult = null;
+      const plainId = DOCS.enqueueUploads([file('plain.gif')])[0];
+      await waitStage(plainId, 'success');
+      T.eq('без диагностики загрузка работает', job(plainId).stage, 'success');
+      DOCS.dismissUpload(plainId);
+    });
+  </script>
+</body>

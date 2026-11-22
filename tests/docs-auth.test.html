@@ -36,9 +36,27 @@
       T.eq('испорченный JSON — нет авторизации', DOCS.checkAuth(), false);
       T.eq('статус — unauthorized', DOCS.getState().status, 'unauthorized');
       T.eq('запрос при отсутствии токена не ушёл', requests.length, 0);
+      T.eq('испорченный JSON назван', DOCS.getState().error.reason, 'bad-json');
 
       localStorage.setItem(AUTH_KEY, JSON.stringify({ access_token: '' }));
       T.eq('пустой токен — нет авторизации', DOCS.checkAuth(), false);
+      T.eq('пустой токен назван', DOCS.getState().error.reason, 'no-token');
+
+      localStorage.setItem(
+        AUTH_KEY,
+        JSON.stringify({
+          access_token: 'old',
+          user_id: 7,
+          expires: Math.floor(Date.now() / 1000) - 60,
+        })
+      );
+      T.eq('просроченный токен — нет авторизации', DOCS.checkAuth(), false);
+      T.eq('просроченный токен назван', DOCS.getState().error.reason, 'expired');
+      T.check(
+        'просроченный токен просит обновить страницу',
+        DOCS.getState().error.message.includes('Срок токена'),
+        DOCS.getState().error.message
+      );
 
       const expires = Math.floor(Date.now() / 1000) + 3600;
       localStorage.setItem(AUTH_KEY, JSON.stringify({ access_token: 'good', user_id: 7, expires }));
@@ -52,7 +70,17 @@
       T.eq('выход из VK отключает раздел', DOCS.checkAuth(), false);
       T.eq('список при выходе очищен', DOCS.getItems().length, 0);
       T.eq('статус после выхода', DOCS.getState().status, 'unauthorized');
-      T.eq('текст просит открыть VK', DOCS.getState().error.message.includes('Открой VK'), true);
+      T.check(
+        'текст просит обновить страницу VK',
+        DOCS.getState().error.message.includes('Обнови страницу VK'),
+        DOCS.getState().error.message
+      );
+      T.check(
+        'локальная потеря входа не выдаётся за сетевой сбой',
+        DOCS.getState().error.authSource === 'local' &&
+          DOCS.getState().error.reason === 'missing',
+        JSON.stringify(DOCS.getState().error)
+      );
     });
   </script>
 </body>

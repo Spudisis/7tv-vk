@@ -87,7 +87,7 @@ const server = createHttpsServer(tls, async (req, res) => {
       res.setHeader(
         'Content-Security-Policy',
         "default-src 'self'; script-src 'self' 'unsafe-inline'; " +
-          "connect-src 'self' https://web.api.vk.ru; img-src 'self' data:; " +
+          "connect-src 'self' https://web.api.vk.ru https://login.vk.ru; img-src 'self' data:; " +
           "frame-src 'none'; worker-src 'none'; object-src 'none'"
       );
     }

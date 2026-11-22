@@ -32,6 +32,40 @@
     };
     window.MECommonContext = Promise.resolve({ store });
 
+    const authFetch = [];
+    const authMode = { mode: 'ok' };
+    window.fetch = (url, opts) => {
+      authFetch.push({ url: String(url), opts });
+      if (authMode.mode === 'network') return Promise.reject(new Error('offline'));
+      if (authMode.mode === 'http') {
+        return Promise.resolve({
+          ok: false,
+          status: 403,
+          json: () => Promise.resolve({}),
+        });
+      }
+      if (authMode.mode === 'html') {
+        return Promise.resolve({
+          ok: true,
+          status: 200,
+          json: () => Promise.reject(new SyntaxError('html')),
+        });
+      }
+      return Promise.resolve({
+        ok: true,
+        status: 200,
+        json: () =>
+          Promise.resolve({
+            type: 'okay',
+            data: {
+              access_token: 'bridge-token',
+              user_id: 42,
+              expires: Math.floor(Date.now() / 1000) + 3600,
+            },
+          }),
+      });
+    };
+
     let seq = 0;
     function call(type, payload) {
       const id = 't' + ++seq;
@@ -69,6 +103,40 @@
       T.check('контекст редактора получен', ctx.ok, 'да');
       T.eq('peer id из маршрута', ctx.peerId, '123');
       T.eq('автор из store', ctx.userId, 42);
+
+      // Мост обновляет вход только фиксированным запросом к VK; URL и тело
+      // из сообщения не используются.
+      const refreshed = await call('refresh-auth', {
+        url: 'https://example.invalid/steal',
+        body: 'x=1',
+      });
+      T.check('мост обновил вход', refreshed.ok, 'да');
+      T.eq('мост вернул пользователя', refreshed.userId, 42);
+      T.eq('мост вернул токен', refreshed.token, 'bridge-token');
+      T.eq('мост сделал один запрос', authFetch.length, 1);
+      T.eq(
+        'мост не подменяет адрес обновления',
+        authFetch[0].url,
+        'https://login.vk.ru/?act=web_token'
+      );
+      T.eq(
+        'мост отправляет фиксированное тело',
+        authFetch[0].opts.body,
+        'version=1&app_id=6287487'
+      );
+      T.eq('мост отправляет cookie сессии', authFetch[0].opts.credentials, 'include');
+
+      authMode.mode = 'network';
+      const net = await call('refresh-auth', {});
+      T.eq('сеть при обновлении названа', net.reason, 'network');
+      authMode.mode = 'http';
+      const denied = await call('refresh-auth', {});
+      T.eq('HTTP-отказ при обновлении назван', denied.reason, 'auth');
+      T.eq('HTTP-статус сохранён', denied.httpStatus, 403);
+      authMode.mode = 'html';
+      const html = await call('refresh-auth', {});
+      T.eq('не-JSON при обновлении назван', html.reason, 'response');
+      authMode.mode = 'ok';
 
       const first = await call('attach-doc', { expectedPeerId: '123', expectedUserId: 42, doc });
       T.eq('документ добавлен', first.status, 'added');

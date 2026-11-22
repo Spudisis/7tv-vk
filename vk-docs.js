@@ -51,7 +51,23 @@
   const FORMAT_SET = new Set(FORMATS);
 
   const AUTH_TEXT =
-    'Не удалось получить авторизацию VK. Открой VK под своим аккаунтом и повтори загрузку.';
+    'VK не подтвердил вход расширения. Обнови страницу VK — она обновит вход, — и повтори загрузку.';
+  const AUTH_LOCAL_TEXT = {
+    missing:
+      'Расширение не видит вход VK на этой странице. Обнови страницу VK и повтори загрузку.',
+    'bad-json':
+      'Запись входа VK повреждена. Обнови страницу VK; если вход не восстановится — войди в VK заново.',
+    'no-token':
+      'В записи входа VK нет токена. Обнови страницу VK; если вход не восстановится — войди в VK заново.',
+    expired:
+      'Срок токена VK истёк. Обнови страницу VK — она обновит вход, — и повтори загрузку.',
+    storage:
+      'Браузер не дал расширению прочитать вход VK. Обнови страницу VK и повтори загрузку.',
+  };
+  const AUTH_ACCOUNT_TEXT =
+    'Аккаунт VK сменился. Загрузка остановлена, чтобы не отправить файл в другой аккаунт.';
+  const AUTH_SIGNATURE_TEXT =
+    'VK отклонил подпись запроса расширения. Обнови страницу VK и повтори загрузку.';
   const NETWORK_TEXT = 'Не удалось загрузить файлы';
   const REPEAT_TEXT = 'VK повторил страницу документов — список загружен не полностью';
   const UPLOAD_NETWORK_TEXT = 'Сеть недоступна или VK не ответил вовремя';
@@ -114,7 +130,15 @@
   let uploadEpoch = 0;
   let libraryVersion = 0;
   let error = null; // { kind, message, retryable }
-  let auth = { status: 'unknown', token: '', userId: 0, expires: 0 };
+  let auth = {
+    status: 'unknown',
+    token: '',
+    userId: 0,
+    expires: 0,
+    reason: '',
+    source: 'none',
+    baseToken: '',
+  };
   let generation = 0;
   let inFlight = null;
   let inFlightGen = 0;
@@ -146,6 +170,269 @@
   let bridgeSeq = 0;
   const bridgePending = new Map();
 
+  // --- диагностика загрузки ---
+  //
+  // Журнал живёт только в памяти страницы и включается настройкой
+  // docsDiagnostics. В записи попадают лишь перечисленные безопасные поля:
+  // без токена, куки, заголовков, тела запросов, имён файлов, полных URL и
+  // сырых ответов VK. Отчёт ограничен по размеру.
+
+  const DIAG_MAX_EVENTS = 300;
+  const DIAG_MAX_REPORT = 100 * 1024;
+  const DIAG_STAGE = new Set([
+    'queue',
+    'auth',
+    'auth-recovery',
+    'check',
+    'checking',
+    'convert',
+    'converting',
+    'server',
+    'transfer',
+    'uploading',
+    'save',
+    'saving',
+    'result',
+    'library',
+    'delete',
+    'api',
+  ]);
+  const DIAG_CATEGORY = new Set([
+    'ok',
+    'network',
+    'timeout',
+    'cancel',
+    'auth',
+    'access',
+    'captcha',
+    'rate',
+    'server',
+    'response',
+    'size',
+    'format',
+    'api',
+    'convert',
+    'repeat',
+    'limit',
+    'other',
+  ]);
+  const DIAG_RESULT = new Set([
+    'start',
+    'ok',
+    'fail',
+    'lost',
+    'token',
+    'refreshed',
+    'account',
+    'cancel',
+    'retry',
+    'unconfirmed',
+  ]);
+  const DIAG_AUTH = new Set(['ok', 'missing', 'bad-json', 'no-token', 'expired', 'storage']);
+  const UPLOAD_HOSTS = new Set(['pu.vk.ru', 'pu.vk.com', 'pu.vk.me']);
+
+  const diag = {
+    enabled: false,
+    started: 0,
+    seq: 0,
+    opSeq: 0,
+    events: [],
+  };
+
+  function diagInt(value, min, max) {
+    const n = Number(value);
+    if (!Number.isFinite(n)) return 0;
+    return Math.max(min, Math.min(max, Math.trunc(n)));
+  }
+
+  function diagOp(prefix) {
+    diag.opSeq = (diag.opSeq + 1) % 1000000;
+    const rand = Math.random().toString(36).slice(2, 8);
+    return `${String(prefix || 'op').slice(0, 12)}-${diag.opSeq}-${rand}`;
+  }
+
+  function setDiagnosticsEnabled(next) {
+    const value = !!next;
+    if (value === diag.enabled) return;
+    diag.enabled = value;
+    if (value) {
+      diag.started = Date.now();
+      diag.seq = 0;
+      diag.events = [];
+      diag.opSeq = 0;
+    }
+  }
+
+  function diagLog(entry) {
+    if (!diag.enabled || !entry) return;
+    const event = {
+      n: ++diag.seq,
+      at: diagInt(Date.now() - diag.started, 0, 24 * 60 * 60 * 1000),
+      op: typeof entry.op === 'string' ? entry.op.slice(0, 48) : '',
+      stage: DIAG_STAGE.has(entry.stage) ? entry.stage : 'api',
+      result: DIAG_RESULT.has(entry.result) ? entry.result : 'fail',
+    };
+    if (entry.attempt != null) event.attempt = diagInt(entry.attempt, 1, 99);
+    if (API_METHODS.has(entry.method)) event.method = entry.method;
+    if (entry.category && DIAG_CATEGORY.has(entry.category)) event.category = entry.category;
+    if (entry.http) event.http = diagInt(entry.http, 0, 599);
+    if (entry.vk) event.vk = diagInt(entry.vk, 0, 9999);
+    if (UPLOAD_HOSTS.has(entry.host)) event.host = entry.host;
+    if (FORMAT_SET.has(entry.ext)) event.ext = entry.ext;
+    if (entry.size != null) event.size = diagInt(entry.size, 0, 4 * 1024 * 1024 * 1024);
+    if (entry.auth && DIAG_AUTH.has(entry.auth)) event.auth = entry.auth;
+    if (entry.tokenChanged === true) event.tokenChanged = true;
+    if (entry.accountChanged === true) event.accountChanged = true;
+    if (entry.redirect === true) event.redirect = true;
+    if (entry.dur != null) event.dur = diagInt(entry.dur, 0, 10 * 60 * 1000);
+    diag.events.push(event);
+    if (diag.events.length > DIAG_MAX_EVENTS) {
+      diag.events.splice(0, diag.events.length - DIAG_MAX_EVENTS);
+    }
+  }
+
+  function browserLabel() {
+    try {
+      const ua = navigator.userAgent || '';
+      const match = ua.match(/(Edg|OPR|Chrome|Firefox|Safari)\/([0-9.]+)/);
+      if (!match) return 'unknown';
+      return `${match[1]} ${match[2].split('.')[0]}`;
+    } catch (e) {
+      return 'unknown';
+    }
+  }
+
+  function diagnosticsReport() {
+    if (!diag.enabled) return '';
+    let version = 'unknown';
+    try {
+      const manifest = chrome.runtime.getManifest();
+      version = manifest && manifest.version ? String(manifest.version) : 'unknown';
+    } catch (e) {
+      // без манифеста отчёт всё равно полезен
+    }
+    let events = diag.events.slice();
+    let text = '';
+    for (;;) {
+      const report = {
+        app: 'VK7TV',
+        version,
+        browser: browserLabel(),
+        diagnostics: true,
+        truncated: events.length < diag.events.length,
+        events,
+      };
+      try {
+        text = JSON.stringify(report);
+      } catch (e) {
+        text = '{"app":"VK7TV","events":[]}';
+      }
+      if (text.length <= DIAG_MAX_REPORT || events.length <= 1) break;
+      events = events.slice(Math.max(1, Math.ceil(events.length / 4)));
+    }
+    return text;
+  }
+
+  function clearDiagnostics() {
+    diag.events = [];
+    diag.seq = 0;
+    diag.started = Date.now();
+  }
+
+  function errorCategory(kind, e) {
+    if (e && e.name === 'AbortError') return 'cancel';
+    switch (kind) {
+      case 'auth':
+        return 'auth';
+      case 'access':
+        return 'access';
+      case 'captcha':
+        return 'captcha';
+      case 'rate':
+        return 'rate';
+      case 'server':
+        return 'server';
+      case 'timeout':
+        return 'timeout';
+      case 'canceled':
+        return 'cancel';
+      case 'response':
+      case 'api':
+        return 'response';
+      case 'size':
+        return 'size';
+      case 'format':
+      case 'empty':
+      case 'corrupt':
+      case 'file':
+        return 'format';
+      case 'convert':
+        return 'convert';
+      case 'repeat':
+        return 'repeat';
+      case 'limit':
+        return 'limit';
+      case 'network':
+        return 'network';
+      default:
+        return kind ? 'other' : 'network';
+    }
+  }
+
+  function logError(e, meta) {
+    const kind = e && e.kind ? e.kind : '';
+    diagLog({
+      op: meta && meta.op,
+      stage: meta && meta.stage,
+      attempt: meta && meta.attempt,
+      method: meta && meta.method,
+      result: 'fail',
+      category: errorCategory(kind, e),
+      http: e && e.httpStatus,
+      vk: e && e.vkCode,
+      host: (e && e.host) || (meta && meta.host),
+      auth: meta && meta.auth,
+      tokenChanged: meta && meta.tokenChanged,
+      accountChanged: meta && meta.accountChanged,
+      dur: meta && meta.dur,
+      redirect: (e && e.redirected) || (meta && meta.redirect),
+    });
+  }
+
+  function diagSpan(op, stage, attempt) {
+    const started = Date.now();
+    return (outcome, extra) =>
+      diagLog({
+        op,
+        stage,
+        attempt,
+        ...(outcome || {}),
+        ...(extra || {}),
+        dur: Date.now() - started,
+      });
+  }
+
+  function loadDiagnosticsSetting() {
+    try {
+      const got = chrome.storage.local.get({ docsDiagnostics: false });
+      if (got && typeof got.then === 'function') {
+        got
+          .then((value) => setDiagnosticsEnabled(!!(value && value.docsDiagnostics)))
+          .catch(() => {});
+      }
+    } catch (e) {
+      // настройки недоступны — диагностика остаётся выключенной
+    }
+    try {
+      chrome.storage.onChanged.addListener((changes, area) => {
+        if (area !== 'local' || !changes.docsDiagnostics) return;
+        setDiagnosticsEnabled(!!changes.docsDiagnostics.newValue);
+      });
+    } catch (e) {
+      // без подписки диагностика не переключится до перезагрузки страницы
+    }
+  }
+
   // --- авторизация ---
 
   function positive(value) {
@@ -158,40 +445,58 @@
     try {
       raw = localStorage.getItem(AUTH_KEY);
     } catch (e) {
-      return { ok: false, reason: 'storage' };
+      return { ok: false, reason: 'storage', userId: 0, expires: 0 };
     }
-    if (!raw) return { ok: false, reason: 'missing' };
+    if (!raw) return { ok: false, reason: 'missing', userId: 0, expires: 0 };
 
     let data;
     try {
       data = JSON.parse(raw);
     } catch (e) {
-      return { ok: false, reason: 'bad-json' };
+      return { ok: false, reason: 'bad-json', userId: 0, expires: 0 };
     }
 
     const token = data && typeof data.access_token === 'string' ? data.access_token.trim() : '';
-    if (!token) return { ok: false, reason: 'no-token' };
-
-    const expires = Number(data.expires) || 0;
-    // Просроченную запись веб-клиент заменит сам; пока он этого не сделал,
-    // запрос заведомо отклонят.
-    if (expires && expires * 1000 <= Date.now() + 30000) {
-      return { ok: false, reason: 'expired' };
-    }
-
     const userId =
-      positive(data.user_id) || positive(data.user?.id) || positive(data.uid) || 0;
+      positive(data && data.user_id) ||
+      positive(data && data.user && data.user.id) ||
+      positive(data && data.uid) ||
+      0;
+    const expires = Number(data && data.expires) || 0;
+    if (!token) return { ok: false, reason: 'no-token', userId, expires };
+
+    // Просроченную запись веб-клиент заменит сам; пока он этого не сделал,
+    // запрос заведомо отклонят. Но userId сохраняем: он нужен, чтобы
+    // отличить обновление токена того же аккаунта от смены аккаунта.
+    if (expires && expires * 1000 <= Date.now() + 30000) {
+      return { ok: false, reason: 'expired', userId, expires };
+    }
 
     return { ok: true, token, userId, expires };
   }
 
-  function authState(read) {
+  function authState(read, source) {
     return {
       status: read.ok ? 'ok' : read.reason === 'expired' ? 'expired' : 'missing',
       token: read.ok ? read.token : '',
-      userId: read.ok ? read.userId : 0,
+      userId: read.ok ? read.userId : positive(read.userId),
       expires: read.ok ? read.expires : 0,
+      reason: read.ok ? '' : read.reason || 'missing',
+      source: read.ok ? source || 'local' : 'none',
+      baseToken: '',
     };
+  }
+
+  function localAuthMessage(reason) {
+    return AUTH_LOCAL_TEXT[reason] || AUTH_LOCAL_TEXT.missing;
+  }
+
+  function authErrorMessage(e) {
+    const source = e && e.authSource;
+    if (source === 'account') return AUTH_ACCOUNT_TEXT;
+    if (source === 'local') return localAuthMessage(e && e.reason);
+    if (e && e.vkCode === 4) return AUTH_SIGNATURE_TEXT;
+    return AUTH_TEXT;
   }
 
   function clearSession() {
@@ -255,19 +560,73 @@
     return true;
   }
 
-  function checkAuth() {
+  function checkAuth(context) {
     const read = readAuth();
+    const prevToken = auth.token;
+    const prevUser = auth.userId;
+    const tokenChanged = !!prevToken && read.ok && read.token !== prevToken;
+    const accountChanged = !!prevUser && !!read.userId && prevUser !== read.userId;
+
     if (!read.ok) {
       const had = auth.status === 'ok' || items.length > 0 || loaded;
+      const message = localAuthMessage(read.reason);
       auth = authState(read);
-      if (had || status !== 'unauthorized') {
+      if (
+        had ||
+        status !== 'unauthorized' ||
+        !error ||
+        error.message !== message ||
+        error.reason !== read.reason
+      ) {
         clearSession();
         auth = authState(read);
         status = 'unauthorized';
-        error = { kind: 'auth', message: AUTH_TEXT, retryable: false };
+        error = {
+          kind: 'auth',
+          message,
+          authSource: 'local',
+          reason: read.reason,
+          retryable: false,
+        };
+        diagLog({
+          op: context && context.op,
+          stage: context && context.stage,
+          result: had ? 'lost' : 'fail',
+          category: 'auth',
+          auth: read.reason,
+          tokenChanged: !!prevToken,
+          accountChanged,
+        });
         notify();
       }
       return false;
+    }
+
+    // Токен, полученный через мост обновления входа, живёт в памяти, пока
+    // VK не перезапишет свою запись. Не откатываемся на старую запись и не
+    // считаем её сменой аккаунта.
+    if (auth.source === 'refresh' && auth.baseToken && read.token === auth.baseToken) {
+      if (accountChanged) {
+        resetForAccount();
+        auth = authState(read);
+        diagLog({
+          op: context && context.op,
+          stage: context && context.stage,
+          result: 'account',
+          category: 'auth',
+          auth: 'ok',
+          accountChanged: true,
+        });
+        notify();
+        return true;
+      }
+      const refreshedExpired =
+        auth.expires && auth.expires * 1000 <= Date.now() + 30000;
+      if (!refreshedExpired) {
+        if (!auth.userId && read.userId) auth.userId = read.userId;
+        if (!auth.expires && read.expires) auth.expires = read.expires;
+        return true;
+      }
     }
 
     if (auth.status !== 'ok') {
@@ -279,8 +638,17 @@
         status = 'idle';
         error = null;
       }
+      diagLog({
+        op: context && context.op,
+        stage: context && context.stage,
+        result: 'ok',
+        category: 'ok',
+        auth: 'ok',
+        tokenChanged,
+        accountChanged,
+      });
       notify();
-      resumeAuthUploads();
+      resumeAuthUploads(true);
       return true;
     }
 
@@ -293,14 +661,22 @@
         resetForAccount();
       }
       auth = authState(read);
+      diagLog({
+        op: context && context.op,
+        stage: context && context.stage,
+        result: 'token',
+        category: 'ok',
+        auth: 'ok',
+        tokenChanged: true,
+        accountChanged: !!accountChanged && !sameUser,
+      });
       notify();
-      resumeAuthUploads();
+      resumeAuthUploads(true);
       return true;
     }
 
     if (!auth.userId && read.userId) auth.userId = read.userId;
     if (read.expires) auth.expires = read.expires;
-    if (uploadAuthHold) resumeAuthUploads();
     return true;
   }
 
@@ -319,13 +695,193 @@
     }
   }
 
+  // Обновление web-токена делает штатная страница VK: только у неё есть
+  // cookie-сессия. Мост принимает одну фиксированную операцию без URL и
+  // тела от вызывающей стороны. Новый токен остаётся в памяти расширения;
+  // запись VK не перезаписываем, чтобы не вмешиваться в выход из аккаунта.
+  function refreshAuthFromPage() {
+    return bridgeCall('refresh-auth', {}, 6000).then((result) => {
+      if (!result || result.ok !== true) {
+        return {
+          ok: false,
+          reason: result && typeof result.reason === 'string' ? result.reason : 'response',
+          httpStatus: result && Number.isSafeInteger(result.httpStatus) ? result.httpStatus : 0,
+        };
+      }
+      const token =
+        typeof result.token === 'string' ? result.token.trim() : '';
+      const userId = positive(result.userId);
+      const expires = Number(result.expires) || 0;
+      if (!token || token.length > 4096 || !userId) {
+        return { ok: false, reason: 'response', httpStatus: 0 };
+      }
+      return { ok: true, token, userId, expires };
+    });
+  }
+
+  // Ограниченное восстановление: один раз читаем запись VK и повторяем
+  // запрос только при обновлении токена того же пользователя. Если запись
+  // не изменилась, просим страницу VK обновить web-токен и принимаем его
+  // только для того же userId. Смена аккаунта сбрасывает очередь.
+  async function recoverAuthForUser(expectedUser, usedToken, op, stage) {
+    const knownUser = positive(expectedUser) || positive(auth.userId);
+    const prevToken = usedToken || auth.token;
+    const read = readAuth();
+    const readResult = read.ok ? 'ok' : read.reason;
+    const tokenChanged = !!(read.ok && read.token && read.token !== prevToken);
+
+    diagLog({
+      op,
+      stage: 'auth-recovery',
+      attempt: 1,
+      result: 'start',
+      category: 'auth',
+      auth: readResult,
+      tokenChanged,
+    });
+
+    if (read.ok && tokenChanged) {
+      if (knownUser && read.userId && knownUser !== read.userId) {
+        diagLog({
+          op,
+          stage: 'auth-recovery',
+          attempt: 1,
+          result: 'account',
+          category: 'auth',
+          auth: readResult,
+          tokenChanged: true,
+          accountChanged: true,
+        });
+        resetForAccount();
+        return false;
+      }
+      auth = authState(read);
+      diagLog({
+        op,
+        stage: 'auth-recovery',
+        attempt: 1,
+        result: 'token',
+        category: 'ok',
+        auth: 'ok',
+        tokenChanged: true,
+      });
+      notify();
+      resumeAuthUploads(true);
+      return true;
+    }
+
+    // Без подтверждённого пользователя обновлять токен нельзя: иначе
+    // незавершённая загрузка могла бы уйти в другой аккаунт.
+    if (!knownUser || !read.ok || !read.userId || read.userId !== knownUser) {
+      diagLog({
+        op,
+        stage: 'auth-recovery',
+        attempt: 1,
+        result: 'fail',
+        category: 'auth',
+        auth: readResult,
+        tokenChanged: false,
+      });
+      return false;
+    }
+
+    const refreshed = await refreshAuthFromPage();
+    if (!refreshed.ok) {
+      diagLog({
+        op,
+        stage: 'auth-recovery',
+        attempt: 1,
+        result: 'fail',
+        category:
+          refreshed.reason === 'network'
+            ? 'network'
+            : refreshed.reason === 'timeout'
+              ? 'timeout'
+              : 'auth',
+        auth: readResult,
+        http: refreshed.httpStatus,
+      });
+      return false;
+    }
+    if (refreshed.userId !== knownUser) {
+      diagLog({
+        op,
+        stage: 'auth-recovery',
+        attempt: 1,
+        result: 'account',
+        category: 'auth',
+        auth: readResult,
+        accountChanged: true,
+      });
+      resetForAccount();
+      return false;
+    }
+    if (!refreshed.token || refreshed.token === prevToken) {
+      diagLog({
+        op,
+        stage: 'auth-recovery',
+        attempt: 1,
+        result: 'fail',
+        category: 'auth',
+        auth: readResult,
+        tokenChanged: false,
+      });
+      return false;
+    }
+
+    auth = {
+      status: 'ok',
+      token: refreshed.token,
+      userId: knownUser,
+      expires: refreshed.expires,
+      reason: '',
+      source: 'refresh',
+      // Запоминаем запись, которую заменили. Пока VK не перезапишет её,
+      // checkAuth не должен откатывать токен обратно.
+      baseToken: prevToken,
+    };
+    diagLog({
+      op,
+      stage: 'auth-recovery',
+      attempt: 1,
+      result: 'refreshed',
+      category: 'ok',
+      auth: 'ok',
+      tokenChanged: true,
+    });
+    notify();
+    resumeAuthUploads(true);
+    return true;
+  }
+
   // --- сеть ---
 
-  function apiError(kind, message, retryable) {
+  function apiError(kind, message, retryable, details) {
     const err = new Error(message || kind);
     err.kind = kind;
     err.retryable = !!retryable;
+    if (details) {
+      if (Number.isSafeInteger(details.httpStatus) && details.httpStatus > 0) {
+        err.httpStatus = details.httpStatus;
+      }
+      if (Number.isSafeInteger(details.vkCode) && details.vkCode > 0) {
+        err.vkCode = details.vkCode;
+      }
+      if (typeof details.authSource === 'string') err.authSource = details.authSource;
+      if (typeof details.reason === 'string') err.reason = details.reason;
+      if (UPLOAD_HOSTS.has(details.host)) err.host = details.host;
+      if (details.redirected === true) err.redirected = true;
+    }
     return err;
+  }
+
+  function hostOf(value) {
+    try {
+      const host = new URL(value).hostname;
+      return UPLOAD_HOSTS.has(host) ? host : '';
+    } catch (e) {
+      return '';
+    }
   }
 
   const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -490,14 +1046,20 @@
     };
   }
 
-  function classifyVkError(vkError) {
+  function classifyVkError(vkError, httpStatus) {
     const code = Number(vkError && vkError.error_code) || 0;
-    if (code === 5 || code === 4 || code === 1) return apiError('auth', 'auth', false);
-    if (code === 14) return apiError('captcha', 'captcha', false);
-    if (code === 15) return apiError('access', 'access', false);
-    if (code === 6 || code === 9) return apiError('rate', 'rate', true);
-    if (code === 10) return apiError('server', 'server', true);
-    return apiError('api', 'api', false);
+    const details = { vkCode: code, httpStatus };
+    // 5 — пользовательская авторизация, 4 — подпись запроса. Оба приходят
+    // от VK, но действия разные, поэтому источник сохраняется отдельно.
+    if (code === 5) return apiError('auth', 'auth', false, { ...details, authSource: 'api' });
+    if (code === 4) return apiError('auth', 'auth', false, { ...details, authSource: 'signature' });
+    if (code === 14) return apiError('captcha', 'captcha', false, details);
+    if (code === 15 || code === 7) return apiError('access', 'access', false, details);
+    if (code === 6 || code === 9) return apiError('rate', 'rate', true, details);
+    if (code === 10) return apiError('server', 'server', true, details);
+    // 1 — «неизвестная ошибка»: это не отказ авторизации. Не отправляем
+    // пользователя заново входить из-за неё.
+    return apiError('api', 'api', false, details);
   }
 
   function apiBody(token, params) {
@@ -518,6 +1080,10 @@
   async function apiRequest(method, params, token, opts) {
     if (!API_METHODS.has(method)) throw apiError('api', 'api', false);
     const options = opts || {};
+    const op = options.op || diagOp('api');
+    const stage = options.stage || 'api';
+    const attempt = options.attempt || 1;
+    const started = Date.now();
     const ctrl = new AbortController();
     if (options.register) options.register(ctrl);
     else aborts.add(ctrl);
@@ -527,53 +1093,100 @@
       timedOut = true;
       ctrl.abort();
     }, options.timeout || REQUEST_TIMEOUT);
+    let res = null;
 
-    let res;
     try {
-      res = await fetch(API_ROOT + method, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/x-www-form-urlencoded;charset=UTF-8' },
-        body: apiBody(token, params),
-        credentials: 'omit',
-        cache: 'no-store',
-        signal: ctrl.signal,
-      });
-    } catch (e) {
-      if (e && e.name === 'AbortError') {
-        if (timedOut) throw apiError('timeout', 'timeout', true);
-        throw e;
+      try {
+        res = await fetch(API_ROOT + method, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/x-www-form-urlencoded;charset=UTF-8' },
+          body: apiBody(token, params),
+          credentials: 'omit',
+          cache: 'no-store',
+          signal: ctrl.signal,
+        });
+      } catch (e) {
+        if (e && e.name === 'AbortError') {
+          if (timedOut) throw apiError('timeout', 'timeout', true);
+          throw e;
+        }
+        throw apiError('network', 'network', true);
       }
-      throw apiError('network', 'network', true);
+
+      let data = null;
+      try {
+        data = await res.json();
+      } catch (e) {
+        data = null;
+      }
+
+      if (res.status === 413) {
+        throw apiError('size', 'size', false, { httpStatus: res.status });
+      }
+      if (res.status === 429) {
+        throw apiError('rate', 'rate', true, { httpStatus: res.status });
+      }
+      if (res.status === 401) {
+        throw apiError('auth', 'auth', false, {
+          httpStatus: res.status,
+          authSource: 'http',
+        });
+      }
+      if (res.status === 403) {
+        throw apiError('access', 'access', false, { httpStatus: res.status });
+      }
+      if (data && data.error) throw classifyVkError(data.error, res.status);
+      if (res.status >= 500) {
+        throw apiError('server', 'server', true, { httpStatus: res.status });
+      }
+      if (!res.ok) {
+        throw apiError('response', 'response', false, { httpStatus: res.status });
+      }
+      if (!data || !data.response) {
+        throw apiError('response', 'response', false, { httpStatus: res.status });
+      }
+
+      diagLog({
+        op,
+        stage,
+        attempt,
+        method,
+        result: 'ok',
+        category: 'ok',
+        http: res.status,
+        redirect: res.redirected === true,
+        dur: Date.now() - started,
+      });
+      return data.response;
+    } catch (e) {
+      logError(e, {
+        op,
+        stage,
+        attempt,
+        method,
+        dur: Date.now() - started,
+        auth: options.auth,
+      });
+      throw e;
     } finally {
       clearTimeout(timer);
       if (options.unregister) options.unregister(ctrl);
       else aborts.delete(ctrl);
     }
-
-    let data = null;
-    try {
-      data = await res.json();
-    } catch (e) {
-      data = null;
-    }
-
-    if (res.status === 413) throw apiError('size', 'size', false);
-    if (res.status === 429) throw apiError('rate', 'rate', true);
-    if (res.status === 401) throw apiError('auth', 'auth', false);
-    if (res.status === 403) throw apiError('access', 'access', false);
-    if (data && data.error) throw classifyVkError(data.error);
-    if (res.status >= 500) throw apiError('server', 'server', true);
-    if (!res.ok) throw apiError('response', 'response', false);
-    if (!data || !data.response) throw apiError('response', 'response', false);
-    return data.response;
   }
 
-  async function requestOnce(token, at) {
+  async function requestOnce(token, at, opId, attempt) {
     const response = await apiRequest(
       'docs.get',
       { count: PAGE, offset: at },
       token,
-      { timeout: REQUEST_TIMEOUT }
+      {
+        timeout: REQUEST_TIMEOUT,
+        op: opId,
+        stage: 'library',
+        attempt: attempt || 1,
+        auth: 'ok',
+      }
     );
     if (!response || !Array.isArray(response.items)) {
       throw apiError('response', 'response', false);
@@ -581,17 +1194,17 @@
     return response;
   }
 
-  async function requestPage(token, at) {
+  async function requestPage(token, at, opId) {
     const epoch = abortEpoch;
     try {
-      return await requestOnce(token, at);
+      return await requestOnce(token, at, opId, 1);
     } catch (e) {
       if (!e || !e.retryable || e.name === 'AbortError') throw e;
       await delay(RETRY_DELAY);
       if (epoch !== abortEpoch) {
         throw new DOMException('aborted', 'AbortError');
       }
-      return requestOnce(token, at);
+      return requestOnce(token, at, opId, 2);
     }
   }
 
@@ -906,7 +1519,14 @@
 
   function setError(e, search) {
     if (!e || e.kind === 'auth') {
-      error = { kind: 'auth', message: AUTH_TEXT, retryable: false, search: !!search };
+      error = {
+        kind: 'auth',
+        message: authErrorMessage(e),
+        authSource: (e && e.authSource) || 'local',
+        reason: (e && e.reason) || '',
+        retryable: false,
+        search: !!search,
+      };
       return;
     }
     if (e.kind === 'repeat') {
@@ -923,7 +1543,12 @@
       return;
     }
     if (e.kind === 'api') {
-      error = { kind: 'api', message: NETWORK_TEXT, retryable: true, search: !!search };
+      error = {
+        kind: 'api',
+        message: 'VK отклонил запрос. Повтори загрузку.',
+        retryable: true,
+        search: !!search,
+      };
       return;
     }
     error = { kind: e.kind || 'network', message: NETWORK_TEXT, retryable: true, search: !!search };
@@ -937,6 +1562,8 @@
       return;
     }
     const gen = generation;
+    const opId = diagOp('library');
+    let authRecoveryUsed = false;
 
     try {
       let pages = 0;
@@ -963,23 +1590,33 @@
         let response;
         let usedToken = auth.token;
         try {
-          response = await requestPage(auth.token, offset);
+          response = await requestPage(auth.token, offset, opId);
         } catch (e) {
           if (gen !== generation) return;
           if (e && e.name === 'AbortError') return;
           if (e && e.kind === 'auth') {
-            // Веб-клиент мог успеть обновить токен — читаем запись ещё раз.
-            const read = readAuth();
-            if (read.ok && read.token && read.token !== usedToken) {
-              const sameUser =
-                auth.userId && read.userId && auth.userId === read.userId;
-              if (!sameUser) resetForAccount();
-              auth = authState(read);
-              notify();
-              continue;
+            // Один раз пробуем перечитать или обновить вход того же
+            // аккаунта. Цикл повторов не запускаем: повторная ошибка
+            // сразу показывается пользователю.
+            if (!authRecoveryUsed) {
+              authRecoveryUsed = true;
+              const recovered = await recoverAuthForUser(
+                auth.userId,
+                usedToken,
+                opId,
+                'library'
+              );
+              if (gen !== generation) return;
+              if (recovered) continue;
             }
             status = 'unauthorized';
-            error = { kind: 'auth', message: AUTH_TEXT, retryable: false };
+            error = {
+              kind: 'auth',
+              message: authErrorMessage(e),
+              authSource: e.authSource || 'api',
+              reason: e.reason || '',
+              retryable: false,
+            };
             break;
           }
           setError(e, !!query);
@@ -1202,7 +1839,17 @@
       converted: !!job.converted,
       convertedFrame: job.convertedFrame || 0,
       convertedTotal: job.convertedTotal || 0,
-      error: job.error ? { kind: job.error.kind, message: job.error.message } : null,
+      error: job.error
+        ? {
+            kind: job.error.kind,
+            message: job.error.message,
+            httpStatus: job.error.httpStatus || 0,
+            vkCode: job.error.vkCode || 0,
+            stage: job.error.stage || '',
+            authSource: job.error.authSource || '',
+            retryable: !!job.error.retryable,
+          }
+        : null,
       canCancel: uploadStageActive(job),
       canRetry: !!job.canRetry,
       canDismiss: uploadTerminal(job),
@@ -1302,12 +1949,30 @@
   // или очистка очереди делают задание недействительным.
   function requireUploadAuth(job) {
     if (!owned(job) || !uploadStageActive(job)) throw uploadError('canceled');
-    if (!checkAuth()) throw uploadError('auth');
+    if (!checkAuth({ op: job.opId, stage: job.stage })) {
+      const reason = auth.reason || 'missing';
+      diagLog({
+        op: job.opId,
+        stage: job.stage,
+        result: 'fail',
+        category: 'auth',
+        auth: DIAG_AUTH.has(reason) ? reason : 'missing',
+      });
+      throw uploadError('auth', localAuthMessage(reason), {
+        authSource: 'local',
+        reason,
+      });
+    }
     if (!owned(job) || !uploadStageActive(job)) throw uploadError('canceled');
   }
 
-  function uploadError(kind, message) {
-    return apiError(kind, message || UPLOAD_ERRORS[kind] || UPLOAD_ERRORS.response, false);
+  function uploadError(kind, message, details) {
+    return apiError(
+      kind,
+      message || UPLOAD_ERRORS[kind] || UPLOAD_ERRORS.response,
+      false,
+      details
+    );
   }
 
   function jobErrorKind(e) {
@@ -1317,7 +1982,8 @@
     return 'network';
   }
 
-  function canRetryKind(kind) {
+  function canRetryKind(kind, e) {
+    if (e && e.authSource === 'account') return false;
     return (
       kind !== 'format' &&
       kind !== 'empty' &&
@@ -1337,18 +2003,31 @@
   function setJobError(job, e) {
     const kind = jobErrorKind(e);
     if (kind === 'canceled') return;
+    const failedStage = job.stage;
     job.stage = 'error';
     job.note = '';
-    const fallback = UPLOAD_ERRORS[kind] || UPLOAD_ERRORS.response;
+    let message = UPLOAD_ERRORS[kind] || UPLOAD_ERRORS.response;
+    if (kind === 'auth') message = authErrorMessage(e);
+    else if (kind.startsWith('convert-') && e && e.message) message = e.message;
     job.error = {
       kind,
-      message: kind.startsWith('convert-') && e && e.message ? e.message : fallback,
+      message,
+      httpStatus: (e && e.httpStatus) || 0,
+      vkCode: (e && e.vkCode) || 0,
+      stage: failedStage || 'result',
+      authSource: (e && e.authSource) || '',
+      retryable: !!(e && e.retryable),
     };
-    job.canRetry = canRetryKind(kind);
+    job.canRetry = canRetryKind(kind, e);
     job.canDismiss = true;
     job.xhr = null;
     job.ctrl = null;
     if (kind === 'auth') uploadAuthHold = true;
+    logError(e, {
+      op: job.opId,
+      stage: 'result',
+      auth: kind === 'auth' ? 'ok' : '',
+    });
     updateUploadLifecycle();
     notify();
   }
@@ -1364,6 +2043,14 @@
     job.canDismiss = true;
     job.xhr = null;
     job.ctrl = null;
+    diagLog({
+      op: job.opId,
+      stage: 'result',
+      result: 'unconfirmed',
+      category: 'response',
+      ext: job.ext,
+      size: job.size,
+    });
     updateUploadLifecycle();
     notify();
   }
@@ -1377,12 +2064,20 @@
     job.xhr = null;
     job.ctrl = null;
     releaseJobFile(job);
+    diagLog({
+      op: job.opId,
+      stage: 'result',
+      result: 'cancel',
+      category: 'cancel',
+      ext: job.ext,
+      size: job.size,
+    });
     updateUploadLifecycle();
     notify();
   }
 
-  function resumeAuthUploads() {
-    if (!uploadAuthHold || !uploads.size) return;
+  function resumeAuthUploads(authChanged) {
+    if (!uploadAuthHold || !uploads.size || !authChanged) return;
     uploadAuthHold = false;
     let changed = false;
     for (const job of uploads.values()) {
@@ -1391,6 +2086,8 @@
         job.error = null;
         job.canRetry = false;
         job.canDismiss = false;
+        // Новый запуск снова получает одну попытку восстановления входа.
+        job.authRetry = 0;
         changed = true;
       }
     }
@@ -1581,15 +2278,22 @@
     notify();
 
     let lastError = null;
-    for (let attempt = 0; attempt < 2; attempt++) {
+    let networkRetries = 0;
+    let authRetried = false;
+    for (let attempt = 1; ; attempt++) {
       requireUploadAuth(job);
+      const usedToken = auth.token;
       try {
         const response = await apiRequest(
           'docs.getUploadServer',
           { group_id: '0' },
-          auth.token,
+          usedToken,
           {
             timeout: REQUEST_TIMEOUT,
+            op: job.opId,
+            stage: 'server',
+            attempt,
+            auth: 'ok',
             register: (ctrl) => {
               job.ctrl = ctrl;
             },
@@ -1601,14 +2305,34 @@
         requireUploadAuth(job);
         const url = safeUploadUrl(response && response.upload_url);
         if (!url) throw uploadError('response');
+        diagSpan(job.opId, 'server', attempt)({
+          result: 'ok',
+          category: 'ok',
+          ext: job.ext || extensionOf(job.name),
+          size: job.size,
+        });
         return url;
       } catch (e) {
         lastError = e;
-        // Повторяем только временный сетевой сбой. Капчу, лимиты частоты
+        // Отказ авторизации — единственный случай, когда имеет смысл
+        // перечитать/обновить вход того же аккаунта. Капчу, лимиты частоты
         // и отказ VK автоматически не повторяем.
+        if (e && e.kind === 'auth' && !authRetried) {
+          authRetried = true;
+          job.authRetry = (job.authRetry || 0) + 1;
+          const recovered = await recoverAuthForUser(
+            job.userId,
+            usedToken,
+            job.opId,
+            'server'
+          );
+          if (recovered && owned(job)) continue;
+          break;
+        }
         const retryable =
           e && (e.kind === 'network' || e.kind === 'timeout' || e.kind === 'server');
-        if (!retryable || attempt > 0) break;
+        if (!retryable || networkRetries >= 1) break;
+        networkRetries++;
         await delay(RETRY_DELAY);
         requireUploadAuth(job);
       }
@@ -1616,7 +2340,10 @@
     throw lastError || uploadError('response');
   }
 
-  function transferUpload(job, uploadUrl) {
+  function transferUpload(job, uploadUrl, attempt) {
+    const uploadHost = hostOf(uploadUrl);
+    const startedAt = Date.now();
+    const attemptNo = attempt || 1;
     return new Promise((resolve, reject) => {
       if (!owned(job)) {
         reject(uploadError('canceled'));
@@ -1629,6 +2356,14 @@
         settled = true;
         clearInterval(timer);
         job.xhr = null;
+        if (e) e.host = uploadHost;
+        logError(e, {
+          op: job.opId,
+          stage: 'transfer',
+          attempt: attemptNo,
+          dur: Date.now() - startedAt,
+          host: uploadHost,
+        });
         reject(e);
       };
       const done = (fileId) => {
@@ -1636,6 +2371,21 @@
         settled = true;
         clearInterval(timer);
         job.xhr = null;
+        diagLog({
+          op: job.opId,
+          stage: 'transfer',
+          attempt: attemptNo,
+          result: 'ok',
+          category: 'ok',
+          http: xhr.status,
+          host: uploadHost,
+          ext: extensionOf(job.name),
+          size: job.size,
+          redirect:
+            !!xhr.responseURL &&
+            hostOf(xhr.responseURL) !== uploadHost,
+          dur: Date.now() - startedAt,
+        });
         resolve(fileId);
       };
 
@@ -1690,47 +2440,52 @@
           return;
         }
         if (xhr.status === 413) {
-          fail(uploadError('size'));
+          fail(uploadError('size', null, { httpStatus: xhr.status }));
           return;
         }
         if (xhr.status === 429) {
-          fail(uploadError('rate'));
+          fail(uploadError('rate', null, { httpStatus: xhr.status }));
           return;
         }
         if (xhr.status === 401) {
-          fail(uploadError('auth'));
+          fail(
+            uploadError('auth', null, {
+              httpStatus: xhr.status,
+              authSource: 'http',
+            })
+          );
           return;
         }
         if (xhr.status === 403) {
-          fail(uploadError('access'));
+          fail(uploadError('access', null, { httpStatus: xhr.status }));
           return;
         }
         if (xhr.status >= 500) {
-          fail(uploadError('server'));
+          fail(uploadError('server', null, { httpStatus: xhr.status }));
           return;
         }
         if (xhr.status < 200 || xhr.status >= 300) {
-          fail(uploadError('response'));
+          fail(uploadError('response', null, { httpStatus: xhr.status }));
           return;
         }
         let body;
         try {
           body = JSON.parse(xhr.responseText);
         } catch (e) {
-          fail(uploadError('response'));
+          fail(uploadError('response', null, { httpStatus: xhr.status }));
           return;
         }
         if (body && body.error) {
           try {
-            fail(classifyVkError(body.error));
+            fail(classifyVkError(body.error, xhr.status));
           } catch (e) {
-            fail(uploadError('response'));
+            fail(uploadError('response', null, { httpStatus: xhr.status }));
           }
           return;
         }
         const fileId = body && typeof body.file === 'string' ? body.file.trim() : '';
         if (!fileId) {
-          fail(uploadError('response'));
+          fail(uploadError('response', null, { httpStatus: xhr.status }));
           return;
         }
         done(fileId);
@@ -1746,8 +2501,7 @@
     });
   }
 
-  function docFromSave(response) {
-    if (!response) return null;
+  function docFromSave(response) {    if (!response) return null;
     if (Array.isArray(response)) {
       const first = response[0];
       if (!first) return null;
@@ -1765,6 +2519,98 @@
     return null;
   }
 
+  function maxLoadedDocId() {
+    let max = 0;
+    for (const doc of byKey.values()) {
+      if (doc && doc.id > max) max = doc.id;
+    }
+    return max;
+  }
+
+  function completeUploadSuccess(job, doc) {
+    addLocalDocument(doc);
+    job.docKey = doc.key;
+    job.stage = 'success';
+    job.error = null;
+    job.note = '';
+    job.canRetry = false;
+    job.canDismiss = true;
+    job.fileId = '';
+    job.verifying = false;
+    releaseJobFile(job);
+    diagLog({
+      op: job.opId,
+      stage: 'result',
+      result: 'ok',
+      category: 'ok',
+      ext: doc.ext,
+      size: doc.size,
+    });
+    updateUploadLifecycle();
+    notify();
+  }
+
+  // После неоднозначного docs.save проверяем первую страницу документов:
+  // новый документ с тем же именем и размером и id выше исходного максимума
+  // считается результатом этой загрузки. Полный список не перечитываем.
+  async function verifySavedUpload(job) {
+    if (!owned(job)) return { ok: false, reason: 'stale' };
+    if (!job.baselineReady) return { ok: false, reason: 'baseline' };
+    if (!checkAuth({ op: job.opId, stage: 'result' })) {
+      return { ok: false, reason: 'auth' };
+    }
+    const started = Date.now();
+    for (let attempt = 1; attempt <= 2; attempt++) {
+      if (attempt > 1) await delay(800);
+      if (!owned(job)) return { ok: false, reason: 'stale' };
+      try {
+        const response = await apiRequest(
+          'docs.get',
+          { count: PAGE, offset: 0 },
+          auth.token,
+          {
+            timeout: REQUEST_TIMEOUT,
+            op: job.opId,
+            stage: 'result',
+            attempt,
+            auth: 'ok',
+          }
+        );
+        if (!owned(job)) return { ok: false, reason: 'stale' };
+        if (!response || !Array.isArray(response.items)) {
+          return { ok: false, reason: 'response' };
+        }
+        for (const raw of response.items) {
+          const doc = normalizeDoc(raw);
+          if (!doc) continue;
+          if (doc.title !== job.name) continue;
+          if (job.size && doc.size && doc.size !== job.size) continue;
+          if (job.baselineMaxId && doc.id <= job.baselineMaxId) continue;
+          diagLog({
+            op: job.opId,
+            stage: 'result',
+            result: 'ok',
+            category: 'ok',
+            ext: doc.ext,
+            size: doc.size,
+            dur: Date.now() - started,
+          });
+          return { ok: true, found: true, doc };
+        }
+      } catch (e) {
+        return { ok: false, reason: jobErrorKind(e) };
+      }
+    }
+    diagLog({
+      op: job.opId,
+      stage: 'result',
+      result: 'fail',
+      category: 'response',
+      dur: Date.now() - started,
+    });
+    return { ok: true, found: false };
+  }
+
   async function saveUpload(job) {
     if (!job.fileId) throw uploadError('response');
     requireUploadAuth(job);
@@ -1772,16 +2618,29 @@
     job.error = null;
     job.canRetry = false;
     job.canDismiss = false;
+    job.saveAttempt = (job.saveAttempt || 0) + 1;
+    // Максимальный id до сохранения позволяет отличить новый документ от
+    // уже существовавшего с тем же именем и размером. Если библиотека ещё
+    // не прочитана и пуста, отличить новый документ нечем.
+    if (job.baselineMaxId == null) {
+      job.baselineMaxId = maxLoadedDocId();
+      job.baselineReady = loaded || byKey.size > 0;
+    }
     notify();
 
     let response;
+    const usedToken = auth.token;
     try {
       response = await apiRequest(
         'docs.save',
         { file: job.fileId, title: job.name },
-        auth.token,
+        usedToken,
         {
           timeout: REQUEST_TIMEOUT,
+          op: job.opId,
+          stage: 'save',
+          attempt: job.saveAttempt,
+          auth: 'ok',
           register: (ctrl) => {
             job.ctrl = ctrl;
           },
@@ -1794,6 +2653,23 @@
       if (!owned(job)) return;
       if (job.stage === 'canceled') return;
       const kind = jobErrorKind(e);
+      // Отказ входа до сохранения можно один раз повторить после
+      // обновления токена того же аккаунта. Ответ docs.save при этом не
+      // потерян: VK явно отказал, документ ещё не создан.
+      if (kind === 'auth' && job.authRetry < 1) {
+        job.authRetry = (job.authRetry || 0) + 1;
+        const recovered = await recoverAuthForUser(
+          job.userId,
+          usedToken,
+          job.opId,
+          'save'
+        );
+        if (recovered && owned(job) && job.stage !== 'canceled') {
+          return saveUpload(job);
+        }
+        if (!owned(job) || job.stage === 'canceled') return;
+      }
+      if (kind === 'auth') throw e;
       // Ответ мог потеряться уже после того, как VK сохранил документ.
       if (kind === 'network' || kind === 'timeout' || kind === 'server') {
         finishUnconfirmed(job, UPLOAD_ERRORS.unconfirmed);
@@ -1816,16 +2692,7 @@
     // документ принадлежит аккаунту задания и должен остаться в библиотеке.
     if (!owned(job)) return;
 
-    addLocalDocument(doc);
-    job.docKey = doc.key;
-    job.stage = 'success';
-    job.error = null;
-    job.canRetry = false;
-    job.canDismiss = true;
-    job.fileId = '';
-    releaseJobFile(job);
-    updateUploadLifecycle();
-    notify();
+    completeUploadSuccess(job, doc);
   }
 
   async function runUpload(job) {
@@ -1845,22 +2712,71 @@
       job.canDismiss = false;
       notify();
       if (!job.file) throw uploadError('file');
+      const checkSpan = diagSpan(job.opId, 'check', 1);
       const info = await validateUploadFile(job.file, job.name);
+      job.ext = info.ext;
+      checkSpan({
+        result: 'ok',
+        category: 'ok',
+        ext: info.ext,
+        size: job.size,
+      });
       requireUploadAuth(job);
 
       if (info.webp && info.webp.animated) {
-        await convertJob(job, info);
+        const convertSpan = diagSpan(job.opId, 'convert', 1);
+        try {
+          await convertJob(job, info);
+          convertSpan({
+            result: 'ok',
+            category: 'ok',
+            ext: 'gif',
+            size: job.size,
+          });
+        } catch (e) {
+          convertSpan({
+            result: 'fail',
+            category: 'convert',
+            ext: job.ext,
+            size: job.size,
+          });
+          throw e;
+        }
         requireUploadAuth(job);
       }
 
-      const uploadUrl = await getUploadUrl(job);
+      let uploadUrl = await getUploadUrl(job);
       requireUploadAuth(job);
 
-      job.stage = 'uploading';
-      job.loaded = 0;
-      job.total = job.size;
-      notify();
-      const fileId = await transferUpload(job, uploadUrl);
+      let fileId = '';
+      for (let attempt = 1; ; attempt++) {
+        job.stage = 'uploading';
+        job.loaded = 0;
+        job.total = job.size;
+        notify();
+        try {
+          fileId = await transferUpload(job, uploadUrl, attempt);
+          break;
+        } catch (e) {
+          if (e && e.kind === 'auth' && job.authRetry < 1) {
+            job.authRetry = (job.authRetry || 0) + 1;
+            const recovered = await recoverAuthForUser(
+              job.userId,
+              auth.token,
+              job.opId,
+              'transfer'
+            );
+            if (recovered && owned(job) && job.stage !== 'canceled') {
+              // Подписанный адрес мог быть выдан до смены входа. Берём
+              // новый; байты ещё ни разу не были приняты VK.
+              uploadUrl = await getUploadUrl(job);
+              requireUploadAuth(job);
+              continue;
+            }
+          }
+          throw e;
+        }
+      }
       if (!owned(job)) return;
       if (job.stage === 'canceled') return;
 
@@ -1898,7 +2814,7 @@
       updateUploadLifecycle();
       return;
     }
-    if (!checkAuth()) {
+    if (!checkAuth({ op: next.opId, stage: 'queue' })) {
       uploadAuthHold = true;
       notify();
       return;
@@ -1936,8 +2852,12 @@
       if (seen.has(signature)) continue;
       seen.add(signature);
       const id = `u${++uploadSeq}-${Math.random().toString(36).slice(2, 7)}`;
+      const opId = diagOp('upload');
+      const ext = extensionOf(file.name);
       uploads.set(id, {
         id,
+        opId,
+        ext: FORMAT_SET.has(ext) ? ext : '',
         name: file.name,
         originalName: file.name,
         originalSize: Number(file.size) || 0,
@@ -1961,6 +2881,23 @@
         userId,
         accountEpoch: epoch,
         lastProgressAt: 0,
+        authRetry: 0,
+        saveAttempt: 0,
+        baselineMaxId: null,
+        baselineReady: false,
+        verifying: false,
+      });
+      diagLog({
+        op: opId,
+        stage: 'queue',
+        attempt: 1,
+        result: 'start',
+        category: 'ok',
+        ext: FORMAT_SET.has(ext) ? ext : '',
+        size: Number(file.size) || 0,
+        auth: auth.status === 'ok' ? 'ok' : auth.reason || 'missing',
+        tokenChanged: false,
+        accountChanged: false,
       });
       ids.push(id);
     }
@@ -2033,15 +2970,16 @@
     return true;
   }
 
-  function retryUpload(id) {
-    const job = uploads.get(id);
-    if (!job || !job.canRetry) return false;
-    if (job.accountEpoch !== uploadEpoch) return false;
+  function queueUploadJob(job) {
     job.stage = 'queued';
     job.error = null;
     job.note = '';
     job.canRetry = false;
     job.canDismiss = false;
+    job.verifying = false;
+    // Ручной повтор снова получает одну попытку восстановления входа.
+    job.authRetry = 0;
+    job.saveAttempt = 0;
     // При fileId повтор начнётся сразу с docs.save; старый file для этого
     // уже не нужен и был освобождён после передачи.
     if (!job.fileId) job.loaded = 0;
@@ -2049,9 +2987,71 @@
       job.convertedFrame = 0;
       job.convertedTotal = 0;
     }
+    diagLog({
+      op: job.opId,
+      stage: 'queue',
+      attempt: 1,
+      result: 'retry',
+      category: 'ok',
+      ext: job.ext,
+      size: job.size,
+    });
     updateUploadLifecycle();
     notify();
     pumpUploads();
+  }
+
+  function retryUpload(id) {
+    const job = uploads.get(id);
+    if (!job || !job.canRetry) return false;
+    if (job.accountEpoch !== uploadEpoch) return false;
+
+    // Перед повтором неоднозначного docs.save сначала проверяем, не сохранён
+    // ли документ. Повтор docs.save без проверки мог бы создать дубликат.
+    if (job.stage === 'unconfirmed') {
+      if (job.verifying) return false;
+      job.verifying = true;
+      job.canRetry = false;
+      job.note = 'Проверяем, сохранился ли файл…';
+      updateUploadLifecycle();
+      notify();
+      (async () => {
+        await delay(RETRY_DELAY);
+        const result = await verifySavedUpload(job);
+        if (!owned(job)) return;
+        job.verifying = false;
+        if (result.ok && result.found) {
+          completeUploadSuccess(job, result.doc);
+          return;
+        }
+        if (result.ok && !result.found) {
+          queueUploadJob(job);
+          return;
+        }
+        job.stage = 'unconfirmed';
+        job.note = '';
+        job.error = {
+          kind: 'unconfirmed',
+          message:
+            'Не удалось проверить, сохранился ли файл. Проверь документы VK и повтори позже.',
+        };
+        job.canRetry = true;
+        job.canDismiss = true;
+        updateUploadLifecycle();
+        notify();
+      })().catch(() => {
+        if (!owned(job)) return;
+        job.verifying = false;
+        job.note = '';
+        job.canRetry = true;
+        job.canDismiss = true;
+        updateUploadLifecycle();
+        notify();
+      });
+      return true;
+    }
+
+    queueUploadJob(job);
     return true;
   }
 
@@ -2086,11 +3086,17 @@
       uploadEpoch,
       generation,
       libraryVersion,
-      auth: { status: auth.status, userId: auth.userId, expires: auth.expires },
+      auth: {
+        status: auth.status,
+        userId: auth.userId,
+        expires: auth.expires,
+        reason: auth.reason || '',
+        source: auth.source || '',
+      },
       uploads: uploadsState(),
       deletions: deletionsState(),
       uploadsPaused: uploadAuthHold
-        ? { kind: 'auth', message: AUTH_TEXT }
+        ? { kind: 'auth', message: localAuthMessage(auth.reason), reason: auth.reason || '' }
         : null,
     };
   }
@@ -2186,6 +3192,7 @@
   };
 
   startAuthWatch();
+  loadDiagnosticsSetting();
 
   window.VK7TV_DOCS = {
     getState,
@@ -2211,5 +3218,11 @@
     isDeleting,
     formats: FORMATS.slice(),
     mp4: MP4,
+    diagnostics: {
+      enabled: () => diag.enabled,
+      setEnabled: setDiagnosticsEnabled,
+      report: diagnosticsReport,
+      clear: clearDiagnostics,
+    },
   };
 })();

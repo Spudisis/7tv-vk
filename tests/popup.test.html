@@ -58,12 +58,13 @@
     // popup.js. Заводим её до подключения скрипта.
     const IDS = [
       'toast', 'enabled', 'useGlobal', 'widgetOn', 'suggestOn', 'autocompleteOn', 'everywhere', 'globalCount',
+      'docsDiagnostics',
       'setList', 'customList', 'gridNote', 'grid', 'search', 'totalCount', 'setInput',
       'setStatus', 'addSet', 'refreshSets', 'exportSettings', 'importSettings', 'importFile',
       'backupStatus', 'addCustom', 'customName', 'customUrl', 'customStatus', 'version',
     ];
     for (const id of IDS) {
-      const tag = ['enabled', 'useGlobal', 'widgetOn', 'suggestOn', 'autocompleteOn', 'everywhere', 'search',
+      const tag = ['enabled', 'useGlobal', 'widgetOn', 'suggestOn', 'autocompleteOn', 'everywhere', 'docsDiagnostics', 'search',
         'setInput', 'customName', 'customUrl'].includes(id) ? 'input'
         : ['setList', 'customList'].includes(id) ? 'ul'
         : ['addSet', 'refreshSets', 'exportSettings', 'importSettings', 'addCustom'].includes(id) ? 'button'

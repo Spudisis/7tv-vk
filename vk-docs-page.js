@@ -16,6 +16,9 @@
 
   const IMAGE_TYPES = new Set(['s', 'm', 'x', 'o', 'p', 'q', 'r', 'y', 'z', 'w']);
   const MAX_TITLE = 2000;
+  const AUTH_CLIENT_ID = '6287487';
+  const AUTH_REFRESH_URL = 'https://login.vk.ru/?act=web_token';
+  let authRefreshPromise = null;
 
   function positive(value) {
     const n = Number(value);
@@ -284,6 +287,56 @@
       : { ok: false, reason: 'not-added' };
   }
 
+  // Единственная разрешённая сетевая операция моста: обновление web-токена
+  // штатной страницей VK. Ни URL, ни тело запроса вызывающая сторона задать
+  // не может. Новый токен не пишем в localStorage: страница VK остаётся
+  // хозяином своей записи, а расширение использует его только в памяти.
+  function refreshAuth() {
+    if (authRefreshPromise) return authRefreshPromise;
+    authRefreshPromise = (async () => {
+      let res;
+      try {
+        res = await fetch(AUTH_REFRESH_URL, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/x-www-form-urlencoded;charset=UTF-8',
+          },
+          body: `version=1&app_id=${AUTH_CLIENT_ID}`,
+          credentials: 'include',
+          cache: 'no-store',
+        });
+      } catch (e) {
+        return { ok: false, reason: 'network' };
+      }
+      if (!res.ok) {
+        return {
+          ok: false,
+          reason: res.status === 401 || res.status === 403 ? 'auth' : 'http',
+          httpStatus: res.status,
+        };
+      }
+      let data = null;
+      try {
+        data = await res.json();
+      } catch (e) {
+        return { ok: false, reason: 'response', httpStatus: res.status };
+      }
+      const payload = data && data.type === 'okay' && data.data ? data.data : null;
+      if (!payload) return { ok: false, reason: 'response', httpStatus: res.status };
+      const token =
+        typeof payload.access_token === 'string' ? payload.access_token.trim() : '';
+      const userId = positive(payload.user_id);
+      const expires = Number(payload.expires) || 0;
+      if (!token || token.length > 4096 || !userId) {
+        return { ok: false, reason: 'response', httpStatus: res.status };
+      }
+      return { ok: true, token, userId, expires, httpStatus: res.status };
+    })().finally(() => {
+      authRefreshPromise = null;
+    });
+    return authRefreshPromise;
+  }
+
   function reply(id, result) {
     try {
       window.postMessage(
@@ -301,9 +354,20 @@
     const data = e.data;
     if (!data || data.__vk7tvDocsBridge !== 1 || data.to !== 'page') return;
     if (typeof data.id !== 'string' || data.id.length > 80) return;
-    if (data.type !== 'get-context' && data.type !== 'attach-doc') return;
+    if (
+      data.type !== 'get-context' &&
+      data.type !== 'attach-doc' &&
+      data.type !== 'refresh-auth'
+    ) {
+      return;
+    }
 
-    const job = data.type === 'get-context' ? getContext() : attach(data.payload);
+    const job =
+      data.type === 'get-context'
+        ? getContext()
+        : data.type === 'attach-doc'
+          ? attach(data.payload)
+          : refreshAuth();
     Promise.resolve(job)
       .then((result) => reply(data.id, result))
       .catch(() => reply(data.id, { ok: false, reason: 'error' }));

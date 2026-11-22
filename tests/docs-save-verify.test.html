@@ -1,0 +1,188 @@
+<!doctype html>
+<meta charset="utf-8" />
+<title>VK7TV — подтверждение docs.save без дубликатов</title>
+<body>
+  <script src="harness.js"></script>
+  <script>
+    const T = window.VK7TV_TEST;
+    const AUTH_KEY = '6287487:web_token:login:auth';
+    localStorage.clear();
+    localStorage.setItem(
+      AUTH_KEY,
+      JSON.stringify({
+        access_token: 'test-token',
+        user_id: 42,
+        expires: Math.floor(Date.now() / 1000) + 3600,
+      })
+    );
+
+    const preview = [
+      { type: 's', src: 'https://sun9-1.userapi.com/s.png', width: 64, height: 64 },
+    ];
+    const serverDoc = (id, title, size) => ({
+      owner_id: 42,
+      id,
+      title,
+      ext: 'gif',
+      type: 3,
+      size,
+      date: 1,
+      url: `https://vk.ru/doc42_${id}`,
+      preview: { photo: { sizes: preview } },
+    });
+
+    let pageItems = [];
+    let saveMode = 'ok';
+    let getMode = 'ok';
+    let saveCount = 0;
+    let getCalls = 0;
+    const uploads = [];
+
+    window.fetch = (url, opts) => {
+      const method = String(url).split('/').pop();
+      const body = new URLSearchParams(opts && opts.body);
+      if (method === 'docs.get') {
+        getCalls++;
+        if (getMode === 'network') return Promise.reject(new Error('offline'));
+        return Promise.resolve({
+          ok: true,
+          status: 200,
+          json: () =>
+            Promise.resolve({
+              response: { count: pageItems.length, total_count: 100, items: pageItems },
+            }),
+        });
+      }
+      if (method === 'docs.getUploadServer') {
+        return Promise.resolve({
+          ok: true,
+          status: 200,
+          json: () =>
+            Promise.resolve({
+              response: { upload_url: 'https://pu.vk.ru/upload_doc.php' },
+            }),
+        });
+      }
+      if (method === 'docs.save') {
+        if (saveMode === 'lost') {
+          saveMode = 'ok';
+          return Promise.reject(new Error('connection lost'));
+        }
+        const id = 900 + saveCount;
+        saveCount++;
+        return Promise.resolve({
+          ok: true,
+          status: 200,
+          json: () =>
+            Promise.resolve({
+              response: {
+                type: 'doc',
+                doc: serverDoc(id, body.get('title') || 'new.gif', 8),
+              },
+            }),
+        });
+      }
+      return Promise.reject(new Error('unexpected ' + method));
+    };
+
+    class FakeXHR {
+      constructor() {
+        this.upload = {};
+      }
+      open(method, url) {
+        this.method = method;
+        this.url = url;
+      }
+      send(form) {
+        uploads.push(form.get('file').name);
+        setTimeout(() => {
+          this.status = 200;
+          this.responseText = JSON.stringify({ file: 'f-' + uploads.length });
+          this.onload();
+        }, 0);
+      }
+      abort() {
+        if (this.onabort) this.onabort();
+      }
+    }
+    window.XMLHttpRequest = FakeXHR;
+
+    const gif = new Uint8Array([0x47, 0x49, 0x46, 0x38, 0x39, 0x61, 0, 0]);
+    const file = (name) =>
+      new File([gif], name, { type: 'image/gif', lastModified: 1 });
+  </script>
+  <script src="../vk-docs.js"></script>
+  <script>
+    T.run(async () => {
+      const DOCS = window.VK7TV_DOCS;
+      const job = (id) => DOCS.getState().uploads.find((u) => u.id === id);
+      const waitStage = (id, stage) =>
+        T.waitFor(`задание ${id}: ${stage}`, () => {
+          const found = job(id);
+          return !!found && found.stage === stage;
+        });
+
+      // VK сохранил документ, но ответ потерялся. Повтор находит его в
+      // первой странице и не вызывает docs.save второй раз.
+      pageItems = [];
+      await DOCS.loadMore();
+      saveMode = 'lost';
+      const lostId = DOCS.enqueueUploads([file('Lost.gif')])[0];
+      await waitStage(lostId, 'unconfirmed');
+      const savesBeforeFound = saveCount;
+      pageItems = [serverDoc(800, 'Lost.gif', 8)];
+      DOCS.retryUpload(lostId);
+      await waitStage(lostId, 'success');
+      T.eq('найденный документ попал в библиотеку', job(lostId).docKey, '42:800');
+      T.eq('повторный docs.save не понадобился', saveCount, savesBeforeFound);
+      T.eq('файл передавался один раз', uploads.length, 1);
+      T.eq('в библиотеке одна карточка', DOCS.getItems().length, 1);
+      DOCS.dismissUpload(lostId);
+
+      // VK не сохранил документ: проверка не находит его и только тогда
+      // разрешает повтор docs.save. Файл заново не передаётся.
+      saveMode = 'lost';
+      const missingId = DOCS.enqueueUploads([file('NotSaved.gif')])[0];
+      await waitStage(missingId, 'unconfirmed');
+      const uploadsBeforeRetry = uploads.length;
+      const savesBeforeRetry = saveCount;
+      DOCS.retryUpload(missingId);
+      await waitStage(missingId, 'success');
+      T.eq('после проверки docs.save повторён', saveCount, savesBeforeRetry + 1);
+      T.eq('файл не передавался заново', uploads.length, uploadsBeforeRetry);
+      DOCS.dismissUpload(missingId);
+
+      // Если проверить библиотеку не удалось, docs.save не повторяется:
+      // иначе возможен дубликат.
+      saveMode = 'lost';
+      getMode = 'network';
+      const unverifiedId = DOCS.enqueueUploads([file('Unverified.gif')])[0];
+      await waitStage(unverifiedId, 'unconfirmed');
+      const savesBeforeUnverified = saveCount;
+      DOCS.retryUpload(unverifiedId);
+      await T.waitFor(
+        'проверка сохранения не удалась',
+        () => {
+          const found = job(unverifiedId);
+          return (
+            found &&
+            found.stage === 'unconfirmed' &&
+            found.error &&
+            found.error.message.includes('проверить')
+          );
+        }
+      );
+      T.eq('без проверки docs.save не повторялся', saveCount, savesBeforeUnverified);
+      T.check('повтор снова доступен', job(unverifiedId).canRetry, 'да');
+      T.eq('файл не передавался заново', uploads.length, 3);
+
+      getMode = 'ok';
+      pageItems = [serverDoc(800, 'Lost.gif', 8)];
+      DOCS.retryUpload(unverifiedId);
+      await waitStage(unverifiedId, 'success');
+      T.eq('после успешной проверки сохранение подтверждено', job(unverifiedId).stage, 'success');
+      DOCS.dismissUpload(unverifiedId);
+      T.eq('дубликатов в библиотеке нет', DOCS.getItems().length, 3);
+    });
+  </script>
+</body>
