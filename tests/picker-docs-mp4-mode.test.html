@@ -109,7 +109,7 @@
       T.eq('только PNG: без параметров', calls[0].options, undefined);
       T.eq('только PNG: блока режима нет', batchVisible(), false);
 
-      // Смешанная партия: блок появляется, по умолчанию — исходное видео.
+      // Смешанная партия: блок появляется, по умолчанию — GIF.
       pick(['clip.mp4', 'photo.png']);
       T.eq('партия с MP4: блок режима', batchVisible(), true);
       T.check(
@@ -118,15 +118,14 @@
         batch().querySelector('.vk7tv-docs-batch-title').textContent
       );
       T.eq(
-        'партия с MP4: по умолчанию исходное видео',
-        batch().querySelector('input[value="original"]').checked,
+        'партия с MP4: по умолчанию GIF',
+        batch().querySelector('input[value="gif"]').checked,
         true
       );
       const hint = batch().querySelector('.vk7tv-docs-batch-mode-hint').textContent;
       T.check('рядом с GIF: лимиты', hint.includes('15 с') && hint.includes('480'), hint);
       T.check('рядом с GIF: предупреждение', hint.includes('Без звука'), hint);
 
-      choose('gif');
       T.eq('выбор GIF отмечен', batch().querySelector('input[value="gif"]').checked, true);
       click('add');
       T.eq('смешанная партия: одна отправка', calls.length, 2);
@@ -142,6 +141,7 @@
 
       // Явный выбор исходного видео.
       pick(['original.mp4']);
+      choose('original');
       click('add');
       T.eq('исходное видео: режим', calls[2].options.mp4Mode, 'original');
       T.eq('исходное видео: имя', calls[2].names.join(','), 'original.mp4');
@@ -160,7 +160,7 @@
       );
       await T.waitFor('drop: блок режима', batchVisible);
       T.eq('drop: блок появился', batchVisible(), true);
-      choose('gif');
+      T.eq('новая партия сбрасывает выбор на GIF', batch().querySelector('input[value="gif"]').checked, true);
       click('add');
       T.eq('drop: режим GIF', calls.at(-1).options.mp4Mode, 'gif');
       T.eq('drop: файл партии', calls.at(-1).names.join(','), 'drop.mp4');

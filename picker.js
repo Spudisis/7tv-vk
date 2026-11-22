@@ -76,7 +76,7 @@
   let docsBatchModes = [];
   let docsBatchFiles = [];
   let docsBatchRejected = [];
-  let docsBatchMode = 'original';
+  let docsBatchMode = 'gif';
   let docsDnd = null;
   let docsDndDepth = 0;
   let docsDndVisible = false;
@@ -425,14 +425,14 @@
   function showDocsBatch(files, rejected) {
     docsBatchFiles = Array.from(files || []);
     docsBatchRejected = Array.from(rejected || []);
-    docsBatchMode = 'original';
+    docsBatchMode = 'gif';
     renderDocsBatch();
   }
 
   function hideDocsBatch() {
     docsBatchFiles = [];
     docsBatchRejected = [];
-    docsBatchMode = 'original';
+    docsBatchMode = 'gif';
     renderDocsBatch();
   }
 
