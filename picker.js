@@ -3474,7 +3474,7 @@
       revalidate();
       if (DOCS) {
         try {
-          DOCS.checkAuth();
+          DOCS.checkAuth({ retryExpired: true });
           if (!docsCollapsed) {
             DOCS.setPaused(false);
             ensureDocsLoad();

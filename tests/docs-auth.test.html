@@ -3,6 +3,7 @@
 <title>VK7TV — документы: авторизация</title>
 <body>
   <script src="harness.js"></script>
+  <script src="auth-clock.js"></script>
   <script>
     const T = window.VK7TV_TEST;
     const AUTH_KEY = '6287487:web_token:login:auth';
@@ -51,6 +52,9 @@
         })
       );
       T.eq('просроченный токен — нет авторизации', DOCS.checkAuth(), false);
+      T.eq('до завершения повторов ошибки нет', DOCS.getState().error, null);
+      await T.waitFor('повторы закончились', () => !!DOCS.getState().error);
+      T.eq('три ожидания по пять секунд', VK7TV_AUTH_CLOCK.delays.join(','), '5000,5000,5000');
       T.eq('просроченный токен назван', DOCS.getState().error.reason, 'expired');
       T.check(
         'просроченный токен просит обновить страницу',

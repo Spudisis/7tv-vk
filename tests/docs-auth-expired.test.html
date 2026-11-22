@@ -1,0 +1,106 @@
+<!doctype html>
+<meta charset="utf-8" />
+<title>VK7TV — токены из хранилища и интервалы повторов</title>
+<body>
+<script src="harness.js"></script>
+<script src="auth-clock.js"></script>
+<script>
+const T = window.VK7TV_TEST;
+const AUTH_KEY = '6287487:web_token:login:auth';
+function storeToken(token, userId = 7, expired = false) {
+  localStorage.setItem(AUTH_KEY, JSON.stringify({access_token: token, user_id: userId,
+    expires: Math.floor(Date.now() / 1000) + (expired ? -60 : 3600)}));
+}
+localStorage.clear();
+storeToken('expired', 7, true);
+const requests = [];
+let mode = 'ok';
+let bridgeCalls = 0;
+window.addEventListener('message', e => {
+  if (e.data && e.data.type === 'refresh-auth') bridgeCalls++;
+});
+window.fetch = async (url, opts) => {
+  const token = new URLSearchParams(opts.body).get('access_token');
+  requests.push(token);
+  if (mode === 'fail' || (mode === 'rotate' && token !== 'fresh')) {
+    return {ok: true, status: 200, json: async () => ({error: {error_code: 5}})};
+  }
+  return {ok: true, status: 200, json: async () => ({response: {count: 0, items: []}})};
+};
+</script>
+<script src="../vk-docs.js"></script>
+<script>
+T.run(async () => {
+  const D = window.VK7TV_DOCS;
+  const clock = VK7TV_AUTH_CLOCK;
+  let ticks = 0;
+  clock.beforeTick = () => {
+    T.eq('при ожидании нового токена ошибки нет', D.getState().error, null);
+    if (++ticks === 2) storeToken('fresh');
+  };
+  D.checkAuth();
+  D.checkAuth();
+  await T.waitFor('VK обновил хранилище, загрузка возобновилась', () => D.getState().loaded);
+  T.eq('просроченный токен не отправлялся в API', requests.join(','), 'fresh');
+  T.eq('перечитывание через пять секунд', clock.delays.join(','), '5000,5000');
+  T.eq('запроса выдачи токена нет', bridgeCalls, 0);
+
+  clock.beforeTick = null;
+  storeToken('on-open');
+  T.eq('открытие подхватывает запись без события storage', D.checkAuth({retryExpired: true}), true);
+  storeToken('on-refresh');
+  await D.refresh();
+  T.eq('обновление использует последний токен', requests.at(-1), 'on-refresh');
+
+  requests.length = 0;
+  clock.delays.length = 0;
+  mode = 'rotate';
+  storeToken('rejected');
+  ticks = 0;
+  clock.beforeTick = () => {
+    T.eq('после отказа API ошибка не показывается до конца повторов', D.getState().error, null);
+    storeToken(++ticks === 1 ? 'also-rejected' : 'fresh');
+  };
+  await D.refresh();
+  T.eq('каждый повтор использует запись из хранилища', requests.join(','), 'rejected,rejected,also-rejected,fresh');
+  T.eq('между повторными отказами интервал пять секунд', clock.delays.join(','), '5000,5000');
+  T.eq('после нового токена ошибки нет', D.getState().error, null);
+
+  requests.length = 0;
+  clock.delays.length = 0;
+  mode = 'fail';
+  clock.beforeTick = () => T.eq('ошибка скрыта, пока есть попытки', D.getState().error, null);
+  await D.refresh();
+  T.eq('первый запрос и четыре повтора', requests.length, 5);
+  T.eq('ровно три ожидания по пять секунд', clock.delays.join(','), '5000,5000,5000');
+  T.eq('после исчерпания попыток видна ошибка', D.getState().error.kind, 'auth');
+
+  clock.beforeTick = null;
+  requests.length = 0;
+  clock.hold = true;
+  const logout = D.refresh();
+  await T.waitFor('повтор ожидает таймер', () => clock.pending.length > 0);
+  localStorage.removeItem(AUTH_KEY);
+  D.checkAuth();
+  clock.hold = false;
+  clock.flush();
+  await logout;
+  T.eq('после выхода повторных запросов нет', requests.length, 2);
+  T.eq('после выхода сессия не восстанавливается', D.getState().status, 'unauthorized');
+
+  storeToken('account-seven');
+  D.checkAuth();
+  requests.length = 0;
+  clock.hold = true;
+  const switching = D.refresh();
+  await T.waitFor('смена аккаунта во время ожидания', () => clock.pending.length > 0);
+  storeToken('account-eight', 8);
+  clock.hold = false;
+  clock.flush();
+  await switching;
+  T.check('старый запрос не повторяется от другого пользователя', !requests.includes('account-eight'), requests.join(','));
+  T.eq('новый аккаунт принят', D.getState().auth.userId, 8);
+  T.eq('мост выдачи токена ни разу не вызван', bridgeCalls, 0);
+});
+</script>
+</body>

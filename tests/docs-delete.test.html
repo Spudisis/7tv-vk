@@ -3,6 +3,7 @@
 <title>VK7TV — удаление документов VK</title>
 <body>
   <script src="harness.js"></script>
+  <script src="auth-clock.js"></script>
   <script>
     const T = window.VK7TV_TEST;
     const AUTH_KEY = '6287487:web_token:login:auth';
@@ -185,7 +186,7 @@
       );
       T.check('карточка осталась после ошибки', keys().includes('42:3'), keys());
 
-      // 401/403/429/5xx — ошибки для удаления, без автоповтора.
+      // Только 401 повторяется после перечитывания токена; остальные отказы — без повторов.
       for (const [mode, status] of [
         ['401', 'error'],
         ['403', 'error'],
@@ -196,7 +197,7 @@
         const before = deleteCalls.length;
         await DOCS.deleteDocument('42:3');
         T.eq(`HTTP ${mode} — состояние`, getDeletion('42:3').status, status);
-        T.eq(`HTTP ${mode} — ровно один запрос`, deleteCalls.length, before + 1);
+        T.eq(`HTTP ${mode} — число запросов`, deleteCalls.length, before + (mode === '401' ? 5 : 1));
         T.check(
           `HTTP ${mode} — текст удаления`,
           !getDeletion('42:3').message.includes('загрузк'),

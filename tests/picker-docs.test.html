@@ -160,9 +160,14 @@
       document.dispatchEvent(
         new KeyboardEvent('keydown', { code: 'KeyE', ctrlKey: true, shiftKey: true, bubbles: true })
       );
+      const updatedExpires = Math.floor(Date.now() / 1000) + 7200;
+      localStorage.setItem(AUTH_KEY, JSON.stringify({access_token: 'updated-while-closed',
+        user_id: 42, expires: updatedExpires}));
       document.dispatchEvent(
         new KeyboardEvent('keydown', { code: 'KeyE', ctrlKey: true, shiftKey: true, bubbles: true })
       );
+      T.eq('повторное открытие перечитало хранилище без события storage',
+        window.VK7TV_DOCS.getState().auth.expires, updatedExpires);
       await T.waitFor('поповер открылся снова', () => document.querySelector('.vk7tv-picker').style.display !== 'none');
       T.check('сворачивание пережило открытие', document.querySelector('.vk7tv-docs-group').classList.contains('vk7tv-collapsed'), 'да');
     });

@@ -157,8 +157,11 @@
     expires: 0,
     reason: '',
     source: 'none',
-    baseToken: '',
   };
+  const AUTH_RETRIES = 4; // сразу, затем через 5, 10 и 15 секунд
+  const AUTH_RETRY_DELAY = 5000;
+  let expiredRecoveryToken = '';
+  let expiredRecoveryPending = null;
   let generation = 0;
   let inFlight = null;
   let inFlightGen = 0;
@@ -464,25 +467,24 @@
     const expires = Number(data && data.expires) || 0;
     if (!token) return { ok: false, reason: 'no-token', userId, expires };
 
-    // Просроченную запись веб-клиент заменит сам; пока он этого не сделал,
-    // запрос заведомо отклонят. Но userId сохраняем: он нужен, чтобы
+    // Просроченный токен не отправляем в API. Сохраняем его вместе с userId,
+    // чтобы дождаться новой записи VK в хранилище и
     // отличить обновление токена того же аккаунта от смены аккаунта.
     if (expires && expires * 1000 <= Date.now() + 30000) {
-      return { ok: false, reason: 'expired', userId, expires };
+      return { ok: false, reason: 'expired', token, userId, expires };
     }
 
     return { ok: true, token, userId, expires };
   }
 
-  function authState(read, source) {
+  function authState(read) {
     return {
       status: read.ok ? 'ok' : read.reason === 'expired' ? 'expired' : 'missing',
       token: read.ok ? read.token : '',
       userId: read.ok ? read.userId : positive(read.userId),
       expires: read.ok ? read.expires : 0,
       reason: read.ok ? '' : read.reason || 'missing',
-      source: read.ok ? source || 'local' : 'none',
-      baseToken: '',
+      source: read.ok ? 'local' : 'none',
     };
   }
 
@@ -560,11 +562,49 @@
   }
 
   function checkAuth(context) {
+    if (context && context.retryExpired && !expiredRecoveryPending) expiredRecoveryToken = '';
     const read = readAuth();
     const prevToken = auth.token;
     const prevUser = auth.userId;
     const tokenChanged = !!prevToken && read.ok && read.token !== prevToken;
     const accountChanged = !!prevUser && !!read.userId && prevUser !== read.userId;
+
+    if (!read.ok && read.reason === 'expired' && read.userId &&
+        (expiredRecoveryPending || expiredRecoveryToken !== read.token)) {
+      if (!expiredRecoveryPending) {
+        expiredRecoveryToken = read.token;
+        if (accountChanged || !uploadsBelongTo(read.userId)) resetForAccount();
+        else clearSession();
+        auth = authState(read);
+        status = 'loading';
+        loading = true;
+        error = null;
+        const epoch = accountEpoch;
+        expiredRecoveryPending = Promise.resolve().then(async () => {
+          for (let attempt = 0; attempt < AUTH_RETRIES; attempt++) {
+            const recovered = await recoverAuthForUser(read.userId, read.token,
+              diagOp('library'), 'library', attempt);
+            if (epoch !== accountEpoch) return;
+            if (recovered) {
+              status = 'idle';
+              loading = false;
+              error = null;
+              resumeAuthUploads(true);
+              notify();
+              if (!paused) await loadMore();
+              return;
+            }
+            const current = readAuth();
+            if (current.userId !== read.userId || current.reason === 'missing') break;
+          }
+          loading = false;
+          expiredRecoveryPending = null;
+          checkAuth();
+        }).finally(() => { expiredRecoveryPending = null; });
+        notify();
+      }
+      return false;
+    }
 
     if (!read.ok) {
       const had = auth.status === 'ok' || items.length > 0 || loaded;
@@ -601,35 +641,9 @@
       return false;
     }
 
-    // Токен, полученный через мост обновления входа, живёт в памяти, пока
-    // VK не перезапишет свою запись. Не откатываемся на старую запись и не
-    // считаем её сменой аккаунта.
-    if (auth.source === 'refresh' && auth.baseToken && read.token === auth.baseToken) {
-      if (accountChanged) {
-        resetForAccount();
-        auth = authState(read);
-        diagLog({
-          op: context && context.op,
-          stage: context && context.stage,
-          result: 'account',
-          category: 'auth',
-          auth: 'ok',
-          accountChanged: true,
-        });
-        notify();
-        return true;
-      }
-      const refreshedExpired =
-        auth.expires && auth.expires * 1000 <= Date.now() + 30000;
-      if (!refreshedExpired) {
-        if (!auth.userId && read.userId) auth.userId = read.userId;
-        if (!auth.expires && read.expires) auth.expires = read.expires;
-        return true;
-      }
-    }
-
+    expiredRecoveryToken = '';
     if (auth.status !== 'ok') {
-      if (!uploadsBelongTo(read.userId)) {
+      if (accountChanged || !uploadsBelongTo(read.userId)) {
         resetForAccount();
       }
       auth = authState(read);
@@ -694,163 +708,38 @@
     }
   }
 
-  // Обновление web-токена делает штатная страница VK: только у неё есть
-  // cookie-сессия. Мост принимает одну фиксированную операцию без URL и
-  // тела от вызывающей стороны. Новый токен остаётся в памяти расширения;
-  // запись VK не перезаписываем, чтобы не вмешиваться в выход из аккаунта.
-  function refreshAuthFromPage() {
-    return bridgeCall('refresh-auth', {}, 6000).then((result) => {
-      if (!result || result.ok !== true) {
-        return {
-          ok: false,
-          reason: result && typeof result.reason === 'string' ? result.reason : 'response',
-          httpStatus: result && Number.isSafeInteger(result.httpStatus) ? result.httpStatus : 0,
-        };
-      }
-      const token =
-        typeof result.token === 'string' ? result.token.trim() : '';
-      const userId = positive(result.userId);
-      const expires = Number(result.expires) || 0;
-      if (!token || token.length > 4096 || !userId) {
-        return { ok: false, reason: 'response', httpStatus: 0 };
-      }
-      return { ok: true, token, userId, expires };
-    });
+  // VK сам обновляет запись входа. Только перечитываем её: никаких
+  // запросов выдачи токена и записи в хранилище от расширения.
+  async function recoverAuthForUser(expectedUser, usedToken, op, stage, attempt = 0, signal) {
+    const epoch = accountEpoch;
+    const knownUser = positive(expectedUser);
+    if (attempt) await authRetryDelay(signal);
+    if ((signal && signal.aborted) || epoch !== accountEpoch) return false;
+    const read = readAuth();
+    if (!knownUser || read.userId !== knownUser) {
+      checkAuth();
+      return false;
+    }
+    diagLog({ op, stage: 'auth-recovery', attempt: attempt + 1,
+      result: read.ok ? 'token' : 'fail', category: read.ok ? 'ok' : 'auth',
+      auth: read.ok ? 'ok' : read.reason,
+      tokenChanged: read.ok && read.token !== usedToken });
+    if (!read.ok) return false;
+    auth = authState(read);
+    return true;
   }
 
-  // Ограниченное восстановление: один раз читаем запись VK и повторяем
-  // запрос только при обновлении токена того же пользователя. Если запись
-  // не изменилась, просим страницу VK обновить web-токен и принимаем его
-  // только для того же userId. Смена аккаунта сбрасывает очередь.
-  async function recoverAuthForUser(expectedUser, usedToken, op, stage) {
-    const knownUser = positive(expectedUser) || positive(auth.userId);
-    const prevToken = usedToken || auth.token;
-    const read = readAuth();
-    const readResult = read.ok ? 'ok' : read.reason;
-    const tokenChanged = !!(read.ok && read.token && read.token !== prevToken);
-
-    diagLog({
-      op,
-      stage: 'auth-recovery',
-      attempt: 1,
-      result: 'start',
-      category: 'auth',
-      auth: readResult,
-      tokenChanged,
+  function authRetryDelay(signal) {
+    return new Promise((resolve) => {
+      if (signal && signal.aborted) return resolve();
+      const done = () => {
+        clearTimeout(timer);
+        if (signal) signal.removeEventListener('abort', done);
+        resolve();
+      };
+      const timer = setTimeout(done, AUTH_RETRY_DELAY);
+      if (signal) signal.addEventListener('abort', done, { once: true });
     });
-
-    if (read.ok && tokenChanged) {
-      if (knownUser && read.userId && knownUser !== read.userId) {
-        diagLog({
-          op,
-          stage: 'auth-recovery',
-          attempt: 1,
-          result: 'account',
-          category: 'auth',
-          auth: readResult,
-          tokenChanged: true,
-          accountChanged: true,
-        });
-        resetForAccount();
-        return false;
-      }
-      auth = authState(read);
-      diagLog({
-        op,
-        stage: 'auth-recovery',
-        attempt: 1,
-        result: 'token',
-        category: 'ok',
-        auth: 'ok',
-        tokenChanged: true,
-      });
-      notify();
-      resumeAuthUploads(true);
-      return true;
-    }
-
-    // Без подтверждённого пользователя обновлять токен нельзя: иначе
-    // незавершённая загрузка могла бы уйти в другой аккаунт.
-    if (!knownUser || !read.ok || !read.userId || read.userId !== knownUser) {
-      diagLog({
-        op,
-        stage: 'auth-recovery',
-        attempt: 1,
-        result: 'fail',
-        category: 'auth',
-        auth: readResult,
-        tokenChanged: false,
-      });
-      return false;
-    }
-
-    const refreshed = await refreshAuthFromPage();
-    if (!refreshed.ok) {
-      diagLog({
-        op,
-        stage: 'auth-recovery',
-        attempt: 1,
-        result: 'fail',
-        category:
-          refreshed.reason === 'network'
-            ? 'network'
-            : refreshed.reason === 'timeout'
-              ? 'timeout'
-              : 'auth',
-        auth: readResult,
-        http: refreshed.httpStatus,
-      });
-      return false;
-    }
-    if (refreshed.userId !== knownUser) {
-      diagLog({
-        op,
-        stage: 'auth-recovery',
-        attempt: 1,
-        result: 'account',
-        category: 'auth',
-        auth: readResult,
-        accountChanged: true,
-      });
-      resetForAccount();
-      return false;
-    }
-    if (!refreshed.token || refreshed.token === prevToken) {
-      diagLog({
-        op,
-        stage: 'auth-recovery',
-        attempt: 1,
-        result: 'fail',
-        category: 'auth',
-        auth: readResult,
-        tokenChanged: false,
-      });
-      return false;
-    }
-
-    auth = {
-      status: 'ok',
-      token: refreshed.token,
-      userId: knownUser,
-      expires: refreshed.expires,
-      reason: '',
-      source: 'refresh',
-      // Запоминаем запись, которую заменили. Пока VK не перезапишет её,
-      // checkAuth не должен откатывать токен обратно.
-      baseToken: prevToken,
-    };
-    diagLog({
-      op,
-      stage: 'auth-recovery',
-      attempt: 1,
-      result: 'refreshed',
-      category: 'ok',
-      auth: 'ok',
-      tokenChanged: true,
-    });
-    notify();
-    resumeAuthUploads(true);
-    return true;
   }
 
   // --- сеть ---
@@ -1076,7 +965,55 @@
 
   const API_METHODS = new Set(['docs.get', 'docs.getUploadServer', 'docs.save', 'docs.delete']);
 
-  async function apiRequest(method, params, token, opts) {
+  async function apiRequest(method, params, token, opts = {}) {
+    const ctrl = new AbortController();
+    const epoch = accountEpoch;
+    const userId = auth.userId;
+    if (opts.register) opts.register(ctrl);
+    else aborts.add(ctrl);
+    const options = { ...opts,
+      register(child) {
+        const abort = () => child.abort();
+        ctrl.signal.addEventListener('abort', abort, { once: true });
+        child.detach = () => ctrl.signal.removeEventListener('abort', abort);
+        if (ctrl.signal.aborted) child.abort();
+      },
+      unregister(child) { child.detach(); },
+    };
+    let lastError;
+    try {
+      for (let attempt = 0; attempt <= AUTH_RETRIES; attempt++) {
+        if (ctrl.signal.aborted || epoch !== accountEpoch) {
+          throw new DOMException('Aborted', 'AbortError');
+        }
+        if (attempt) {
+          const recovered = await recoverAuthForUser(userId, token,
+            opts.op, opts.stage, attempt - 1, ctrl.signal);
+          if (ctrl.signal.aborted || epoch !== accountEpoch) {
+            throw new DOMException('Aborted', 'AbortError');
+          }
+          if (!recovered) {
+            const current = readAuth();
+            if (current.userId !== userId) throw lastError;
+            continue;
+          }
+          token = auth.token;
+        }
+        try {
+          return await apiRequestOnce(method, params, token, options);
+        } catch (e) {
+          if (!e || e.kind !== 'auth') throw e;
+          lastError = e;
+        }
+      }
+      throw lastError;
+    } finally {
+      if (opts.unregister) opts.unregister(ctrl);
+      else aborts.delete(ctrl);
+    }
+  }
+
+  async function apiRequestOnce(method, params, token, opts) {
     if (!API_METHODS.has(method)) throw apiError('api', 'api', false);
     const options = opts || {};
     const op = options.op || diagOp('api');
@@ -1367,8 +1304,8 @@
     notify();
   }
 
-  // Ровно один запрос на подтверждённое удержание. Повторный вызов, пока
-  // запрос в пути, ничего не отправляет.
+  // Одна операция на подтверждённое удержание. Повторный вызов, пока
+  // запрос или восстановление токена в пути, ничего не отправляет.
   function deleteDocument(key) {
     if (typeof key !== 'string' || !key) {
       return Promise.resolve({ ok: false, reason: 'key' });
@@ -1555,14 +1492,13 @@
 
   async function runLoop(all) {
     if (!checkAuth()) {
-      loading = false;
+      loading = !!expiredRecoveryPending;
       inFlight = null;
       inFlightGen = 0;
       return;
     }
     const gen = generation;
     const opId = diagOp('library');
-    let authRecoveryUsed = false;
 
     try {
       let pages = 0;
@@ -1587,27 +1523,12 @@
         }
 
         let response;
-        let usedToken = auth.token;
         try {
           response = await requestPage(auth.token, offset, opId);
         } catch (e) {
           if (gen !== generation) return;
           if (e && e.name === 'AbortError') return;
           if (e && e.kind === 'auth') {
-            // Один раз пробуем перечитать или обновить вход того же
-            // аккаунта. Цикл повторов не запускаем: повторная ошибка
-            // сразу показывается пользователю.
-            if (!authRecoveryUsed) {
-              authRecoveryUsed = true;
-              const recovered = await recoverAuthForUser(
-                auth.userId,
-                usedToken,
-                opId,
-                'library'
-              );
-              if (gen !== generation) return;
-              if (recovered) continue;
-            }
             status = 'unauthorized';
             error = {
               kind: 'auth',
@@ -1714,7 +1635,7 @@
 
   function start(all) {
     if (!checkAuth()) {
-      loading = false;
+      loading = !!expiredRecoveryPending;
       return Promise.resolve();
     }
     if (loaded && !all) {
@@ -1756,7 +1677,7 @@
   }
 
   function refresh() {
-    if (!checkAuth()) return Promise.resolve();
+    if (!checkAuth({ retryExpired: true })) return expiredRecoveryPending || Promise.resolve();
     generation++;
     abortCurrent();
     offset = 0;
@@ -2098,7 +2019,7 @@
         job.error = null;
         job.canRetry = false;
         job.canDismiss = false;
-        // Новый запуск снова получает одну попытку восстановления входа.
+        // Новый запуск получает новый ограниченный цикл перечитывания токена.
         job.authRetry = 0;
         changed = true;
       }
@@ -2410,7 +2331,6 @@
 
     let lastError = null;
     let networkRetries = 0;
-    let authRetried = false;
     for (let attempt = 1; ; attempt++) {
       requireUploadAuth(job);
       const usedToken = auth.token;
@@ -2445,21 +2365,6 @@
         return url;
       } catch (e) {
         lastError = e;
-        // Отказ авторизации — единственный случай, когда имеет смысл
-        // перечитать/обновить вход того же аккаунта. Капчу, лимиты частоты
-        // и отказ VK автоматически не повторяем.
-        if (e && e.kind === 'auth' && !authRetried) {
-          authRetried = true;
-          job.authRetry = (job.authRetry || 0) + 1;
-          const recovered = await recoverAuthForUser(
-            job.userId,
-            usedToken,
-            job.opId,
-            'server'
-          );
-          if (recovered && owned(job)) continue;
-          break;
-        }
         const retryable =
           e && (e.kind === 'network' || e.kind === 'timeout' || e.kind === 'server');
         if (!retryable || networkRetries >= 1) break;
@@ -2791,22 +2696,6 @@
       if (!owned(job)) return;
       if (job.stage === 'canceled') return;
       const kind = jobErrorKind(e);
-      // Отказ входа до сохранения можно один раз повторить после
-      // обновления токена того же аккаунта. Ответ docs.save при этом не
-      // потерян: VK явно отказал, документ ещё не создан.
-      if (kind === 'auth' && job.authRetry < 1) {
-        job.authRetry = (job.authRetry || 0) + 1;
-        const recovered = await recoverAuthForUser(
-          job.userId,
-          usedToken,
-          job.opId,
-          'save'
-        );
-        if (recovered && owned(job) && job.stage !== 'canceled') {
-          return saveUpload(job);
-        }
-        if (!owned(job) || job.stage === 'canceled') return;
-      }
       if (kind === 'auth') throw e;
       // Ответ мог потеряться уже после того, как VK сохранил документ.
       if (kind === 'network' || kind === 'timeout' || kind === 'server') {
@@ -2917,13 +2806,14 @@
           fileId = await transferUpload(job, uploadUrl, attempt);
           break;
         } catch (e) {
-          if (e && e.kind === 'auth' && job.authRetry < 1) {
+          if (e && e.kind === 'auth' && job.authRetry < AUTH_RETRIES) {
             job.authRetry = (job.authRetry || 0) + 1;
             const recovered = await recoverAuthForUser(
               job.userId,
               auth.token,
               job.opId,
-              'transfer'
+              'transfer',
+              job.authRetry - 1
             );
             if (recovered && owned(job) && job.stage !== 'canceled') {
               // Подписанный адрес мог быть выдан до смены входа. Берём
@@ -3285,7 +3175,7 @@
       },
       uploads: uploadsState(),
       deletions: deletionsState(),
-      uploadsPaused: uploadAuthHold
+      uploadsPaused: uploadAuthHold && !expiredRecoveryPending
         ? { kind: 'auth', message: localAuthMessage(auth.reason), reason: auth.reason || '' }
         : null,
     };
