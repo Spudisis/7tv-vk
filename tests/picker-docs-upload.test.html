@@ -239,6 +239,41 @@
       );
       window.VK7TV_DOCS.dismissUpload(conversionId);
 
+      // Явная загрузка исходного видео после ошибки преобразования.
+      const mp4Bytes = new Uint8Array(16);
+      mp4Bytes.set([0, 0, 0, 16]);
+      mp4Bytes.set([0x66, 0x74, 0x79, 0x70, 0x69, 0x73, 0x6f, 0x6d], 4);
+      const videoId = window.VK7TV_DOCS.enqueueUploads(
+        [new File([mp4Bytes], 'video.mp4', { type: 'video/mp4', lastModified: 3 })],
+        { mp4Mode: 'gif' }
+      )[0];
+      await T.waitFor('MP4 ушёл в ошибку преобразования', () => {
+        const found = window.VK7TV_DOCS.getState().uploads.find((u) => u.id === videoId);
+        return !!found && found.stage === 'error' && found.canUploadOriginal;
+      });
+      const videoRow = group().querySelector(
+        '.vk7tv-docs-upload-row[data-upload-id="' + videoId + '"]'
+      );
+      T.check(
+        'ошибка MP4 предлагает исходное видео',
+        !!videoRow && videoRow.textContent.includes('Загрузить исходное видео'),
+        videoRow ? videoRow.textContent : 'нет строки'
+      );
+      const originalButton =
+        videoRow && videoRow.querySelector('[data-upload-action="upload-original"]');
+      T.eq(
+        'кнопка исходного видео названа',
+        originalButton ? originalButton.textContent : '',
+        'Загрузить исходное видео'
+      );
+      if (originalButton) originalButton.click();
+      await T.waitFor('исходный MP4 загрузился', () => {
+        const found = window.VK7TV_DOCS.getState().uploads.find((u) => u.id === videoId);
+        return !!found && found.stage === 'success';
+      });
+      T.eq('исходный MP4 ушёл в VK', uploadCalls.includes('video.mp4'), true);
+      window.VK7TV_DOCS.dismissUpload(videoId);
+
       // Лента очереди видна и при свёрнутой сетке.
       xhrMode = 'hold';
       const heldJob = window.VK7TV_DOCS.enqueueUploads([makeFile('Queue.png')])[0];

@@ -6,14 +6,15 @@
 // gifenc лежит рядом, версия 1.0.3, MIT (vendor/gifenc.LICENSE.md).
 
 import './webp-parse.js';
-import { GIFEncoder, quantize, applyPalette } from './vendor/gifenc.esm.js';
+import {
+  createGifEncoder,
+  delayPlan,
+  encodeRgbaFrame,
+  gifRepeat,
+} from './gif-encode.js';
 
 const PARSER = self.VK7TV_WEBP_PARSE;
 const LIMITS = PARSER.LIMITS;
-const ALPHA_THRESHOLD = 128;
-const TRANSPARENT_INDEX = 0;
-const MAX_COLORS = 255;
-const MAX_GIF_DELAY_CS = 65535;
 
 let decoder = null;
 let canceled = false;
@@ -47,85 +48,6 @@ function fail(kind) {
 
 function checkTime() {
   if (Date.now() - startedAt > LIMITS.timeoutMs) fail('timeout');
-}
-
-// WebP: Loop Count — число проигрываний (0 — бесконечно). GIF Netscape:
-// число дополнительных повторов после первого (0 — бесконечно), а -1
-// означает отсутствие расширения и один проход.
-function gifRepeat(loopCount) {
-  if (loopCount === 0) return 0;
-  if (loopCount === 1) return -1;
-  return loopCount - 1;
-}
-
-function delayPlan(frames) {
-  const out = [];
-  let cumulativeMs = 0;
-  let previousCs = 0;
-  for (const frame of frames) {
-    cumulativeMs += Math.max(0, Number(frame.duration) || 0);
-    // Округляем накопленное время, а не каждый кадр: иначе ошибка
-    // округления складывается за сотни кадров и GIF уезжает по времени.
-    const targetCs = Math.max(previousCs + 1, Math.round(cumulativeMs / 10));
-    // Поле задержки GIF — 16 бит. Более длинную паузу формат не хранит;
-    // ограничиваем её, а остаток переходит в следующие кадры, чтобы общая
-    // длительность не потерялась и значение не завернулось через 65535.
-    const frameCs = Math.min(MAX_GIF_DELAY_CS, targetCs - previousCs);
-    out.push(frameCs * 10);
-    previousCs += frameCs;
-  }
-  return out;
-}
-
-// Один кадр: полный RGBA -> палитра до 255 цветов + отдельный прозрачный
-// индекс. Альфа ниже 128 считается прозрачной, остальные пиксели —
-// непрозрачными с исходным RGB.
-function encodeFrame(encoder, rgba, width, height) {
-  const length = width * height;
-  let opaqueCount = 0;
-  for (let i = 0; i < length; i++) {
-    const alpha = rgba[i * 4 + 3];
-    if (alpha >= ALPHA_THRESHOLD) {
-      opaqueCount++;
-    } else {
-      rgba[i * 4] = 0;
-      rgba[i * 4 + 1] = 0;
-      rgba[i * 4 + 2] = 0;
-      rgba[i * 4 + 3] = 0;
-    }
-  }
-
-  let palette = [];
-  if (opaqueCount) {
-    const opaque = new Uint8Array(opaqueCount * 4);
-    let at = 0;
-    for (let i = 0; i < length; i++) {
-      if (rgba[i * 4 + 3] < ALPHA_THRESHOLD) continue;
-      opaque[at++] = rgba[i * 4];
-      opaque[at++] = rgba[i * 4 + 1];
-      opaque[at++] = rgba[i * 4 + 2];
-      opaque[at++] = 255;
-    }
-    palette = quantize(opaque, MAX_COLORS);
-  }
-
-  let index;
-  if (palette.length) {
-    index = applyPalette(rgba, palette);
-    // Индекс 0 оставлен прозрачности. Сдвигаем все непрозрачные цвета на
-    // единицу, чтобы чёрный цвет кадра не стал прозрачным.
-    for (let i = 0; i < index.length; i++) index[i]++;
-  } else {
-    index = new Uint8Array(length);
-  }
-  for (let i = 0; i < length; i++) {
-    if (rgba[i * 4 + 3] < ALPHA_THRESHOLD) index[i] = TRANSPARENT_INDEX;
-  }
-
-  return {
-    palette: [[0, 0, 0]].concat(palette),
-    index,
-  };
 }
 
 async function convert(data) {
@@ -178,7 +100,7 @@ async function encode(info) {
   const total = info.frameCount;
   const delays = delayPlan(info.frames);
   const repeat = gifRepeat(info.loopCount);
-  const encoder = GIFEncoder({ initialCapacity: Math.min(1024 * 1024, width * height) });
+  const encoder = createGifEncoder(width, height);
   const canvas = new OffscreenCanvas(width, height);
   const ctx = canvas.getContext('2d', { willReadFrequently: true });
   if (!ctx) fail('decode');
@@ -214,11 +136,13 @@ async function encode(info) {
       } catch (e) {
         fail('decode');
       }
-      const encoded = encodeFrame(encoder, imageData.data, width, height);
+      const encoded = encodeRgbaFrame(imageData.data, width, height, {
+        transparent: true,
+      });
       encoder.writeFrame(encoded.index, width, height, {
         palette: encoded.palette,
-        transparent: true,
-        transparentIndex: TRANSPARENT_INDEX,
+        transparent: encoded.transparent,
+        transparentIndex: encoded.transparentIndex,
         delay: delays[i],
         repeat,
         dispose: 2,

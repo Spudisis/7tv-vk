@@ -1,0 +1,358 @@
+<!doctype html>
+<meta charset="utf-8" />
+<title>VK7TV — MP4 в GIF в очереди загрузки</title>
+<body>
+  <script src="harness.js"></script>
+  <script src="../mp4-parse.js"></script>
+  <script src="../mp4-convert-frame.js"></script>
+  <script>
+    const T = window.VK7TV_TEST;
+    const AUTH_KEY = '6287487:web_token:login:auth';
+    localStorage.clear();
+    localStorage.setItem(
+      AUTH_KEY,
+      JSON.stringify({
+        access_token: 'test-token',
+        user_id: 42,
+        expires: Math.floor(Date.now() / 1000) + 3600,
+      })
+    );
+
+    const FRAME = window.VK7TV_MP4_FRAME;
+    const WORKER_URL = new URL('../mp4-convert-worker.js', location.href);
+    let converterMode = 'real';
+    let converterCalls = 0;
+    let converterCancels = 0;
+    let held = null;
+
+    window.VK7TV_MP4_CONVERT = {
+      startConversion(opts) {
+        converterCalls++;
+        const fail = (kind, message) => {
+          const err = new Error(message || kind);
+          err.kind = kind;
+          return Promise.reject(err);
+        };
+        if (converterMode === 'decode') {
+          return { promise: fail('decode', 'Не удалось извлечь кадр видео.'), cancel: () => {} };
+        }
+        if (converterMode === 'timeout') {
+          return {
+            promise: fail('timeout', 'Преобразование видео в GIF заняло больше 60 секунд.'),
+            cancel: () => {},
+          };
+        }
+        if (converterMode === 'gif-size') {
+          return {
+            promise: fail('gif-size', 'Получившийся GIF больше 50 МиБ.'),
+            cancel: () => {},
+          };
+        }
+        if (converterMode === 'hold') {
+          let rejectResult;
+          let settled = false;
+          const promise = new Promise((resolve, reject) => {
+            rejectResult = reject;
+            held = {
+              resolve: () => {
+                if (settled) return;
+                settled = true;
+                resolve(new Uint8Array([0x47, 0x49, 0x46]).buffer);
+              },
+            };
+          });
+          return {
+            promise,
+            cancel() {
+              if (settled) return;
+              settled = true;
+              converterCancels++;
+              const err = new Error('canceled');
+              err.kind = 'canceled';
+              rejectResult(err);
+            },
+          };
+        }
+        const controller = new AbortController();
+        const promise = FRAME.convertBuffer(opts.data, {
+          workerUrl: WORKER_URL,
+          signal: controller.signal,
+          onMeta: opts.onProgress,
+          onProgress: opts.onProgress,
+        }).then((result) => result.bytes.buffer);
+        return {
+          promise,
+          cancel() {
+            converterCancels++;
+            controller.abort();
+          },
+        };
+      },
+    };
+  </script>
+  <script>
+    const preview = [
+      { type: 's', src: 'https://sun9-1.userapi.com/s.png', width: 64, height: 64 },
+    ];
+    const nativeFetch = window.fetch.bind(window);
+    let saveCount = 0;
+    const savedDocs = [];
+    window.fetch = (url, opts) => {
+      const method = String(url).split('/').pop();
+      const body = new URLSearchParams(opts && opts.body);
+      const reply = (json) =>
+        Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve(json) });
+      if (method === 'docs.get') {
+        return reply({ response: { count: 0, total_count: 0, items: [] } });
+      }
+      if (method === 'docs.getUploadServer') {
+        return reply({ response: { upload_url: 'https://pu.vk.ru/upload_doc.php' } });
+      }
+      if (method === 'docs.save') {
+        const title = body.get('title') || 'file';
+        savedDocs.push(title);
+        return reply({
+          response: {
+            type: 'doc',
+            doc: {
+              owner_id: 42,
+              id: 700 + saveCount++,
+              title,
+              ext: title.slice(title.lastIndexOf('.') + 1).toLowerCase(),
+              type: 4,
+              size: 1,
+              date: 1,
+              url: 'https://vk.ru/doc' + saveCount,
+              preview: { photo: { sizes: preview } },
+            },
+          },
+        });
+      }
+      return Promise.reject(new Error('unexpected ' + method));
+    };
+
+    const uploads = [];
+    const xhrState = { mode: 'ok' };
+    class FakeXHR {
+      constructor() {
+        this.upload = {};
+        this.status = 0;
+        this.responseText = '';
+      }
+      open(method, url) {
+        this.method = method;
+        this.url = url;
+      }
+      send(form) {
+        const file = form.get('file');
+        uploads.push({
+          url: this.url,
+          method: this.method,
+          form,
+          file,
+          name: file.name,
+          type: file.type,
+          size: file.size,
+        });
+        if (xhrState.mode === 'network') {
+          setTimeout(() => this.onerror(), 0);
+          return;
+        }
+        setTimeout(() => {
+          this.upload.onprogress({ lengthComputable: true, loaded: file.size, total: file.size });
+          this.status = 200;
+          this.responseText = JSON.stringify({ file: 'file-' + uploads.length });
+          this.onload();
+        }, 0);
+      }
+      abort() {
+        if (this.onabort) this.onabort();
+      }
+    }
+    window.XMLHttpRequest = FakeXHR;
+
+    async function fixture(name) {
+      const res = await nativeFetch('fixtures/' + name);
+      return new Uint8Array(await res.arrayBuffer());
+    }
+  </script>
+  <script src="../vk-docs.js"></script>
+  <script>
+    T.run(async () => {
+      const DOCS = window.VK7TV_DOCS;
+      const job = (id) => DOCS.getState().uploads.find((u) => u.id === id);
+      const waitJob = (id, stage) =>
+        T.waitFor(`задание ${id}: ${stage}`, () => {
+          const found = job(id);
+          return !!found && found.stage === stage;
+        });
+      const waitError = (id, kind) =>
+        T.waitFor(`ошибка ${id}: ${kind}`, () => {
+          const found = job(id);
+          return !!found && found.stage === 'error' && found.error.kind === kind;
+        });
+      const enqueue = (name, bytes, options, type) =>
+        DOCS.enqueueUploads(
+          [new File([bytes], name, { type: type || 'video/mp4', lastModified: 1 })],
+          options
+        )[0];
+
+      const normal = await fixture('mp4-normal.mp4');
+      const audioOnly = await fixture('mp4-audio-only.mp4');
+      const corrupt = await fixture('mp4-corrupt.mp4');
+      const png = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+
+      // Смешанная партия: MP4 по выбору становится GIF, PNG идёт как раньше.
+      converterMode = 'real';
+      const mixed = DOCS.enqueueUploads(
+        [
+          new File([normal], 'clip.mp4', { type: 'video/mp4', lastModified: 1 }),
+          new File([png], 'still.png', { type: 'image/png', lastModified: 1 }),
+        ],
+        { mp4Mode: 'gif' }
+      );
+      await waitJob(mixed[0], 'success');
+      await waitJob(mixed[1], 'success');
+      const clipJob = job(mixed[0]);
+      T.eq('MP4: режим сохранён в задании', clipJob.mp4Mode, 'gif');
+      T.eq('MP4: файл заменён на GIF', clipJob.name, 'clip.gif');
+      T.eq('MP4: MIME задания', clipJob.mime, 'image/gif');
+      T.eq('MP4: одно преобразование', converterCalls, 1);
+      const clipUpload = uploads.find((u) => u.name === 'clip.gif');
+      T.check('MP4: GIF ушёл в multipart', !!clipUpload, clipUpload ? 'да' : 'нет');
+      if (clipUpload) {
+        T.eq('MP4: MIME multipart', clipUpload.type, 'image/gif');
+        const head = new Uint8Array(await clipUpload.file.slice(0, 3).arrayBuffer());
+        T.eq('MP4: содержимое GIF', String.fromCharCode(...head), 'GIF');
+      }
+      T.check('PNG из партии ушёл отдельно', !!uploads.find((u) => u.name === 'still.png'), 'да');
+      T.check('PNG не конвертировался', !!(savedDocs.includes('still.png')), savedDocs.join(','));
+
+      // Сетевая ошибка после преобразования: повтор не конвертирует заново.
+      xhrState.mode = 'network';
+      const retryId = enqueue('retry.mp4', normal, { mp4Mode: 'gif' });
+      await waitError(retryId, 'network');
+      const beforeRetry = converterCalls;
+      T.check('сеть: повтор доступен', job(retryId).canRetry, 'да');
+      xhrState.mode = 'ok';
+      DOCS.retryUpload(retryId);
+      await waitJob(retryId, 'success');
+      T.eq('сеть: GIF не конвертировался повторно', converterCalls, beforeRetry);
+      T.check('сеть: повтор отправил GIF', !!uploads.find((u) => u.name === 'retry.gif'), 'да');
+
+      // Ошибка преобразования: исходный MP4 сам не отправляется.
+      converterMode = 'decode';
+      const uploadCount = uploads.length;
+      const failId = enqueue('broken.mp4', normal, { mp4Mode: 'gif' });
+      await waitError(failId, 'convert-decode');
+      const failed = job(failId);
+      T.eq('ошибка: исходник не ушёл в VK', uploads.length, uploadCount);
+      T.eq('ошибка: повтор преобразования не предлагается', failed.canRetry, false);
+      T.eq('ошибка: доступна явная загрузка оригинала', failed.canUploadOriginal, true);
+      T.check(
+        'ошибка: текст про извлечение кадра',
+        failed.error.message.includes('кадр'),
+        failed.error.message
+      );
+      const callsBeforeOriginal = converterCalls;
+      T.eq('явная загрузка оригинала запущена', DOCS.uploadOriginal(failId), true);
+      await waitJob(failId, 'success');
+      T.eq('оригинал: преобразования не было', converterCalls, callsBeforeOriginal);
+      const originalUpload = uploads.at(-1);
+      T.eq('оригинал: имя файла', originalUpload.name, 'broken.mp4');
+      T.eq('оригинал: MIME', originalUpload.type, 'video/mp4');
+
+      // Таймаут и размер результата: очередь продолжает работу.
+      converterMode = 'timeout';
+      const timeoutId = enqueue('timeout.mp4', normal, { mp4Mode: 'gif' });
+      await waitError(timeoutId, 'convert-timeout');
+      T.eq('таймаут: явная загрузка оригинала', job(timeoutId).canUploadOriginal, true);
+      T.eq('таймаут: повтор разрешён', job(timeoutId).canRetry, true);
+      DOCS.dismissUpload(timeoutId);
+
+      converterMode = 'gif-size';
+      const bigId = enqueue('big.mp4', normal, { mp4Mode: 'gif' });
+      await waitError(bigId, 'convert-gif-size');
+      T.eq('GIF больше лимита: явная загрузка оригинала', job(bigId).canUploadOriginal, true);
+      T.eq('GIF больше лимита: без повтора', job(bigId).canRetry, false);
+      DOCS.dismissUpload(bigId);
+
+      // Только звук: до конвертера не доходит, оригинал можно отправить явно.
+      converterMode = 'real';
+      const callsBeforeAudio = converterCalls;
+      const audioId = enqueue('sound.mp4', audioOnly, { mp4Mode: 'gif' });
+      await waitError(audioId, 'convert-no-video');
+      T.eq('только звук: конвертер не запускался', converterCalls, callsBeforeAudio);
+      T.eq('только звук: явная загрузка оригинала', job(audioId).canUploadOriginal, true);
+      DOCS.uploadOriginal(audioId);
+      await waitJob(audioId, 'success');
+      T.eq('только звук: отправлен оригинал', uploads.at(-1).name, 'sound.mp4');
+
+      // Исходный режим и вызов без параметра сохраняют прежнее поведение.
+      const callsBeforeOriginalMode = converterCalls;
+      const plainId = enqueue('plain.mp4', normal, { mp4Mode: 'original' });
+      await waitJob(plainId, 'success');
+      T.eq('режим оригинала: конвертации нет', converterCalls, callsBeforeOriginalMode);
+      T.eq('режим оригинала: имя', uploads.at(-1).name, 'plain.mp4');
+      T.eq('режим оригинала: MIME', uploads.at(-1).type, 'video/mp4');
+
+      const defaultId = enqueue('default.mp4', normal);
+      await waitJob(defaultId, 'success');
+      T.eq('без параметра: конвертации нет', converterCalls, callsBeforeOriginalMode);
+      T.eq('без параметра: режим задания', job(defaultId).mp4Mode, 'original');
+      T.eq('без параметра: имя', uploads.at(-1).name, 'default.mp4');
+
+      // Повреждённый MP4 отклоняется до VK и без конвертера.
+      const callsBeforeCorrupt = converterCalls;
+      const uploadsBeforeCorrupt = uploads.length;
+      const corruptId = enqueue('bad.mp4', corrupt, { mp4Mode: 'gif' });
+      await waitError(corruptId, 'corrupt');
+      T.eq('повреждённый: в VK ничего не ушло', uploads.length, uploadsBeforeCorrupt);
+      T.eq('повреждённый: конвертер не запускался', converterCalls, callsBeforeCorrupt);
+      T.eq('повреждённый: оригинал не предлагается', job(corruptId).canUploadOriginal, false);
+      DOCS.dismissUpload(corruptId);
+
+      const renamedId = enqueue('renamed.mp4', await fixture('static.webp'), { mp4Mode: 'gif' });
+      await waitError(renamedId, 'corrupt');
+      T.eq('переименованный файл: в VK ничего не ушло', uploads.length, uploadsBeforeCorrupt);
+      T.eq('переименованный файл: оригинал не предлагается', job(renamedId).canUploadOriginal, false);
+      DOCS.dismissUpload(renamedId);
+
+      // Ошибка одного файла не останавливает очередь остальных.
+      const afterBadId = enqueue('after-bad.png', png, null, 'image/png');
+      await waitJob(afterBadId, 'success');
+      T.eq('после ошибки очередь продолжилась', uploads.at(-1).name, 'after-bad.png');
+
+      // Отмена во время преобразования освобождает очередь.
+      converterMode = 'hold';
+      const cancelId = enqueue('cancel.mp4', normal, { mp4Mode: 'gif' });
+      await waitJob(cancelId, 'converting');
+      DOCS.cancelUpload(cancelId);
+      await waitJob(cancelId, 'canceled');
+      T.check('отмена остановила конвертер', converterCancels >= 1, converterCancels);
+      converterMode = 'real';
+      const afterCancelId = enqueue('after.png', png, null, 'image/png');
+      await waitJob(afterCancelId, 'success');
+      T.eq('после отмены очередь работает', uploads.at(-1).name, 'after.png');
+
+      // Смена аккаунта отменяет конвертацию и не отправляет файл другому.
+      converterMode = 'hold';
+      enqueue('account.mp4', normal, { mp4Mode: 'gif' });
+      await T.waitFor('конвертация нового аккаунта', () =>
+        DOCS.getState().uploads.some((u) => u.stage === 'converting')
+      );
+      const cancelsBefore = converterCancels;
+      localStorage.setItem(
+        AUTH_KEY,
+        JSON.stringify({
+          access_token: 'other-token',
+          user_id: 99,
+          expires: Math.floor(Date.now() / 1000) + 3600,
+        })
+      );
+      window.dispatchEvent(new StorageEvent('storage', { key: AUTH_KEY }));
+      T.eq('смена аккаунта очистила очередь', DOCS.getState().uploads.length, 0);
+      T.check('конвертер отменён при смене аккаунта', converterCancels > cancelsBefore, converterCancels);
+    });
+  </script>
+</body>

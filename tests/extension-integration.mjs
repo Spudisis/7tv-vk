@@ -79,6 +79,7 @@ const server = createHttpsServer(tls, async (req, res) => {
       '.json': 'application/json',
       '.webp': 'image/webp',
       '.gif': 'image/gif',
+      '.mp4': 'video/mp4',
     };
     res.setHeader('Content-Type', (types[extname(path)] || 'application/octet-stream') + '; charset=utf-8');
     if (path.endsWith('extension-integration.html')) {
@@ -116,6 +117,7 @@ try {
       '--remote-debugging-port=0',
       '--remote-debugging-address=127.0.0.1',
       `--user-data-dir=${profile}`,
+      '--disable-features=DisableLoadExtensionCommandLineSwitch',
       `--disable-extensions-except=${root}`,
       `--load-extension=${root}`,
       '--host-resolver-rules=MAP vk.com:443 127.0.0.1:' + port,
@@ -155,6 +157,7 @@ try {
   });
   let seq = 0;
   const pending = new Map();
+  const pageLogs = [];
   const call = (method, params = {}, sessionId) =>
     new Promise((resolveCall, reject) => {
       const id = ++seq;
@@ -168,6 +171,24 @@ try {
 
   ws.onmessage = async ({ data }) => {
     const message = JSON.parse(data);
+    if (message.method === 'Runtime.exceptionThrown') {
+      const d = message.params && message.params.exceptionDetails;
+      pageLogs.push(
+        'EXCEPTION ' +
+          ((d && (d.text + ' ' + (d.exception && d.exception.description))) || '')
+      );
+    } else if (message.method === 'Runtime.executionContextCreated') {
+      const c = message.params && message.params.context;
+      pageLogs.push(
+        'CONTEXT ' +
+          ((c && (c.name || '') + ' | ' + (c.origin || '') + ' | ' + (c.auxData && c.auxData.type)))
+      );
+    } else if (message.method === 'Log.entryAdded') {
+      const e = message.params && message.params.entry;
+      if (e && (e.level === 'error' || e.level === 'warning')) {
+        pageLogs.push('LOG ' + e.level + ' ' + e.text + ' ' + (e.url || ''));
+      }
+    }
     if (message.method === 'Fetch.requestPaused') {
       const { requestId, request } = message.params;
       const url = request.url;
@@ -261,6 +282,8 @@ try {
   const target = await call('Target.createTarget', { url: 'about:blank' });
   const targetId = target.targetId;
   const { sessionId } = await call('Target.attachToTarget', { targetId, flatten: true });
+  await call('Runtime.enable', {}, sessionId).catch(() => {});
+  await call('Log.enable', {}, sessionId).catch(() => {});
   await call(
     'Fetch.enable',
     { patterns: [{ urlPattern: 'https://web.api.vk.ru/*' }, { urlPattern: 'https://pu.vk.ru/*' }] },
@@ -279,6 +302,8 @@ try {
   let report = null;
   let deleteAttempts = 0;
   let deleteAttemptAt = 0;
+  let backgroundTarget = null;
+  let backgroundOpened = false;
   const deadline = Date.now() + 45000;
   while (Date.now() < deadline) {
     const { result } = await call(
@@ -289,6 +314,31 @@ try {
     if (result.value && result.value.startsWith('RESULT ')) {
       report = JSON.parse(result.value.slice(7));
       break;
+    }
+    if (!backgroundOpened) {
+      const before = await call(
+        'Runtime.evaluate',
+        { expression: 'window.__vk7tvBeforeMp4 === true', returnByValue: true },
+        sessionId
+      );
+      if (before.result && before.result.value) {
+        const bg = await call('Target.createTarget', { url: 'about:blank' });
+        backgroundTarget = bg.targetId;
+        const attached = await call('Target.attachToTarget', {
+          targetId: backgroundTarget,
+          flatten: true,
+        });
+        // Новая вкладка становится активной, а стенд ВК остаётся в фоне:
+        // конвертер обязан работать и при скрытой странице.
+        await call('Page.bringToFront', {}, attached.sessionId).catch(() => {});
+        await delay(200);
+        await call(
+          'Runtime.evaluate',
+          { expression: 'window.__vk7tvBackgroundReady = true', returnByValue: true },
+          sessionId
+        );
+        backgroundOpened = true;
+      }
     }
     if (deleteAttempts < 4 && (deleteAttempts === 0 || Date.now() - deleteAttemptAt > 2500)) {
       const canRetry = deleteAttempts === 0 || deleteRequests.length === 0;
@@ -347,6 +397,7 @@ try {
       'targets:',
       targets && targets.targetInfos.map((t) => `${t.type} ${t.url}`).join('\n')
     );
+    console.error('logs:', pageLogs.slice(0, 30).join('\n'));
     throw new Error('интеграционный стенд не отчитался');
   }
   const lines = report.lines || [];
@@ -360,11 +411,23 @@ try {
       ' docs.delete получил ключ — ' +
       deleteRequests.join(',')
   );
-  if (!savedTitles.includes('reaction.gif') || !deleteRequests.length) {
+  lines.push(
+    (savedTitles.includes('clip.gif') ? '  ok  ' : '  FAIL') +
+      ' MP4 из фоновой вкладки сохранён как GIF'
+  );
+  if (
+    !savedTitles.includes('reaction.gif') ||
+    !savedTitles.includes('clip.gif') ||
+    !deleteRequests.length
+  ) {
     report.ok = false;
+  }
+  if (backgroundTarget) {
+    await call('Target.closeTarget', { targetId: backgroundTarget }).catch(() => {});
   }
   console.log(`${report.ok ? 'OK  ' : 'FAIL'} extension-integration — ${lines.length} проверок`);
   console.log(lines.join('\n'));
+  if (pageLogs.length) console.log('page logs:\n' + pageLogs.slice(0, 30).join('\n'));
   if (!report.ok) failed = true;
   await call('Browser.close').catch(() => {});
 } catch (e) {

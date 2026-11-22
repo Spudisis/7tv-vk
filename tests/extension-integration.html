@@ -145,6 +145,62 @@
           '42:1'
         );
       }
+
+      // MP4 -> GIF целиком в фоновой вкладке: iframe расширения, worker и
+      // встроенный декодер видео. Фоновую вкладку открывает интеграционный
+      // прогон после сигнала __vk7tvBeforeMp4.
+      window.__vk7tvBeforeMp4 = true;
+      await waitFor(
+        'фоновая вкладка подключилась',
+        () => window.__vk7tvBackgroundReady === true,
+        15000
+      );
+      check(
+        'страница ушла в фон',
+        document.visibilityState === 'hidden',
+        document.visibilityState
+      );
+      const mp4res = await fetch('fixtures/mp4-normal.mp4');
+      const mp4file = new File([await mp4res.arrayBuffer()], 'clip.mp4', {
+        type: 'video/mp4',
+        lastModified: 1,
+      });
+      const mp4dt = new DataTransfer();
+      mp4dt.items.add(mp4file);
+      input.files = mp4dt.files;
+      input.dispatchEvent(new Event('change', { bubbles: true }));
+      await waitFor(
+        'выбор режима MP4 появился',
+        () => {
+          const batch = document.querySelector('.vk7tv-docs-batch');
+          return !!batch && batch.style.display !== 'none';
+        },
+        10000
+      );
+      const batch = document.querySelector('.vk7tv-docs-batch');
+      check('в фоне предложен режим MP4', !!batch, batch ? 'да' : 'нет');
+      if (batch) {
+        const gifMode = batch.querySelector('input[value="gif"]');
+        check('режим GIF доступен в фоне', !!gifMode, gifMode ? 'да' : 'нет');
+        if (gifMode) gifMode.click();
+        const add = batch.querySelector('[data-batch-action="add"]');
+        check('кнопка «Добавить» есть в фоне', !!add, add ? 'да' : 'нет');
+        if (add) add.click();
+        const success = await waitFor(
+          'MP4 в фоне стал GIF',
+          () =>
+            [...document.querySelectorAll('.vk7tv-docs-upload-row')].some(
+              (row) =>
+                row.classList.contains('is-success') &&
+                row.querySelector('.vk7tv-docs-upload-name') &&
+                row.querySelector('.vk7tv-docs-upload-name').textContent === 'clip.gif'
+            ),
+          30000
+        );
+        check('MP4 загружен как clip.gif в фоне', success, success ? 'да' : 'нет');
+      }
+      window.__vk7tvMp4Done = true;
+
       report();
     }
 

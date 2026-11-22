@@ -11,7 +11,8 @@
 // docs.save возвращает response.doc, а не массив. MP4 VK принимает как
 // документ (ext mp4, type 6), но оригинал по doc.url отдаётся HTML-страницей,
 // поэтому в пикере он показывается заглушкой и остаётся доступным для
-// прикрепления к сообщению.
+// прикрепления к сообщению. По выбору пользователя MP4 локально
+// преобразуется в GIF тем же путём загрузки, что и анимированный WebP.
 
 (() => {
   if (window.VK7TV_DOCS) return;
@@ -28,6 +29,8 @@
 
   const WEBP_PARSER = window.VK7TV_WEBP_PARSE;
   const WEBP_CONVERT = window.VK7TV_WEBP_CONVERT;
+  const MP4_PARSER = window.VK7TV_MP4_PARSE;
+  const MP4_CONVERT = window.VK7TV_MP4_CONVERT;
   const LIMITS = WEBP_PARSER
     ? WEBP_PARSER.LIMITS
     : {
@@ -38,8 +41,21 @@
         gifBytes: 50 * 1024 * 1024,
         timeoutMs: 60000,
       };
+  const VIDEO_LIMITS = MP4_PARSER
+    ? MP4_PARSER.LIMITS
+    : {
+        sourceBytes: 32 * 1024 * 1024,
+        framePixels: 4 * 1000 * 1000,
+        gifBytes: 50 * 1024 * 1024,
+        timeoutMs: 60000,
+        durationMs: 15000,
+        fps: 15,
+        maxSide: 480,
+      };
   const WEBP_HINT =
     'WebP будет преобразован в GIF; цвета и полупрозрачность могут измениться';
+  const VIDEO_HINT =
+    'MP4 будет преобразован в GIF; без звука, размер и плавность могут измениться';
 
   // Форматы, которые VK сохраняет как документ и которые умеет показать
   // пикер. MP4 подтверждён на живом ВК: docs.save возвращает doc с type 6,
@@ -98,6 +114,10 @@
     'convert-corrupt':
       'Файл повреждён или его содержимое не совпадает с расширением.',
     'convert-decode': 'Не удалось декодировать анимированный WebP.',
+    'convert-duration':
+      'Видео длиннее 15 секунд. Обрежьте его заранее или загрузите исходное видео.',
+    'convert-no-video':
+      'В MP4 нет видеодорожки — браузер не может преобразовать его в GIF. Загрузите исходное видео.',
     'convert-failed': 'Не удалось преобразовать анимированный WebP в GIF.',
   };
 
@@ -1839,6 +1859,7 @@
       converted: !!job.converted,
       convertedFrame: job.convertedFrame || 0,
       convertedTotal: job.convertedTotal || 0,
+      mp4Mode: job.mp4Mode || 'original',
       error: job.error
         ? {
             kind: job.error.kind,
@@ -1853,6 +1874,7 @@
       canCancel: uploadStageActive(job),
       canRetry: !!job.canRetry,
       canDismiss: uploadTerminal(job),
+      canUploadOriginal: !!job.canUploadOriginal,
       docKey: job.docKey || '',
     };
   }
@@ -1996,6 +2018,8 @@
       kind !== 'convert-gif-size' &&
       kind !== 'convert-corrupt' &&
       kind !== 'convert-decode' &&
+      kind !== 'convert-duration' &&
+      kind !== 'convert-no-video' &&
       kind !== 'convert-failed'
     );
   }
@@ -2020,6 +2044,14 @@
     };
     job.canRetry = canRetryKind(kind, e);
     job.canDismiss = true;
+    // После ошибки преобразования исходный MP4 остаётся в задании: его
+    // можно отправить только явным действием, автоматической подмены нет.
+    job.canUploadOriginal = !!(
+      kind.startsWith('convert-') &&
+      job.mp4Mode === 'gif' &&
+      job.originalExt === 'mp4' &&
+      job.file
+    );
     job.xhr = null;
     job.ctrl = null;
     if (kind === 'auth') uploadAuthHold = true;
@@ -2181,7 +2213,18 @@
         throw uploadError('corrupt');
       }
     }
-    return { ext, detected, webp };
+
+    // MP4 проверяем по боксам, а не только по ftyp: обрезанный ролик или
+    // переименованный файл не должен уйти в VK как видео.
+    let mp4 = null;
+    if (detected === 'mp4' && MP4_PARSER) {
+      try {
+        mp4 = await MP4_PARSER.inspectFile(file);
+      } catch (e) {
+        throw uploadError('corrupt');
+      }
+    }
+    return { ext, detected, webp, mp4 };
   }
 
   async function convertJob(job, info) {
@@ -2266,6 +2309,114 @@
     job.total = gifFile.size;
     job.loaded = 0;
     job.converted = true;
+    job.note = '';
+    notify();
+  }
+
+  async function convertVideoJob(job, info) {
+    requireUploadAuth(job);
+    job.stage = 'converting';
+    job.error = null;
+    job.canRetry = false;
+    job.canDismiss = false;
+    job.canUploadOriginal = false;
+    job.note = VIDEO_HINT;
+    job.convertedFrame = 0;
+    job.convertedTotal = 0;
+    notify();
+
+    if (!MP4_CONVERT) {
+      throw uploadError(
+        'convert-unsupported',
+        'Браузер не может преобразовать видео в GIF. Загрузите исходное видео.'
+      );
+    }
+    if (info && info.mp4 && !info.mp4.hasVideo) {
+      throw uploadError('convert-no-video', UPLOAD_ERRORS['convert-no-video']);
+    }
+    if (info && info.mp4 && info.mp4.encrypted) {
+      throw uploadError(
+        'convert-unsupported',
+        'Защищённое видео нельзя преобразовать в GIF. Загрузите исходное видео.'
+      );
+    }
+
+    if (job.file.size > VIDEO_LIMITS.sourceBytes) {
+      throw uploadError(
+        'convert-limit',
+        'Видео больше 32 МиБ — уменьшите файл или загрузите исходное видео.'
+      );
+    }
+
+    let data;
+    try {
+      data = await job.file.arrayBuffer();
+    } catch (e) {
+      throw uploadError('file');
+    }
+    requireUploadAuth(job);
+
+    let conversion;
+    try {
+      conversion = MP4_CONVERT.startConversion({
+        data,
+        fileSize: job.file.size,
+        onProgress: (progress) => {
+          if (!owned(job) || job.stage !== 'converting') return;
+          job.convertedFrame = Number(progress.frame) || 0;
+          job.convertedTotal = Number(progress.total) || job.convertedTotal;
+          notify();
+        },
+      });
+    } catch (e) {
+      throw uploadError('convert-worker', 'Не удалось запустить преобразование видео в GIF.');
+    }
+    job.convertCancel = conversion.cancel;
+
+    let buffer;
+    try {
+      buffer = await conversion.promise;
+    } catch (e) {
+      if (!owned(job) || job.stage === 'canceled') throw uploadError('canceled');
+      const code = e && e.kind ? e.kind : 'failed';
+      const kind = 'convert-' + (UPLOAD_ERRORS['convert-' + code] ? code : 'failed');
+      throw uploadError(kind, (e && e.message) || UPLOAD_ERRORS[kind]);
+    } finally {
+      job.convertCancel = null;
+    }
+
+    requireUploadAuth(job);
+    if (!buffer || !buffer.byteLength) {
+      throw uploadError('convert-failed', 'Не удалось преобразовать видео в GIF.');
+    }
+    if (buffer.byteLength > VIDEO_LIMITS.gifBytes) {
+      throw uploadError('convert-gif-size', UPLOAD_ERRORS['convert-gif-size']);
+    }
+
+    const gifName = gifNameFor(job.originalName || job.name);
+    let gifFile;
+    try {
+      gifFile = new File([buffer], gifName, {
+        type: 'image/gif',
+        lastModified: job.file.lastModified || Date.now(),
+      });
+    } catch (e) {
+      throw uploadError('convert-failed', 'Не удалось преобразовать видео в GIF.');
+    }
+    if (!gifFile.size) {
+      throw uploadError('convert-failed', 'Не удалось преобразовать видео в GIF.');
+    }
+
+    // Исходный MP4 больше не нужен до явного «Загрузить исходное видео».
+    job.file = gifFile;
+    job.name = gifName;
+    job.mime = 'image/gif';
+    job.ext = 'gif';
+    job.size = gifFile.size;
+    job.total = gifFile.size;
+    job.loaded = 0;
+    job.converted = true;
+    job.canUploadOriginal = false;
     job.note = '';
     notify();
   }
@@ -2710,6 +2861,7 @@
       job.error = null;
       job.canRetry = false;
       job.canDismiss = false;
+      job.canUploadOriginal = false;
       notify();
       if (!job.file) throw uploadError('file');
       const checkSpan = diagSpan(job.opId, 'check', 1);
@@ -2727,6 +2879,26 @@
         const convertSpan = diagSpan(job.opId, 'convert', 1);
         try {
           await convertJob(job, info);
+          convertSpan({
+            result: 'ok',
+            category: 'ok',
+            ext: 'gif',
+            size: job.size,
+          });
+        } catch (e) {
+          convertSpan({
+            result: 'fail',
+            category: 'convert',
+            ext: job.ext,
+            size: job.size,
+          });
+          throw e;
+        }
+        requireUploadAuth(job);
+      } else if (info.detected === 'mp4' && job.mp4Mode === 'gif') {
+        const convertSpan = diagSpan(job.opId, 'convert', 1);
+        try {
+          await convertVideoJob(job, info);
           convertSpan({
             result: 'ok',
             category: 'ok',
@@ -2836,9 +3008,11 @@
       });
   }
 
-  function enqueueUploads(files) {
+  function enqueueUploads(files, options) {
     const list = Array.from(files || []);
     if (!list.length) return [];
+    const requestedMode =
+      options && options.mp4Mode === 'gif' ? 'gif' : 'original';
     checkAuth();
     const epoch = uploadEpoch;
     const userId = auth.userId;
@@ -2861,6 +3035,8 @@
         name: file.name,
         originalName: file.name,
         originalSize: Number(file.size) || 0,
+        originalMime: file.type || '',
+        originalExt: ext,
         mime: file.type || '',
         size: Number(file.size) || 0,
         stage: 'queued',
@@ -2871,8 +3047,10 @@
         converted: false,
         convertedFrame: 0,
         convertedTotal: 0,
+        mp4Mode: ext === 'mp4' ? requestedMode : 'original',
         canRetry: false,
         canDismiss: false,
+        canUploadOriginal: false,
         docKey: '',
         file,
         fileId: '',
@@ -2924,6 +3102,8 @@
         name: String(entry.name),
         originalName: String(entry.name),
         originalSize: Number(entry.size) || 0,
+        originalMime: '',
+        originalExt: '',
         mime: '',
         size: Number(entry.size) || 0,
         stage: 'error',
@@ -2937,8 +3117,10 @@
         converted: false,
         convertedFrame: 0,
         convertedTotal: 0,
+        mp4Mode: 'original',
         canRetry: false,
         canDismiss: true,
+        canUploadOriginal: false,
         docKey: '',
         file: null,
         fileId: '',
@@ -2976,6 +3158,7 @@
     job.note = '';
     job.canRetry = false;
     job.canDismiss = false;
+    job.canUploadOriginal = false;
     job.verifying = false;
     // Ручной повтор снова получает одну попытку восстановления входа.
     job.authRetry = 0;
@@ -3051,6 +3234,26 @@
       return true;
     }
 
+    queueUploadJob(job);
+    return true;
+  }
+
+  function uploadOriginal(id) {
+    const job = uploads.get(id);
+    if (!job || !job.canUploadOriginal || !uploadTerminal(job)) return false;
+    if (job.accountEpoch !== uploadEpoch) return false;
+    if (job.originalExt !== 'mp4' || !job.file) return false;
+    job.mp4Mode = 'original';
+    job.converted = false;
+    job.convertedFrame = 0;
+    job.convertedTotal = 0;
+    job.ext = 'mp4';
+    job.name = job.originalName;
+    job.mime = job.originalMime || 'video/mp4';
+    job.size = job.originalSize;
+    job.total = job.originalSize;
+    job.loaded = 0;
+    job.canUploadOriginal = false;
     queueUploadJob(job);
     return true;
   }
@@ -3211,6 +3414,7 @@
     enqueueRejected,
     cancelUpload,
     retryUpload,
+    uploadOriginal,
     dismissUpload,
     deleteDocument,
     verifyDeletion,

@@ -1,0 +1,246 @@
+<!doctype html>
+<meta charset="utf-8" />
+<title>VK7TV — MP4 в GIF, кодек</title>
+<body style="margin: 0">
+  <script src="harness.js"></script>
+  <script src="../mp4-parse.js"></script>
+  <script src="../mp4-convert-frame.js"></script>
+  <script>
+    const T = window.VK7TV_TEST;
+    const PARSER = window.VK7TV_MP4_PARSE;
+    const FRAME = window.VK7TV_MP4_FRAME;
+    const WORKER_URL = new URL('../mp4-convert-worker.js', location.href);
+
+    async function fixture(name) {
+      const res = await fetch('fixtures/' + name);
+      if (!res.ok) throw new Error('fixture ' + name + ': ' + res.status);
+      return new Uint8Array(await res.arrayBuffer());
+    }
+
+    async function convert(bytes, options) {
+      const opts = Object.assign({ workerUrl: WORKER_URL }, options || {});
+      const progress = [];
+      const meta = [];
+      opts.onProgress = (p) => progress.push(p);
+      opts.onMeta = (p) => meta.push(p);
+      const result = await FRAME.convertBuffer(bytes.buffer.slice(0), opts);
+      return Object.assign({ progress, meta }, result);
+    }
+
+    async function decodeGif(bytes) {
+      const decoder = new ImageDecoder({ data: bytes, type: 'image/gif' });
+      if (!decoder.complete) await decoder.completed;
+      await decoder.tracks.ready;
+      const track = decoder.tracks.selectedTrack;
+      const probe = await decoder.decode({ frameIndex: 0 });
+      const width = probe.image.displayWidth;
+      const height = probe.image.displayHeight;
+      probe.image.close();
+      const canvas = new OffscreenCanvas(width, height);
+      const ctx = canvas.getContext('2d', { willReadFrequently: true });
+      const frames = [];
+      for (let i = 0; i < track.frameCount; i++) {
+        const result = await decoder.decode({ frameIndex: i });
+        const frame = result.image;
+        ctx.clearRect(0, 0, width, height);
+        ctx.drawImage(frame, 0, 0);
+        const data = ctx.getImageData(0, 0, width, height).data;
+        let signature = 0;
+        for (let at = 0; at < data.length; at += 97) {
+          signature = (signature * 31 + data[at] * 7 + data[at + 1] * 3 + data[at + 2]) >>> 0;
+        }
+        frames.push({
+          duration: Number(frame.duration) || 0,
+          signature,
+          pixel: (x, y) => {
+            const at = (y * width + x) * 4;
+            return [data[at], data[at + 1], data[at + 2], data[at + 3]];
+          },
+        });
+        frame.close();
+      }
+      const info = {
+        width,
+        height,
+        count: track.frameCount,
+        repeat: track.repetitionCount,
+        frames,
+      };
+      decoder.close();
+      return info;
+    }
+
+    async function expectKind(name, promise, kind) {
+      let got = '';
+      try {
+        await promise;
+      } catch (e) {
+        got = (e && e.kind) || (e && e.code) || String(e);
+      }
+      T.eq(name, got, kind);
+    }
+
+    T.run(async () => {
+      T.check('модуль конвертера загружен', !!FRAME, FRAME ? 'да' : 'нет');
+      T.check('ImageDecoder доступен', typeof ImageDecoder !== 'undefined', 'да');
+
+      const normal = await fixture('mp4-normal.mp4');
+      const vertical = await fixture('mp4-vertical.mp4');
+      const short = await fixture('mp4-short.mp4');
+      const vfr = await fixture('mp4-vfr.mp4');
+      const moovEnd = await fixture('mp4-moov-end.mp4');
+      const audioOnly = await fixture('mp4-audio-only.mp4');
+      const corrupt = await fixture('mp4-corrupt.mp4');
+
+      // Структурная проверка: обычный ролик, метаданные в конце и звук без видео.
+      const normalInfo = PARSER.parse(normal);
+      T.eq('обычный MP4: видеодорожка', normalInfo.hasVideo, true);
+      T.eq('обычный MP4: аудиодорожка', normalInfo.audioTracks, 1);
+      const moovEndFile = new File([moovEnd], 'moov-end.mp4', { type: 'video/mp4' });
+      const moovInfo = await PARSER.inspectFile(moovEndFile);
+      T.eq('moov в конце: видеодорожка', moovInfo.hasVideo, true);
+      const audioFile = new File([audioOnly], 'audio.mp4', { type: 'video/mp4' });
+      const audioInfo = await PARSER.inspectFile(audioFile);
+      T.eq('только звук: видео нет', audioInfo.hasVideo, false);
+      T.eq('только звук: звук найден', audioInfo.audioTracks, 1);
+
+      const parseKind = (bytes) => {
+        try {
+          PARSER.parse(bytes);
+          return '';
+        } catch (e) {
+          return (e && e.code) || String(e);
+        }
+      };
+      T.eq('повреждённый MP4 отклонён', parseKind(corrupt), 'corrupt');
+      T.eq(
+        'переименованный не-MP4 отклонён',
+        parseKind(await fixture('static.webp')),
+        'corrupt'
+      );
+
+      // Обычное видео со звуком: 15 кадров/с, размеры сохранены, звука нет.
+      const normalOut = await convert(normal);
+      T.eq('обычное: ширина', normalOut.width, 160);
+      T.eq('обычное: высота', normalOut.height, 120);
+      T.eq('обычное: число кадров', normalOut.total, 18);
+      T.eq('обычное: метаданные кадров пришли', normalOut.meta[0].total, 18);
+      T.eq('обычное: прогресс дошёл до конца', normalOut.progress.at(-1).frame, 18);
+      const normalGif = await decodeGif(normalOut.bytes);
+      T.eq('GIF: размеры', normalGif.width + 'x' + normalGif.height, '160x120');
+      T.eq('GIF: число кадров', normalGif.count, 18);
+      T.eq('GIF: бесконечный повтор', normalGif.repeat, Infinity);
+      const normalTotal = normalGif.frames.reduce((sum, f) => sum + f.duration, 0);
+      T.check(
+        'GIF: длительность около 1,2 с',
+        Math.abs(normalTotal - 1200000) <= 25000,
+        Math.round(normalTotal / 1000) + ' мс'
+      );
+      const signatures = new Set(normalGif.frames.map((f) => f.signature));
+      T.check('GIF: кадры различаются', signatures.size >= 3, signatures.size);
+      T.eq(
+        'GIF: первый кадр непрозрачный',
+        normalGif.frames[0].pixel(80, 60)[3],
+        255
+      );
+
+      // Вертикальное видео с поворотом в метаданных: пропорции не растянуты.
+      const verticalOut = await convert(vertical);
+      T.eq('поворот: ширина', verticalOut.width, 90);
+      T.eq('поворот: высота', verticalOut.height, 160);
+      T.eq('поворот: число кадров', verticalOut.total, 15);
+      const verticalGif = await decodeGif(verticalOut.bytes);
+      T.eq('поворот: размеры GIF', verticalGif.width + 'x' + verticalGif.height, '90x160');
+
+      // Очень короткий ролик — минимум один кадр и задержка не меньше 10 мс.
+      const shortOut = await convert(short);
+      T.eq('короткий: минимум один кадр', shortOut.total, 1);
+      const shortGif = await decodeGif(shortOut.bytes);
+      T.eq('короткий: кадр в GIF', shortGif.count, 1);
+      T.check(
+        'короткий: задержка не меньше 10 мс',
+        shortGif.frames[0].duration >= 10000,
+        shortGif.frames[0].duration
+      );
+
+      // Переменная частота кадров: выбор по времени, общая длительность цела.
+      const vfrOut = await convert(vfr);
+      T.eq('VFR: число кадров по времени', vfrOut.total, Math.ceil(vfrOut.durationMs * 15 / 1000));
+      const vfrGif = await decodeGif(vfrOut.bytes);
+      const vfrTotal = vfrGif.frames.reduce((sum, f) => sum + f.duration, 0);
+      T.eq('VFR: кадры в GIF', vfrGif.count, vfrOut.total);
+      T.check(
+        'VFR: длительность сохранена',
+        Math.abs(vfrTotal - vfrOut.durationMs * 1000) <= 25000,
+        Math.round(vfrTotal / 1000) + ' из ' + Math.round(vfrOut.durationMs) + ' мс'
+      );
+
+      // Метаданные в конце файла не мешают конвертации.
+      const endOut = await convert(moovEnd);
+      T.eq('moov в конце: конвертация прошла', (await decodeGif(endOut.bytes)).count, endOut.total);
+
+      // Только звук и повреждённый файл не доходят до worker.
+      await expectKind('только звук: ошибка no-video', convert(audioOnly), 'no-video');
+      await expectKind('повреждённый: ошибка corrupt', convert(corrupt), 'corrupt');
+
+      // Границы лимитов. Дорогие ролики не нужны: лимиты подставляются.
+      const open = await FRAME.openVideo(normal.buffer.slice(0));
+      const exactDuration = open.durationMs;
+      open.cleanup();
+      await convert(normal, { limits: { durationMs: exactDuration } });
+      await expectKind(
+        'длительность чуть больше лимита',
+        convert(normal, { limits: { durationMs: exactDuration - 2 } }),
+        'duration'
+      );
+      await convert(normal, { limits: { sourceBytes: normal.byteLength } });
+      await expectKind(
+        'исходник больше лимита',
+        convert(normal, { limits: { sourceBytes: normal.byteLength - 1 } }),
+        'limit'
+      );
+      await convert(normal, { limits: { framePixels: 160 * 120 } });
+      await expectKind(
+        'кадр больше лимита',
+        convert(normal, { limits: { framePixels: 160 * 120 - 1 } }),
+        'limit'
+      );
+      await expectKind(
+        'GIF больше лимита',
+        convert(normal, { limits: { gifBytes: 100 } }),
+        'gif-size'
+      );
+      await expectKind(
+        'таймаут конвертации',
+        convert(normal, { limits: { timeoutMs: 0 } }),
+        'timeout'
+      );
+
+      // Уменьшение до 480 px по большей стороне и без увеличения маленьких.
+      T.eq('480 px: широкая сторона', FRAME.targetSize(1000, 500, 480).width, 480);
+      T.eq('480 px: пропорции', FRAME.targetSize(1000, 500, 480).height, 240);
+      T.eq('маленькое видео не увеличивается', FRAME.targetSize(100, 50, 480).width, 100);
+
+      // Отмена освобождает видео и worker: следующая конвертация проходит.
+      const controller = new AbortController();
+      const opened = await FRAME.openVideo(vfr.buffer.slice(0));
+      let canceled = '';
+      try {
+        await FRAME.encodeSource(opened, {
+          workerUrl: WORKER_URL,
+          signal: controller.signal,
+          onProgress: (p) => {
+            if (p.frame === 2) controller.abort();
+          },
+        });
+      } catch (e) {
+        canceled = e.kind;
+      } finally {
+        opened.cleanup();
+      }
+      T.eq('отмена прерывает кодирование', canceled, 'canceled');
+      const afterCancel = await convert(short);
+      T.eq('после отмены конвертация работает', afterCancel.total >= 1, true);
+    });
+  </script>
+</body>

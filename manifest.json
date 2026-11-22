@@ -40,6 +40,8 @@
         "autocomplete.js",
         "webp-parse.js",
         "webp-convert-client.js",
+        "mp4-parse.js",
+        "mp4-convert-client.js",
         "vk-docs.js",
         "vk-docs-media.js",
         "picker.js",
@@ -80,7 +82,12 @@
         "webp-convert.html",
         "webp-convert-frame.js",
         "webp-convert-worker.js",
+        "mp4-convert.html",
+        "mp4-convert-frame.js",
+        "mp4-convert-worker.js",
         "webp-parse.js",
+        "mp4-parse.js",
+        "gif-encode.js",
         "vendor/gifenc.esm.js"
       ],
       "matches": [

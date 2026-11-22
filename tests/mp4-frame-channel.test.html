@@ -1,0 +1,140 @@
+<!doctype html>
+<meta charset="utf-8" />
+<title>VK7TV — канал MP4-конвертера</title>
+<body>
+  <script src="harness.js"></script>
+  <script src="../mp4-parse.js"></script>
+  <script src="../mp4-convert-frame.js"></script>
+  <script>
+    const T = window.VK7TV_TEST;
+
+    async function fixture(name) {
+      const res = await fetch('fixtures/' + name);
+      if (!res.ok) throw new Error('fixture ' + name + ': ' + res.status);
+      return new Uint8Array(await res.arrayBuffer());
+    }
+
+    function sendInit(bytes, overrides, envelope) {
+      const channel = new MessageChannel();
+      const messages = [];
+      const waiters = [];
+      channel.port1.onmessage = (e) => {
+        messages.push(e.data);
+        for (const waiter of waiters.splice(0)) waiter();
+      };
+      const data = Object.assign(
+        {
+          __vk7tvMp4: 1,
+          type: 'init',
+          jobId: 'frame-job-123456',
+          parentOrigin: 'https://vk.com',
+          data: bytes.buffer.slice(0),
+        },
+        overrides || {}
+      );
+      window.dispatchEvent(
+        new MessageEvent('message', {
+          source: envelope && 'source' in envelope ? envelope.source : window,
+          origin: (envelope && envelope.origin) || 'https://vk.com',
+          data,
+          ports: [channel.port2],
+        })
+      );
+      const wait = (what, fn, ms) =>
+        new Promise((resolve) => {
+          const started = Date.now();
+          const tick = () => {
+            if (fn()) return resolve(true);
+            if (Date.now() - started > (ms || 15000)) return resolve(false);
+            waiters.push(tick);
+            setTimeout(tick, 16);
+          };
+          tick();
+        });
+      return { port: channel.port1, messages, wait };
+    }
+
+    async function decodeGif(bytes) {
+      const decoder = new ImageDecoder({ data: bytes, type: 'image/gif' });
+      if (!decoder.complete) await decoder.completed;
+      await decoder.tracks.ready;
+      const track = decoder.tracks.selectedTrack;
+      decoder.close();
+      return { count: track.frameCount, repeat: track.repetitionCount };
+    }
+
+    T.run(async () => {
+      const normal = await fixture('mp4-normal.mp4');
+      const short = await fixture('mp4-short.mp4');
+      const vfr = await fixture('mp4-vfr.mp4');
+
+      // Чужие сообщения игнорируются: не тот источник, origin или id.
+      const wrongSource = sendInit(normal, { jobId: 'frame-job-bad-source' }, { source: null });
+      await new Promise((r) => setTimeout(r, 100));
+      T.eq('чужой источник не запустил канал', wrongSource.messages.length, 0);
+
+      // Неверный origin отклоняется до передачи байтов.
+      const badOrigin = sendInit(
+        normal,
+        { jobId: 'frame-job-bad-origin', parentOrigin: 'https://example.com' },
+        { origin: 'https://example.com' }
+      );
+      await new Promise((r) => setTimeout(r, 100));
+      T.eq('чужой origin не запустил канал', badOrigin.messages.length, 0);
+
+      // Слишком короткий id задания не принимается.
+      const badId = sendInit(normal, { jobId: 'short' });
+      await new Promise((r) => setTimeout(r, 100));
+      T.eq('короткий id не запустил канал', badId.messages.length, 0);
+
+      // Корректный канал: прогресс, готовый GIF и повторное использование iframe.
+      const first = sendInit(normal, { jobId: 'frame-job-first' });
+      const firstDone = await first.wait(
+        'первый канал прислал GIF',
+        () => first.messages.some((m) => m.type === 'done' || m.type === 'error')
+      );
+      T.eq('первый канал ответил', firstDone, true);
+      const firstDoneMsg = first.messages.find((m) => m.type === 'done');
+      const firstError = first.messages.find((m) => m.type === 'error');
+      T.check(
+        'первый канал без ошибки',
+        !!firstDoneMsg && !firstError,
+        firstError ? firstError.kind + ': ' + firstError.message : 'ok'
+      );
+      const progress = first.messages.filter((m) => m.type === 'progress');
+      T.check('канал присылает прогресс', progress.length >= 18, progress.length);
+      T.eq('прогресс называет общее число кадров', progress.at(-1).total, 18);
+      if (firstDoneMsg) {
+        const gif = await decodeGif(new Uint8Array(firstDoneMsg.bytes));
+        T.eq('канал вернул готовый GIF', gif.count, 18);
+        T.eq('канал сохранил бесконечный повтор', gif.repeat, Infinity);
+      }
+
+      // Отмена: поздние сообщения worker'а не превращаются в done.
+      const cancelJob = sendInit(vfr, { jobId: 'frame-job-cancel' });
+      const started = await cancelJob.wait('отмена: прогресс пошёл', () =>
+        cancelJob.messages.some((m) => m.type === 'progress')
+      );
+      T.eq('отмена: конвертация началась', started, true);
+      cancelJob.port.postMessage({ type: 'cancel', jobId: 'frame-job-cancel' });
+      await new Promise((r) => setTimeout(r, 400));
+      T.eq(
+        'отмена: done не пришёл',
+        cancelJob.messages.some((m) => m.type === 'done'),
+        false
+      );
+
+      // После отмены тот же iframe принимает новое задание.
+      const after = sendInit(short, { jobId: 'frame-job-after' });
+      const afterDone = await after.wait(
+        'после отмены новый GIF',
+        () => after.messages.some((m) => m.type === 'done' || m.type === 'error')
+      );
+      const afterMsg = after.messages.find((m) => m.type === 'done');
+      T.check('после отмены канал работает', !!afterDone && !!afterMsg, afterDone ? 'да' : 'нет');
+      if (afterMsg) {
+        T.eq('после отмены GIF непустой', afterMsg.bytes.byteLength > 0, true);
+      }
+    });
+  </script>
+</body>

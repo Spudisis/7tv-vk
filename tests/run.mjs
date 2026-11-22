@@ -13,7 +13,7 @@ const server = createServer(async (req, res) => {
   try {
     const path = resolve(root, '.' + decodeURIComponent(new URL(req.url, 'http://localhost').pathname));
     if (!path.startsWith(resolve(root) + sep)) throw new Error('path');
-    const types = { '.html': 'text/html', '.js': 'text/javascript', '.css': 'text/css', '.json': 'application/json' };
+    const types = { '.html': 'text/html', '.js': 'text/javascript', '.css': 'text/css', '.json': 'application/json', '.mp4': 'video/mp4' };
     res.setHeader('Content-Type', (types[extname(path)] || 'application/octet-stream') + '; charset=utf-8');
     res.end(await readFile(path));
   } catch {

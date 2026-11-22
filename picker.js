@@ -71,6 +71,12 @@
   let docsUploadsLive = null;
   let docsUploadRows = new Map();
   let docsUploadAnnounced = new Map();
+  let docsBatchBox = null;
+  let docsBatchTitle = null;
+  let docsBatchModes = [];
+  let docsBatchFiles = [];
+  let docsBatchRejected = [];
+  let docsBatchMode = 'original';
   let docsDiagButton = null;
   let docsDiagPanel = null;
   let docsDiagText = null;
@@ -364,11 +370,7 @@
       const files = Array.from(docsUploadInput.files || []);
       docsUploadInput.value = '';
       if (!files.length || !DOCS) return;
-      try {
-        DOCS.enqueueUploads(files);
-      } catch (e) {
-        flash('Не удалось поставить файлы в очередь');
-      }
+      queueDocsFiles(files, []);
     });
 
     docsDnd = document.createElement('div');
@@ -398,6 +400,147 @@
     return files
       ? 'Перетащите сюда файлы, чтобы добавить их в документы VK'
       : 'Перетащите сюда изображения, чтобы добавить их в документы VK';
+  }
+
+  function isMp4Name(name) {
+    return /\.mp4$/i.test(String(name || ''));
+  }
+
+  // Партия с MP4 сначала показывает выбор режима. Изображения из этой же
+  // партии уходят в очередь без изменений, а режим применяется ко всем MP4.
+  function queueDocsFiles(files, rejected) {
+    const list = Array.from(files || []);
+    const bad = Array.from(rejected || []);
+    if (!DOCS) return;
+    if (!list.length && !bad.length) return;
+    const hasMp4 = !!(DOCS.mp4 && list.some((file) => isMp4Name(file && file.name)));
+    if (hasMp4) {
+      showDocsBatch(list, bad);
+      return;
+    }
+    try {
+      if (bad.length) DOCS.enqueueRejected(bad);
+      if (list.length) DOCS.enqueueUploads(list);
+    } catch (e) {
+      flash('Не удалось поставить файлы в очередь');
+    }
+  }
+
+  function showDocsBatch(files, rejected) {
+    docsBatchFiles = Array.from(files || []);
+    docsBatchRejected = Array.from(rejected || []);
+    docsBatchMode = 'original';
+    renderDocsBatch();
+  }
+
+  function hideDocsBatch() {
+    docsBatchFiles = [];
+    docsBatchRejected = [];
+    docsBatchMode = 'original';
+    renderDocsBatch();
+  }
+
+  function renderDocsBatch() {
+    if (!docsBatchBox) return;
+    const mp4Count = docsBatchFiles.filter((f) => isMp4Name(f && f.name)).length;
+    const active = !!(docsBatchFiles.length || docsBatchRejected.length);
+    docsBatchBox.style.display = active ? '' : 'none';
+    if (!active) return;
+    if (docsBatchTitle) {
+      docsBatchTitle.textContent =
+        mp4Count === 1 ? 'Выберите режим для MP4' : `Выберите режим для MP4 (${mp4Count})`;
+    }
+    for (const mode of docsBatchModes) {
+      const on = mode.value === docsBatchMode;
+      mode.input.checked = on;
+      mode.label.classList.toggle('is-active', on);
+    }
+  }
+
+  function buildDocsBatch() {
+    const box = document.createElement('div');
+    box.className = 'vk7tv-docs-batch';
+    box.style.display = 'none';
+    box.setAttribute('role', 'group');
+    box.setAttribute('aria-label', 'Режим загрузки MP4');
+
+    const title = document.createElement('div');
+    title.className = 'vk7tv-docs-batch-title';
+
+    const modes = document.createElement('div');
+    modes.className = 'vk7tv-docs-batch-modes';
+    modes.setAttribute('role', 'radiogroup');
+    modes.setAttribute('aria-label', 'Режим загрузки MP4');
+    const built = [];
+    const addMode = (value, name, hint) => {
+      const label = document.createElement('label');
+      label.className = 'vk7tv-docs-batch-mode';
+      const input = document.createElement('input');
+      input.type = 'radio';
+      input.name = 'vk7tv-mp4-mode';
+      input.value = value;
+      const body = document.createElement('span');
+      body.className = 'vk7tv-docs-batch-mode-body';
+      const nameEl = document.createElement('span');
+      nameEl.className = 'vk7tv-docs-batch-mode-name';
+      nameEl.textContent = name;
+      body.appendChild(nameEl);
+      if (hint) {
+        const hintEl = document.createElement('span');
+        hintEl.className = 'vk7tv-docs-batch-mode-hint';
+        hintEl.textContent = hint;
+        body.appendChild(hintEl);
+      }
+      label.append(input, body);
+      input.addEventListener('change', () => {
+        if (!input.checked) return;
+        docsBatchMode = value;
+        renderDocsBatch();
+      });
+      modes.appendChild(label);
+      built.push({ value, label, input });
+    };
+    addMode('original', 'Загрузить видео', '');
+    addMode(
+      'gif',
+      'Преобразовать в GIF',
+      'До 15 с, 480 px по большей стороне, 15 кадров/с, исходник до 32 МиБ и 4 млн пикселей, GIF до 50 МиБ. Без звука; размер, плавность и цвета могут измениться.'
+    );
+
+    const actions = document.createElement('div');
+    actions.className = 'vk7tv-docs-batch-actions';
+    const add = document.createElement('button');
+    add.type = 'button';
+    add.className = 'vk7tv-docs-batch-action is-primary';
+    add.dataset.batchAction = 'add';
+    add.textContent = 'Добавить';
+    const cancel = document.createElement('button');
+    cancel.type = 'button';
+    cancel.className = 'vk7tv-docs-batch-action';
+    cancel.dataset.batchAction = 'cancel';
+    cancel.textContent = 'Отмена';
+    add.addEventListener('click', () => {
+      const files = docsBatchFiles;
+      const rejected = docsBatchRejected;
+      const mode = docsBatchMode;
+      hideDocsBatch();
+      if (!DOCS) return;
+      try {
+        if (rejected.length) DOCS.enqueueRejected(rejected);
+        if (files.length) DOCS.enqueueUploads(files, { mp4Mode: mode });
+      } catch (e) {
+        flash('Не удалось поставить файлы в очередь');
+      }
+    });
+    cancel.addEventListener('click', hideDocsBatch);
+    actions.append(add, cancel);
+
+    box.append(title, modes, actions);
+    docsBatchBox = box;
+    docsBatchTitle = title;
+    docsBatchModes = built;
+    renderDocsBatch();
+    return box;
   }
 
   function hasExternalFiles(dt) {
@@ -562,12 +705,7 @@
     }
 
     if (!DOCS) return;
-    try {
-      if (rejected.length) DOCS.enqueueRejected(rejected);
-      if (files.length) DOCS.enqueueUploads(files);
-    } catch (e) {
-      flash('Не удалось поставить файлы в очередь');
-    }
+    queueDocsFiles(files, rejected);
     if (!files.length && !rejected.length) flash('Файлы не получены — попробуй ещё раз');
   }
 
@@ -1813,6 +1951,8 @@
     docsUploadsLive.setAttribute('aria-live', 'polite');
     uploads.appendChild(docsUploadsLive);
 
+    const batch = buildDocsBatch();
+
     const status = document.createElement('div');
     status.className = 'vk7tv-docs-status';
     const statusText = document.createElement('span');
@@ -1835,7 +1975,7 @@
     const sentinel = document.createElement('div');
     sentinel.className = 'vk7tv-docs-sentinel';
 
-    sec.append(head, uploads, status, diag, grid, tail, sentinel);
+    sec.append(head, uploads, batch, status, diag, grid, tail, sentinel);
 
     docsSection = sec;
     docsGrid = grid;
@@ -2035,6 +2175,10 @@
         }
       }
       if (job.stage === 'unconfirmed') uploadButton(row, 'verify', 'Проверить библиотеку');
+      if (job.canUploadOriginal) {
+        const button = uploadButton(row, 'upload-original', 'Загрузить исходное видео');
+        button.title = 'Отправить исходный MP4 без преобразования в GIF';
+      }
       if (filtered) uploadButton(row, 'clear-search', 'Очистить поиск');
       if (job.canDismiss) uploadButton(row, 'dismiss', 'Скрыть');
 
@@ -2088,6 +2232,7 @@
       const action = button.dataset.uploadAction;
       if (action === 'cancel') DOCS.cancelUpload(id);
       else if (action === 'retry') DOCS.retryUpload(id);
+      else if (action === 'upload-original') DOCS.uploadOriginal(id);
       else if (action === 'dismiss') DOCS.dismissUpload(id);
       else if (action === 'verify') refreshDocs();
       else if (action === 'clear-search') {
@@ -3495,6 +3640,7 @@
       }
       resumeDocMedia();
     } else {
+      hideDocsBatch();
       pauseDocMedia();
       if (DOCS_MEDIA) DOCS_MEDIA.cancelPending();
       if (DOCS) {
