@@ -21,8 +21,64 @@ function sendMessage(msg) {
 const normEmote = VK7TV.normEmote;
 const usable = VK7TV.usable;
 
+// Локальная диагностика открытия включается только адресом popup.html?diag=1.
+// Она считает длительность этапов и объём данных, но не пишет имена эмоутов,
+// адреса картинок и прочее содержимое хранилища.
+const popupDiag = (() => {
+  if (!new URLSearchParams(location.search).has('diag')) return null;
+  const data = {
+    renderRuns: 0,
+    gridRenders: 0,
+    stages: {},
+    counts: {},
+    longTasks: { count: 0, totalMs: 0, maxMs: 0 },
+  };
+  try {
+    if (
+      window.PerformanceObserver &&
+      Array.isArray(PerformanceObserver.supportedEntryTypes) &&
+      PerformanceObserver.supportedEntryTypes.includes('longtask')
+    ) {
+      const observer = new PerformanceObserver((list) => {
+        for (const e of list.getEntries()) {
+          data.longTasks.count++;
+          data.longTasks.totalMs += e.duration;
+          data.longTasks.maxMs = Math.max(data.longTasks.maxMs, e.duration);
+        }
+      });
+      observer.observe({ type: 'longtask', buffered: true });
+    }
+  } catch {
+    // longtask есть не во всех браузерах — остальные счётчики работают и без него
+  }
+  window.__vk7tvPopupDiag = data;
+  return data;
+})();
+
+const diagStart = () => (popupDiag ? performance.now() : 0);
+function diagTime(key, started) {
+  if (!popupDiag || !started) return;
+  const ms = performance.now() - started;
+  const s = (popupDiag.stages[key] = popupDiag.stages[key] || { count: 0, totalMs: 0, maxMs: 0, lastMs: 0 });
+  s.count++;
+  s.totalMs += ms;
+  s.maxMs = Math.max(s.maxMs, ms);
+  s.lastMs = ms;
+}
+
 async function render() {
+  if (popupDiag) popupDiag.renderRuns++;
+  const tRender = diagStart();
+  const tLoad = diagStart();
   const { settings: sync, groups, missing } = await VK7TV.load();
+  diagTime('load', tLoad);
+  if (popupDiag) {
+    let entries = 0;
+    for (const g of groups) entries += Object.keys(g.emotes).length;
+    popupDiag.counts.sets = sync.sets.length;
+    popupDiag.counts.groups = groups.length;
+    popupDiag.counts.entries = entries;
+  }
 
   $('#enabled').checked = sync.enabled;
   $('#useGlobal').checked = sync.useGlobal;
@@ -34,6 +90,7 @@ async function render() {
 
   const setList = $('#setList');
   setList.innerHTML = '';
+  const tSets = diagStart();
   for (const s of sync.sets) {
     const li = document.createElement('li');
     // Порядок наборов — это и порядок разделов в пикере, и приоритет:
@@ -65,9 +122,15 @@ async function render() {
     li.append(name, slug, count, del);
     setList.appendChild(li);
   }
+  diagTime('setList', tSets);
 
   const customList = $('#customList');
+  unobserveAll(observedCustomImgs);
+  clearLoadedSources(customList);
   customList.innerHTML = '';
+  if (popupDiag) popupDiag.counts.customImagesWithSrc = 0;
+  const tCustom = diagStart();
+  const customImgs = [];
   for (const [n, v] of Object.entries(sync.customEmotes)) {
     const em = normEmote(v);
     if (!usable(em)) continue;
@@ -80,7 +143,9 @@ async function render() {
       : `${n} — картинка не с 7TV: у собеседника останется текстом`;
     if (!em.id) li.className = 'local';
     const img = document.createElement('img');
-    img.src = em.u;
+    // Раздел «Свои» по умолчанию закрыт: грузим картинки, когда он откроется.
+    setDeferredSrc(img, em.u, observedCustomImgs);
+    customImgs.push(img);
     img.alt = n;
     const name = document.createElement('span');
     name.className = 'name';
@@ -98,6 +163,8 @@ async function render() {
     li.append(img, name, del);
     customList.appendChild(li);
   }
+  observeDeferred(observedCustomImgs, customImgs);
+  diagTime('customList', tCustom);
 
   // Наборы, у которых нет эмоутов, — отдельная строка: без неё непонятно,
   // почему набор в списке есть, а в сетке его эмоутов нет.
@@ -107,7 +174,11 @@ async function render() {
     : '';
   note.style.display = missing ? '' : 'none';
 
-  renderGrid(VK7TV.flatten(groups));
+  // Настройки и список наборов уже на экране. Плоскую карту всех эмоутов
+  // собираем только когда раздел «Все эмоуты» действительно нужен: иначе
+  // открытие попапа сразу создаёт десятки тысяч имён и картинок.
+  setGridGroups(groups);
+  diagTime('render', tRender);
 }
 
 // --- перетаскивание наборов в списке ---
@@ -153,39 +224,248 @@ $('#setList').addEventListener('dragend', async () => {
 // высота ячейки в сетке — та же, что в popup.css; пропорции ограничены,
 // иначе растяжка 10:1 вылезает за попап (см. displayRatio в emotes.js)
 const GRID_PX = 28;
+// В DOM попапа одновременно находится одна страница карточек. При десятках
+// наборов плоская карта — это десятки тысяч имён, и создавать под каждое <img>
+// нельзя: браузер синхронно строит DOM и загружает анимированные картинки даже
+// за пределами видимой части. Страницы заменяют друг друга, поэтому объём
+// карточек и одновременно загружаемых изображений остаётся ограниченным.
+const PAGE_SIZE = 200;
 const cellWidth = (em) => Math.round(GRID_PX * VK7TV.displayRatio(em));
 
-let gridEmotes = new Map();
-function renderGrid(map) {
-  gridEmotes = map;
+let gridGroups = [];
+let gridEmotes = null; // плоская карта; null — раздел ещё ни разу не открывали
+let gridView = null; // отфильтрованный и отсортированный список текущего поиска
+let gridPage = 0;
+let gridStarted = false;
+let gridStarter = null;
+let searchTimer = null;
+const observedGridImgs = new Set();
+const observedCustomImgs = new Set();
+let imgObserver = null;
+
+function unobserveAll(images) {
+  if (imgObserver) {
+    for (const img of images) imgObserver.unobserve(img);
+  }
+  images.clear();
+}
+
+// Снятие src до удаления карточки останавливает загрузку, которую уже
+// запустила предыдущая страница или предыдущий поисковый запрос.
+function clearLoadedSources(container) {
+  for (const img of container.querySelectorAll('img[src]')) img.removeAttribute('src');
+}
+
+// Один observer на попап: он же обслуживает сетку, он же — картинки «Своих».
+// src назначается с запасом в 160px, только когда карточка подходит к
+// видимой области; у закрытого <details> пересечения нет вовсе.
+function ensureImgObserver() {
+  if (imgObserver || typeof IntersectionObserver !== 'function') return imgObserver;
+  imgObserver = new IntersectionObserver(
+    (entries) => {
+      for (const entry of entries) {
+        if (!entry.isIntersecting) continue;
+        const img = entry.target;
+        imgObserver.unobserve(img);
+        observedGridImgs.delete(img);
+        observedCustomImgs.delete(img);
+        // карточку могли убрать, пока браузер собирал очередь пересечений
+        if (!img.isConnected) continue;
+        const src = img.dataset.src;
+        if (!src) continue;
+        delete img.dataset.src;
+        img.src = src;
+        if (popupDiag) {
+          if (img.parentElement && img.parentElement.id === 'grid') popupDiag.counts.lastImagesWithSrc++;
+          else popupDiag.counts.customImagesWithSrc = (popupDiag.counts.customImagesWithSrc || 0) + 1;
+        }
+      }
+    },
+    { rootMargin: '160px 0px' }
+  );
+  return imgObserver;
+}
+
+function setDeferredSrc(img, url, bucket) {
+  img.dataset.src = url;
+  bucket.add(img);
+}
+
+function observeDeferred(bucket, images) {
+  const observer = ensureImgObserver();
+  if (!observer) {
+    // браузер без IntersectionObserver: назначаем src сразу для текущей порции
+    for (const img of images) {
+      if (!img.dataset.src) continue;
+      img.src = img.dataset.src;
+      delete img.dataset.src;
+    }
+    bucket.clear();
+    return;
+  }
+  for (const img of images) observer.observe(img);
+}
+
+function countGridData(map) {
+  if (!popupDiag) return;
+  let aliases = 0;
+  const urls = new Set();
+  for (const v of map.values()) {
+    if (v.a) aliases++;
+    urls.add(v.u);
+  }
+  popupDiag.counts.names = map.size;
+  popupDiag.counts.aliases = aliases;
+  popupDiag.counts.urls = urls.size;
+}
+
+// --- отложенный запуск раздела «Все эмоуты» ---
+// Список наборов и настройки должны появиться сразу. Карту эмоутов собираем,
+// когда раздел подходит к видимой части попапа (или при поиске).
+function watchGridStart() {
+  if (gridStarted || gridStarter) return;
+  const section = $('#gridSection') || $('#grid');
+  if (!section || typeof IntersectionObserver !== 'function') {
+    startGrid();
+    return;
+  }
+  gridStarter = new IntersectionObserver(
+    (entries) => {
+      if (entries.some((e) => e.isIntersecting)) startGrid();
+    },
+    { rootMargin: '180px 0px' }
+  );
+  gridStarter.observe(section);
+}
+
+function startGrid() {
+  if (gridStarted) return;
+  gridStarted = true;
+  if (gridStarter) {
+    gridStarter.disconnect();
+    gridStarter = null;
+  }
+  if (!gridEmotes) {
+    const tFlatten = diagStart();
+    gridEmotes = VK7TV.flatten(gridGroups);
+    diagTime('flatten', tFlatten);
+    countGridData(gridEmotes);
+  }
+  gridView = null;
+  renderGrid();
+}
+
+function setGridGroups(groups) {
+  gridGroups = groups;
+  if (!gridStarted) {
+    watchGridStart();
+    return;
+  }
+  const tFlatten = diagStart();
+  gridEmotes = VK7TV.flatten(groups);
+  diagTime('flatten', tFlatten);
+  countGridData(gridEmotes);
+  gridView = null;
+  renderGrid();
+}
+
+function buildGridView() {
   const query = $('#search').value.trim().toLowerCase();
-  const grid = $('#grid');
-  grid.innerHTML = '';
-  let shown = 0;
+  const map = gridEmotes || new Map();
+  const tPrepare = diagStart();
+  const items = [];
+  for (const item of map) {
+    // поиск идёт по всей карте, а не по уже показанной странице
+    if (!query || item[0].toLowerCase().includes(query)) items.push(item);
+  }
   // Порядок и место под картинку — как в поповере: от узких к широким,
   // ширина ячейки известна заранее по пропорциям, поэтому сетка не скачет,
   // пока грузятся картинки. При поиске порядок не меняем: там важнее,
   // в каком порядке имена совпали.
-  const items = [...map];
   if (!query) items.sort((a, b) => cellWidth(a[1]) - cellWidth(b[1]));
-  for (const [name, v] of items) {
-    if (query && !name.toLowerCase().includes(query)) continue;
+  diagTime('gridPrepare', tPrepare);
+  gridView = { query, items };
+  return gridView;
+}
+
+function renderGrid() {
+  if (!gridStarted) return;
+  const tRender = diagStart();
+  if (popupDiag) popupDiag.gridRenders++;
+  const query = $('#search').value.trim().toLowerCase();
+  if (!gridView || gridView.query !== query) buildGridView();
+  const items = gridView.items;
+  const total = items.length;
+  const pages = Math.max(1, Math.ceil(total / PAGE_SIZE));
+  if (gridPage >= pages) gridPage = pages - 1;
+  if (gridPage < 0) gridPage = 0;
+  const start = gridPage * PAGE_SIZE;
+  const slice = items.slice(start, start + PAGE_SIZE);
+
+  const grid = $('#grid');
+  unobserveAll(observedGridImgs);
+  clearLoadedSources(grid);
+  grid.innerHTML = '';
+  if (popupDiag) {
+    popupDiag.counts.lastQuery = query.length;
+    popupDiag.counts.lastTotal = total;
+    popupDiag.counts.lastCards = 0;
+    popupDiag.counts.lastImagesWithSrc = 0;
+  }
+  const tDom = diagStart();
+  const fragment = document.createDocumentFragment();
+  const newImgs = [];
+  for (const [name, v] of slice) {
     const img = document.createElement('img');
-    img.src = v.u;
     if (v.r) img.style.aspectRatio = String(VK7TV.displayRatio(v));
     else img.style.minWidth = GRID_PX + 'px';
     img.alt = name;
     img.title = name;
     img.loading = 'lazy';
-    img.addEventListener('click', () => {
-      navigator.clipboard.writeText(name);
-      toast(`«${name}» скопировано`);
-    });
-    grid.appendChild(img);
-    shown++;
+    setDeferredSrc(img, v.u, observedGridImgs);
+    fragment.appendChild(img);
+    newImgs.push(img);
   }
-  $('#totalCount').textContent = query ? `(${shown} из ${map.size})` : `(${map.size})`;
+  grid.appendChild(fragment);
+  observeDeferred(observedGridImgs, newImgs);
+  diagTime('gridDom', tDom);
+
+  const shown = slice.length;
+  $('#totalCount').textContent = query ? `(${total} из ${gridEmotes.size})` : `(${gridEmotes.size})`;
+  const pageInfo = $('#gridPage');
+  if (pageInfo) pageInfo.textContent = total ? `${start + 1}–${start + shown} из ${total}` : '0 из 0';
+  const prev = $('#gridPrev');
+  const next = $('#gridNext');
+  const nav = $('#gridPages');
+  if (prev) prev.disabled = gridPage <= 0;
+  if (next) next.disabled = gridPage >= pages - 1;
+  if (nav) nav.hidden = total <= PAGE_SIZE;
+
+  if (popupDiag) {
+    popupDiag.counts.lastCards = grid.children.length;
+    diagTime('gridRender', tRender);
+    console.info('[VK7TV popup diag]', JSON.stringify(popupDiag));
+  }
 }
+
+function goGridPage(delta) {
+  if (!gridStarted) return;
+  gridPage += delta;
+  renderGrid();
+}
+
+$('#gridPrev')?.addEventListener('click', () => goGridPage(-1));
+$('#gridNext')?.addEventListener('click', () => goGridPage(1));
+
+// Один обработчик на всю сетку вместо отдельного замыкания на каждую
+// картинку: при пересборке страницы старые обработчики не накапливаются.
+$('#grid').addEventListener('click', (e) => {
+  const img = e.target.closest ? e.target.closest('img') : null;
+  if (!img || img.parentElement !== $('#grid')) return;
+  const name = img.alt;
+  navigator.clipboard.writeText(name);
+  toast(`«${name}» скопировано`);
+});
 
 $('#enabled').addEventListener('change', (e) => {
   chrome.storage.sync.set({ enabled: e.target.checked });
@@ -372,7 +652,39 @@ $('#addCustom').addEventListener('click', async () => {
   render();
 });
 
-$('#search').addEventListener('input', () => renderGrid(gridEmotes));
+// Быстрый ввод не должен перерисовывать сетку на каждую букву: старый таймер
+// отменяется, поэтому устаревший запрос не заменит новые результаты.
+$('#search').addEventListener('input', () => {
+  if (!gridStarted) {
+    startGrid();
+    return;
+  }
+  clearTimeout(searchTimer);
+  searchTimer = setTimeout(() => {
+    searchTimer = null;
+    gridPage = 0;
+    gridView = null;
+    renderGrid();
+  }, 120);
+});
+
+// Попап закрывают — снимаем observers и отложенные задачи, чтобы следующее
+// открытие начинало с чистого состояния.
+window.addEventListener('pagehide', () => {
+  clearTimeout(searchTimer);
+  searchTimer = null;
+  clearTimeout(toastTimer);
+  if (gridStarter) {
+    gridStarter.disconnect();
+    gridStarter = null;
+  }
+  if (imgObserver) {
+    imgObserver.disconnect();
+    imgObserver = null;
+  }
+  observedGridImgs.clear();
+  observedCustomImgs.clear();
+});
 
 $('#version').textContent = 'версия ' + chrome.runtime.getManifest().version;
 

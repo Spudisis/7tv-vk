@@ -82,11 +82,16 @@
     <ul id="customList"></ul>
   </details>
 
-  <section>
+  <section id="gridSection">
     <h2>Все эмоуты <span class="muted" id="totalCount"></span></h2>
     <input type="text" id="search" placeholder="Поиск… (клик по эмоуту копирует имя)">
     <div id="gridNote" class="status error" style="display: none"></div>
     <div id="grid" class="vk7tv-scroll"></div>
+    <div class="grid-pages" id="gridPages" hidden>
+      <button class="ghost" id="gridPrev" title="Предыдущая страница">‹</button>
+      <span class="muted" id="gridPage"></span>
+      <button class="ghost" id="gridNext" title="Следующая страница">›</button>
+    </div>
   </section>
 
   <footer>

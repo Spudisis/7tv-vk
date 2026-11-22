@@ -314,6 +314,38 @@ details .row {
   background: #2c2e36;
 }
 
+/* Страницы сетки: попап показывает ограниченную порцию карточек, остальные
+   доступны кнопками. Счётчик говорит, какая порция сейчас на экране. */
+.grid-pages {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 4px;
+}
+
+.grid-pages[hidden] {
+  display: none;
+}
+
+.grid-pages button.ghost {
+  width: auto;
+  margin-top: 0;
+  padding: 2px 8px;
+}
+
+.grid-pages button.ghost:disabled {
+  opacity: 0.35;
+  cursor: default;
+  color: #9aa0ab;
+  border-color: #34363f;
+}
+
+.grid-pages span {
+  flex: 1;
+  text-align: center;
+  font-size: 11px;
+}
+
 footer {
   margin-top: 12px;
   padding-top: 8px;

@@ -1,0 +1,110 @@
+<!doctype html>
+<meta charset="utf-8" />
+<title>VK7TV — нагрузочная диагностика попапа</title>
+<link rel="stylesheet" href="../popup/popup.css" />
+<link rel="stylesheet" href="../scrollbar.css" />
+<body>
+  <!--
+    Не входит в обычный прогон (run.mjs берёт только *.test.html): страница
+    нужна для сравнения нагрузки до и после исправления. Объём задаётся
+    адресом: ?sets=30&size=900&diag=1
+  -->
+  <script src="harness.js"></script>
+  <script>
+    const T = window.VK7TV_TEST;
+    const params = new URLSearchParams(location.search);
+    const setCount = Math.max(1, Number(params.get('sets')) || 12);
+    const setSize = Math.max(1, Number(params.get('size')) || 800);
+    const customCount = Math.max(0, Number(params.get('custom')) || 8);
+
+    const em = (i, wide) => {
+      const w = wide ? 96 + (i % 5) * 16 : 32 + (i % 7) * 8;
+      const h = 32 + (i % 3) * 8;
+      const fill = `rgb(${i % 256},${(i * 7) % 256},${(i * 13) % 256})`;
+      return {
+        u: T.png(w, h, fill),
+        z: 0,
+        r: Math.round((w / h) * 100) / 100,
+      };
+    };
+
+    const sets = [];
+    const setEmotes = {};
+    for (let s = 0; s < setCount; s++) {
+      const emotes = {};
+      for (let i = 0; i < setSize; i++) {
+        // Часть имён повторяется между наборами — как у реальных наборов.
+        const name = i % 37 === 0 ? `shared_${i}` : `e${s}_${i}`;
+        emotes[name] = em(s * setSize + i, i % 101 === 0);
+      }
+      sets.push({ id: `S${s}`, name: `Набор ${s}`, slug: `s${s}`, count: setSize });
+      setEmotes[`S${s}`] = emotes;
+    }
+
+    const customEmotes = {};
+    for (let i = 0; i < customCount; i++) customEmotes[`custom_${i}`] = em(i, i % 3 === 0);
+
+    const globalEmotes = {};
+    for (let i = 0; i < 1000; i++) globalEmotes[`g_${i}`] = em(i);
+
+    T.install({
+      sync: {
+        enabled: true,
+        useGlobal: true,
+        widget: true,
+        suggest: true,
+        autocomplete: true,
+        everywhere: false,
+        sets,
+        customEmotes,
+        favorites: [],
+      },
+      local: { setEmotes, globalEmotes },
+      respond: () => ({}),
+    });
+  </script>
+  <script src="../default-emotes.js"></script>
+  <script src="../emotes.js"></script>
+  <script>
+    const IDS = [
+      'toast', 'enabled', 'useGlobal', 'widgetOn', 'suggestOn', 'autocompleteOn', 'everywhere', 'globalCount',
+      'docsDiagnostics', 'setList', 'customList', 'gridNote', 'grid', 'search', 'totalCount', 'setInput',
+      'setStatus', 'addSet', 'refreshSets', 'exportSettings', 'importSettings', 'importFile',
+      'backupStatus', 'addCustom', 'customName', 'customUrl', 'customStatus', 'version',
+    ];
+    const section = document.createElement('section');
+    section.id = 'gridSection';
+    document.body.appendChild(section);
+    const title = document.createElement('h2');
+    title.textContent = 'Все эмоуты';
+    section.appendChild(title);
+    // Как в настоящем попапе: раздел «Свои» закрыт, картинки не должны
+    // грузиться до его открытия.
+    const customDetails = document.createElement('details');
+    customDetails.id = 'customDetails';
+    customDetails.innerHTML = '<summary>Свои эмоуты</summary>';
+    document.body.insertBefore(customDetails, section);
+    for (const id of IDS) {
+      const tag = ['enabled', 'useGlobal', 'widgetOn', 'suggestOn', 'autocompleteOn', 'everywhere', 'docsDiagnostics', 'search',
+        'setInput', 'customName', 'customUrl'].includes(id) ? 'input'
+        : ['setList', 'customList'].includes(id) ? 'ul'
+        : ['addSet', 'refreshSets', 'exportSettings', 'importSettings', 'addCustom'].includes(id) ? 'button'
+        : 'div';
+      const el = document.createElement(tag);
+      el.id = id;
+      if (tag === 'input') el.type = id === 'importFile' ? 'file' : 'text';
+      if (id === 'grid') {
+        el.className = 'vk7tv-scroll';
+        section.appendChild(el);
+      } else if (id === 'search' || id === 'totalCount') {
+        section.appendChild(el);
+      } else if (id === 'customList') {
+        customDetails.appendChild(el);
+      } else {
+        document.body.insertBefore(el, section);
+      }
+    }
+  </script>
+  <script src="../popup/popup.js"></script>
+</body>
+</html>

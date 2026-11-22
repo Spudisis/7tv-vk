@@ -1,0 +1,264 @@
+<!doctype html>
+<meta charset="utf-8" />
+<title>VK7TV — попап на большом объёме</title>
+<link rel="stylesheet" href="../popup/popup.css" />
+<link rel="stylesheet" href="../scrollbar.css" />
+<body>
+  <script src="harness.js"></script>
+  <script>
+    const T = window.VK7TV_TEST;
+    const em = (w, h, extra) => ({
+      u: T.png(w, h),
+      z: 0,
+      r: Math.round((w / h) * 100) / 100,
+      ...(extra || {}),
+    });
+
+    // 3 набора по 150 записей + общий код dup + глобальные + свои. В плоской
+    // карте получается больше 1000 имён: одной страницы карточек мало.
+    const sets = [
+      { id: 'S0', name: 'первый', slug: 's0', count: 151 },
+      { id: 'S1', name: 'второй', slug: 's1', count: 151 },
+      { id: 'S2', name: 'третий', slug: 's2', count: 150 },
+    ];
+    const setEmotes = {};
+    for (let s = 0; s < 3; s++) {
+      const map = {};
+      for (let i = 0; i < 150; i++) map[`e${s}_${i}`] = em(64, 64);
+      if (s < 2) map.dup = em(s === 0 ? 64 : 96, 64);
+      setEmotes[`S${s}`] = map;
+    }
+    const globalEmotes = {};
+    for (let i = 0; i < 100; i++) globalEmotes[`g_${i}`] = em(64, 64);
+    const customEmotes = {
+      c_0: em(64, 64, { id: 'ID0' }),
+      c_1: em(64, 64, { id: 'ID1' }),
+      c_2: 'https://media.test/c2.png',
+    };
+
+    const stores = T.install({
+      sync: {
+        enabled: true,
+        useGlobal: true,
+        widget: true,
+        suggest: true,
+        autocomplete: true,
+        everywhere: false,
+        sets,
+        customEmotes,
+        favorites: [],
+      },
+      local: { setEmotes, globalEmotes },
+      // Добавление и удаление в жизни делает фоновый скрипт; здесь так же
+      // меняем хранилище, чтобы проверить, что попап перерисовывается сам.
+      respond: async (msg) => {
+        if (msg.type === 'add-set') {
+          stores.local.setEmotes.S3 = { new_a: em(64, 64), new_b: em(96, 64) };
+          stores.sync.sets.push({ id: 'S3', name: 'новый', slug: 's3', count: 2 });
+          return { name: 'новый', count: 2 };
+        }
+        if (msg.type === 'remove-set') {
+          delete stores.local.setEmotes[msg.id];
+          stores.sync.sets = stores.sync.sets.filter((s) => s.id !== msg.id);
+        }
+        return {};
+      },
+    });
+
+    // Считаем observers, чтобы повторные render() не накапливали подписки.
+    const ioStats = { created: 0, disconnected: 0, observed: 0 };
+    const NativeIO = window.IntersectionObserver;
+    window.IntersectionObserver = class extends NativeIO {
+      constructor(cb, opts) {
+        super(cb, opts);
+        ioStats.created++;
+      }
+      observe(target) {
+        ioStats.observed++;
+        return super.observe(target);
+      }
+      disconnect() {
+        ioStats.disconnected++;
+        return super.disconnect();
+      }
+    };
+  </script>
+  <script src="../default-emotes.js"></script>
+  <script src="../emotes.js"></script>
+  <script>
+    // Настройки стоят сверху, раздел «Все эмоуты» — ниже видимой части:
+    // как в настоящем попапе. Между ними высокий отступ.
+    const settings = document.createElement('div');
+    document.body.appendChild(settings);
+    const spacer = document.createElement('div');
+    spacer.style.height = '1200px';
+    document.body.appendChild(spacer);
+
+    const section = document.createElement('section');
+    section.id = 'gridSection';
+    document.body.appendChild(section);
+    const title = document.createElement('h2');
+    title.textContent = 'Все эмоуты';
+    section.appendChild(title);
+
+    const customDetails = document.createElement('details');
+    customDetails.id = 'customDetails';
+    customDetails.innerHTML = '<summary>Свои эмоуты</summary>';
+    document.body.insertBefore(customDetails, spacer);
+
+    const IDS = [
+      'toast', 'enabled', 'useGlobal', 'widgetOn', 'suggestOn', 'autocompleteOn', 'everywhere', 'globalCount',
+      'docsDiagnostics', 'setList', 'customList', 'gridNote', 'grid', 'search', 'totalCount', 'setInput',
+      'setStatus', 'addSet', 'refreshSets', 'exportSettings', 'importSettings', 'importFile',
+      'backupStatus', 'addCustom', 'customName', 'customUrl', 'customStatus', 'version',
+      'gridPages', 'gridPrev', 'gridNext', 'gridPage',
+    ];
+    for (const id of IDS) {
+      const tag = ['enabled', 'useGlobal', 'widgetOn', 'suggestOn', 'autocompleteOn', 'everywhere', 'docsDiagnostics', 'search',
+        'setInput', 'customName', 'customUrl'].includes(id) ? 'input'
+        : ['setList', 'customList'].includes(id) ? 'ul'
+        : ['addSet', 'refreshSets', 'exportSettings', 'importSettings', 'addCustom', 'gridPrev', 'gridNext'].includes(id) ? 'button'
+        : id === 'gridPages' ? 'div'
+        : 'div';
+      const el = document.createElement(tag);
+      el.id = id;
+      if (tag === 'input') el.type = id === 'importFile' ? 'file' : 'text';
+      if (id === 'grid') {
+        el.className = 'vk7tv-scroll';
+        section.appendChild(el);
+      } else if (['search', 'totalCount', 'gridNote', 'gridPages'].includes(id)) {
+        section.appendChild(el);
+      } else if (id === 'gridPrev' || id === 'gridNext' || id === 'gridPage') {
+        document.getElementById('gridPages').appendChild(el);
+      } else if (id === 'customList') {
+        customDetails.appendChild(el);
+      } else {
+        settings.appendChild(el);
+      }
+    }
+    // Итоговая карта: 100 глобальных + 452 имени с постфиксами + 451 голое
+    // имя наборов (dup один раз) + 3 своих + 2 своих с id = 1008.
+    const TOTAL_NAMES = 1008;
+    const PAGE = 200;
+  </script>
+  <script src="../popup/popup.js"></script>
+  <script>
+    const sel = (s) => [...document.querySelectorAll(s)];
+    const names = () => sel('#grid img').map((i) => i.alt);
+    const input = (value) => {
+      const el = document.getElementById('search');
+      el.value = value;
+      el.dispatchEvent(new Event('input', { bubbles: true }));
+    };
+
+    T.run(async () => {
+      await T.waitFor('настройки появились без сетки', () => sel('#setList li').length === 3, 2000);
+      T.eq('до прокрутки карточек нет', sel('#grid img').length, 0);
+      T.eq('до прокрутки раздел не собирал карту', document.getElementById('totalCount').textContent, '');
+      T.check('настройки доступны до тяжёлой работы', sel('#setList li').length === 3, 'да');
+      T.eq('до прокрутки observers не растут', ioStats.created, 2);
+
+      document.getElementById('gridSection').scrollIntoView();
+      await T.waitFor('сетка появилась', () => sel('#grid img').length > 0, 3000);
+      T.eq('на одной странице не больше лимита', sel('#grid img').length, PAGE);
+      T.eq('счётчик показывает всю карту', document.getElementById('totalCount').textContent, `(${TOTAL_NAMES})`);
+
+      // Коллизии и постфиксы не изменились.
+      const allNames = names();
+      T.eq('страница заполнена именами', allNames.length, PAGE);
+
+      await T.waitFor('видимые картинки начали грузиться', () => sel('#grid img[src]').length > 0, 2000);
+      const withSrc = sel('#grid img[src]').length;
+      T.check('src только у части страницы', withSrc > 0 && withSrc < PAGE, `${withSrc} из ${PAGE}`);
+      T.eq('закрытые свои эмоуты не грузятся', sel('#customList img[src]').length, 0);
+
+      // Вторая страница заменяет первую, а не добавляется к ней.
+      const firstAlt = names()[0];
+      T.check('вторая страница доступна', !document.getElementById('gridNext').disabled, 'кнопка активна');
+      document.getElementById('gridNext').click();
+      await T.waitFor('вторая страница отрисована', () => document.getElementById('gridPage').textContent.startsWith('201–'), 2000);
+      T.eq('карточек по-прежнему не больше лимита', sel('#grid img').length, PAGE);
+      T.check('первая карточка сменилась', names()[0] !== firstAlt, `${firstAlt} -> ${names()[0]}`);
+      T.eq('счётчик страницы', document.getElementById('gridPage').textContent, `201–400 из ${TOTAL_NAMES}`);
+
+      document.getElementById('gridPrev').click();
+      await T.waitFor('вернулись на первую страницу', () => document.getElementById('gridPage').textContent.startsWith('1–'), 2000);
+      T.eq('первая карточка вернулась', names()[0], firstAlt);
+
+      // Поиск идёт по всей карте и переживает быстрый ввод.
+      input('e2_');
+      await T.waitFor('поиск по третьему набору', () => document.getElementById('totalCount').textContent === `(300 из ${TOTAL_NAMES})`, 2000);
+      T.eq('результаты поиска ограничены страницей', sel('#grid img').length, PAGE);
+      T.eq('счётчик страницы в поиске', document.getElementById('gridPage').textContent, '1–200 из 300');
+      T.check('в поиске только совпадения', names().every((n) => n.startsWith('e2_')), names().slice(0, 3).join(','));
+      document.getElementById('gridNext').click();
+      await T.waitFor('вторая страница поиска', () => document.getElementById('gridPage').textContent.startsWith('201–'), 2000);
+      T.eq('доступны все результаты поиска', sel('#grid img').length, 100);
+
+      input('zzz');
+      input('e2_149');
+      await T.waitFor('ввод остановился на последнем запросе', () => {
+        const t = document.getElementById('totalCount').textContent;
+        return t === `(2 из ${TOTAL_NAMES})`;
+      }, 2000);
+      T.check('устаревший запрос не заменил новые результаты', names().every((n) => n.startsWith('e2_149')), names().join(','));
+      T.check('голое имя из конца набора найдено', names().includes('e2_149'), names().join(','));
+      T.check('имя с постфиксом найдено', names().includes('e2_149_s2'), names().join(','));
+
+      input('');
+      await T.waitFor('поиск очищен', () => document.getElementById('totalCount').textContent === `(${TOTAL_NAMES})`, 2000);
+      T.eq('после очистки снова первая страница', document.getElementById('gridPage').textContent, `1–${PAGE} из ${TOTAL_NAMES}`);
+
+      // Свои эмоуты: закрытый details не грузит картинки, открытие — грузит.
+      T.eq('свои эмоуты есть в списке', sel('#customList li').length, 3);
+      document.getElementById('customDetails').open = true;
+      document.getElementById('customDetails').scrollIntoView();
+      await T.waitFor('открытые свои эмоуты загрузились', () => sel('#customList img[src]').length === 3, 2000);
+      T.eq('картинок своих не больше, чем записей', sel('#customList img').length, 3);
+
+      // Копирование по клику — один делегированный обработчик.
+      let copied = '';
+      Object.defineProperty(navigator, 'clipboard', {
+        configurable: true,
+        value: { writeText: (t) => { copied = t; return Promise.resolve(); } },
+      });
+      const target = document.querySelector('#grid img');
+      target.click();
+      T.eq('клик копирует имя карточки', copied, target.alt);
+      T.check('подтверждение называет имя', document.getElementById('toast').textContent.includes(target.alt), document.getElementById('toast').textContent);
+
+      // Повторные пересборки не накапливают observers и карточки.
+      for (let i = 0; i < 12; i++) await render();
+      await T.waitFor('сетка после пересборок', () => sel('#grid img').length > 0, 2000);
+      T.eq('карточек после пересборок не больше лимита', sel('#grid img').length, PAGE);
+      T.eq('observers не накопились', ioStats.created, 2);
+      T.eq('свои эмоуты не задвоились', sel('#customList li').length, 3);
+
+      // Добавление, удаление и перестановка наборов переживают пересборку.
+      document.getElementById('setInput').value = 'S3';
+      document.getElementById('addSet').click();
+      await T.waitFor('набор добавлен', () => sel('#setList li').length === 4, 2000);
+      T.eq('поле добавления очищено', document.getElementById('setInput').value, '');
+      T.check('статус добавления назван', document.getElementById('setStatus').textContent.includes('Добавлен'), document.getElementById('setStatus').textContent);
+
+      const rowS0 = [...document.querySelectorAll('#setList li')].find((li) => li.dataset.setId === 'S0');
+      rowS0.querySelector('.del').click();
+      await T.waitFor('набор удалён', () => ![...document.querySelectorAll('#setList li')].some((li) => li.dataset.setId === 'S0'), 2000);
+      T.eq('в списке осталось три набора', sel('#setList li').length, 3);
+
+      // dragstart + перемещение DOM + dragend — тот же путь, что у мыши.
+      const moving = [...document.querySelectorAll('#setList li')].find((li) => li.dataset.setId === 'S1');
+      moving.dispatchEvent(new DragEvent('dragstart', {
+        bubbles: true,
+        dataTransfer: new DataTransfer(),
+      }));
+      document.getElementById('setList').appendChild(moving);
+      document.getElementById('setList').dispatchEvent(new DragEvent('dragend', { bubbles: true }));
+      await T.waitFor('порядок сохранён', () => stores.sync.sets.map((s) => s.id).join(',') === 'S2,S3,S1', 2000);
+      T.eq('новый порядок в списке', [...document.querySelectorAll('#setList li')].map((li) => li.dataset.setId).join(','), 'S2,S3,S1');
+
+      T.report();
+    });
+  </script>
+</body>
+</html>
