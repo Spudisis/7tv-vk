@@ -101,6 +101,8 @@
       T.check('битое значение не попало в сетку', !names.includes('broken'), 'нет');
 
       // Порядок — по размеру, как в поповере.
+      T.check('ширина зарезервирована явно до загрузки',
+        sel('#grid img').every(i => !!i.style.width), 'inline width');
       const widths = sel('#grid img').map((i) => Math.round(i.offsetWidth));
       T.check(
         'порядок по размеру',

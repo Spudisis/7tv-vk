@@ -417,7 +417,7 @@ function renderGrid() {
   const newImgs = [];
   for (const [name, v] of slice) {
     const img = document.createElement('img');
-    if (v.r) img.style.aspectRatio = String(VK7TV.displayRatio(v));
+    if (v.r) img.style.width = cellWidth(v) + 'px';
     else img.style.minWidth = GRID_PX + 'px';
     img.alt = name;
     img.title = name;
